@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "google-maps-scraper": {
+      "source": "gosom/google-maps-scraper",
+      "sourceType": "github",
+      "skillPath": "skills/google-maps-scraper/SKILL.md",
+      "computedHash": "6f245b5a5453b394284e5c4c25b2726f8fd211f568bbc8d2fcb3e1a31e1576f3"
+    }
+  }
+}
