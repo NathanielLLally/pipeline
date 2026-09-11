@@ -1,0 +1,139 @@
+-- Lead-sourcing campaign schema. Lives in its own schema so it never collides
+-- with whatever tables the gosom/google-maps-scraper job-queue mode creates
+-- in `public` when run with -dsn.
+
+CREATE SCHEMA IF NOT EXISTS leads;
+
+CREATE TYPE leads.qc_status AS ENUM (
+  'VALID',
+  'NEEDS_ENRICHMENT',
+  'LOW_PRIORITY',
+  'REJECTED',
+  'CLOSED'
+);
+
+CREATE TABLE IF NOT EXISTS leads.businesses (
+  id                        uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+
+  -- dedup identity
+  place_id                  text,
+  domain                    text,
+  phone_normalized          text,
+  name_city_state_key       text,
+
+  -- Google Maps fields (never fabricated; null when the scraper didn't capture it)
+  name                      text NOT NULL,
+  maps_url                  text,
+  website                   text,
+  phone                     text,
+  address                   text,
+  city                      text,
+  state                     text,
+  zip                       text,
+  latitude                  double precision,
+  longitude                 double precision,
+  rating                    numeric,
+  review_count              integer,
+  primary_category          text,
+  additional_categories     text[],
+  description               text,
+  hours                     jsonb,
+  price_range               text,
+  status                    text,               -- as scraped, e.g. "OPERATIONAL", "CLOSED_PERMANENTLY"
+
+  -- campaign fields
+  service_category          text NOT NULL,       -- dog_training | daycare_boarding | grooming | dog_walking_petsitting
+  icp_score                 integer NOT NULL DEFAULT 0,
+  icp_tier                  text,                -- Tier 1..4
+  qc_status                 leads.qc_status NOT NULL DEFAULT 'NEEDS_ENRICHMENT',
+
+  -- Prompt 6: growth signals
+  growth_signal             text,
+  growth_score              integer,
+
+  -- Prompt 7: marketing signals
+  marketing_active          boolean,
+  google_ads_signal         boolean,
+  meta_ads_signal           boolean,
+  lead_form_present         boolean,
+  booking_present           boolean,
+  marketing_evidence        text,
+  marketing_score           integer,
+
+  -- Prompt 9: decision maker enrichment
+  decision_maker_name       text,
+  decision_maker_title      text,
+  decision_maker_source     text,
+  decision_maker_confidence text,
+
+  -- provenance (append-only; never erase discovery history per Prompt 8)
+  sources                   jsonb NOT NULL DEFAULT '[]'::jsonb,
+  raw_scrape                jsonb,
+
+  date_discovered           timestamptz NOT NULL DEFAULT now(),
+  date_updated              timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS businesses_place_id_uidx
+  ON leads.businesses (place_id) WHERE place_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS businesses_domain_idx ON leads.businesses (domain) WHERE domain IS NOT NULL;
+CREATE INDEX IF NOT EXISTS businesses_phone_idx ON leads.businesses (phone_normalized) WHERE phone_normalized IS NOT NULL;
+CREATE INDEX IF NOT EXISTS businesses_namekey_idx ON leads.businesses (name_city_state_key) WHERE name_city_state_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS businesses_service_category_idx ON leads.businesses (service_category);
+CREATE INDEX IF NOT EXISTS businesses_qc_status_idx ON leads.businesses (qc_status);
+CREATE INDEX IF NOT EXISTS businesses_icp_score_idx ON leads.businesses (icp_score DESC);
+
+CREATE TABLE IF NOT EXISTS leads.search_log (
+  id                         bigserial PRIMARY KEY,
+  query_batch_label          text NOT NULL,
+  geo_target                 text NOT NULL,
+  service_category           text NOT NULL,
+  phase                      text,
+  searched_at                timestamptz NOT NULL DEFAULT now(),
+  results_discovered         integer NOT NULL DEFAULT 0,
+  new_businesses             integer NOT NULL DEFAULT 0,
+  duplicates                 integer NOT NULL DEFAULT 0,
+  qualified                  integer NOT NULL DEFAULT 0,
+  rejected                   integer NOT NULL DEFAULT 0,
+  results_watermark_start    text,   -- public.results id/timestamp range ingested, for traceability
+  results_watermark_end      text
+);
+
+CREATE INDEX IF NOT EXISTS search_log_service_geo_idx ON leads.search_log (service_category, geo_target);
+
+-- Scratch table for the load step. Truncated and reloaded every batch via \copy.
+-- Same shape as the ingest-relevant subset of leads.businesses (no merge-only
+-- provenance/timestamp columns -- those are computed during the upsert).
+CREATE TABLE IF NOT EXISTS leads.staging_businesses (
+  place_id                  text,
+  domain                    text,
+  phone_normalized          text,
+  name_city_state_key       text,
+  name                      text,
+  maps_url                  text,
+  website                   text,
+  phone                     text,
+  address                   text,
+  city                      text,
+  state                     text,
+  zip                       text,
+  latitude                  double precision,
+  longitude                 double precision,
+  rating                    numeric,
+  review_count              integer,
+  primary_category          text,
+  additional_categories     text,   -- pipe-delimited in CSV, split on load
+  description               text,
+  hours                     text,   -- raw JSON text in CSV, cast to jsonb on load
+  price_range               text,
+  status                    text,
+  service_category          text,
+  icp_score                 integer,
+  icp_tier                  text,
+  qc_status                 text,
+  query                     text,   -- this batch's query metadata, used to build the sources[] entry
+  geo_target                text,
+  phase                     text,
+  raw_scrape                text    -- raw JSON text in CSV, cast to jsonb on load
+);

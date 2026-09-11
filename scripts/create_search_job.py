@@ -111,8 +111,8 @@ def main():
     parser = argparse.ArgumentParser(
         description="Batch Maps scraper client",
     )
-    parser.add_argument("--base-url", required=True, help="API base URL")
-    parser.add_argument("--api-key", required=True, help="API key")
+    parser.add_argument("--base-url", default=os.environ.get('BASE_URL'),help="API base URL")
+    parser.add_argument("--api-key", default=os.environ.get('API_KEY'), help="API key")
     parser.add_argument("-o", "--output", default="map-outputs",
                         help="Output directory (default: map-outputs)")
     parser.add_argument("-w", "--workers", type=int, default=20,

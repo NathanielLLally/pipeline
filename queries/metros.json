@@ -1,0 +1,84 @@
+{
+  "metros": [
+    {
+      "metro": "Los Angeles, CA",
+      "core_city": "Los Angeles, CA",
+      "suburbs": ["Santa Monica, CA", "Pasadena, CA", "Beverly Hills, CA", "Culver City, CA", "Manhattan Beach, CA", "Sherman Oaks, CA", "Studio City, CA", "Glendale, CA", "West Hollywood, CA", "Calabasas, CA"]
+    },
+    {
+      "metro": "New York, NY",
+      "core_city": "New York, NY",
+      "suburbs": ["Brooklyn, NY", "Park Slope, Brooklyn, NY", "Upper East Side, New York, NY", "Upper West Side, New York, NY", "Astoria, Queens, NY", "Scarsdale, NY", "Greenwich, CT", "Hoboken, NJ", "Montclair, NJ", "Long Island City, NY"]
+    },
+    {
+      "metro": "Chicago, IL",
+      "core_city": "Chicago, IL",
+      "suburbs": ["Lincoln Park, Chicago, IL", "Wicker Park, Chicago, IL", "Naperville, IL", "Evanston, IL", "Oak Park, IL", "Winnetka, IL", "Lake Forest, IL"]
+    },
+    {
+      "metro": "Houston, TX",
+      "core_city": "Houston, TX",
+      "suburbs": ["The Woodlands, TX", "Sugar Land, TX", "Katy, TX", "Bellaire, TX", "River Oaks, Houston, TX"]
+    },
+    {
+      "metro": "Phoenix, AZ",
+      "core_city": "Phoenix, AZ",
+      "suburbs": ["Scottsdale, AZ", "Paradise Valley, AZ", "Chandler, AZ", "Gilbert, AZ", "Tempe, AZ"]
+    },
+    {
+      "metro": "Dallas, TX",
+      "core_city": "Dallas, TX",
+      "suburbs": ["Highland Park, TX", "Plano, TX", "Frisco, TX", "Southlake, TX", "Uptown Dallas, TX"]
+    },
+    {
+      "metro": "San Francisco Bay Area, CA",
+      "core_city": "San Francisco, CA",
+      "suburbs": ["Palo Alto, CA", "Berkeley, CA", "Marin County, CA", "San Mateo, CA", "Walnut Creek, CA", "Los Gatos, CA"]
+    },
+    {
+      "metro": "Seattle, WA",
+      "core_city": "Seattle, WA",
+      "suburbs": ["Bellevue, WA", "Kirkland, WA", "Mercer Island, WA", "Redmond, WA"]
+    },
+    {
+      "metro": "Denver, CO",
+      "core_city": "Denver, CO",
+      "suburbs": ["Boulder, CO", "Cherry Creek, Denver, CO", "Littleton, CO", "Highlands Ranch, CO"]
+    },
+    {
+      "metro": "Boston, MA",
+      "core_city": "Boston, MA",
+      "suburbs": ["Cambridge, MA", "Brookline, MA", "Newton, MA", "Wellesley, MA", "Back Bay, Boston, MA"]
+    },
+    {
+      "metro": "Miami, FL",
+      "core_city": "Miami, FL",
+      "suburbs": ["Coral Gables, FL", "Miami Beach, FL", "Coconut Grove, Miami, FL", "Aventura, FL", "Fort Lauderdale, FL"]
+    },
+    {
+      "metro": "Atlanta, GA",
+      "core_city": "Atlanta, GA",
+      "suburbs": ["Buckhead, Atlanta, GA", "Sandy Springs, GA", "Decatur, GA", "Alpharetta, GA", "Marietta, GA"]
+    },
+    {
+      "metro": "Washington, DC",
+      "core_city": "Washington, DC",
+      "suburbs": ["Arlington, VA", "Bethesda, MD", "Alexandria, VA", "McLean, VA", "Georgetown, Washington, DC"]
+    },
+    {
+      "metro": "Austin, TX",
+      "core_city": "Austin, TX",
+      "suburbs": ["West Lake Hills, TX", "Round Rock, TX", "Cedar Park, TX", "South Congress, Austin, TX"]
+    },
+    {
+      "metro": "Philadelphia, PA",
+      "core_city": "Philadelphia, PA",
+      "suburbs": ["Main Line, PA", "Bryn Mawr, PA", "Chestnut Hill, Philadelphia, PA", "Society Hill, Philadelphia, PA"]
+    },
+    {
+      "metro": "San Diego, CA",
+      "core_city": "San Diego, CA",
+      "suburbs": ["La Jolla, San Diego, CA", "Del Mar, CA", "Encinitas, CA", "Carlsbad, CA", "Coronado, CA"]
+    }
+  ]
+}
