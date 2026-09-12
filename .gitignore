@@ -1,3 +1,4 @@
 .env
-bin/
-map-outputs/
+bin/**
+map-outputs/**
+.claude
