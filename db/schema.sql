@@ -137,3 +137,19 @@ CREATE TABLE IF NOT EXISTS leads.staging_businesses (
   phase                     text,
   raw_scrape                text    -- raw JSON text in CSV, cast to jsonb on load
 );
+
+-- Worker health monitoring: audit trail, liveness signals, and action history.
+-- One row per tick (~60s). Hysteresis and cooldown state derived from this table
+-- (no local state file; survives reinstall of the timer).
+CREATE TABLE IF NOT EXISTS leads.worker_health_log (
+  id           bigserial PRIMARY KEY,
+  checked_at   timestamptz NOT NULL DEFAULT now(),
+  verdict      text NOT NULL,          -- IDLE|HEALTHY|PROXY_DEGRADED|WEDGED|STALLED|HOST_UNREACHABLE
+  signals      jsonb NOT NULL,         -- all metrics: backlog, last_progress, longest_running, zero_yield_ratio, recent_timeouts
+  action       text,                   -- null|restart|proxy_refresh|alert
+  action_ok    boolean,
+  action_note  text
+);
+
+CREATE INDEX IF NOT EXISTS worker_health_log_checked_at_idx
+  ON leads.worker_health_log (checked_at DESC);
