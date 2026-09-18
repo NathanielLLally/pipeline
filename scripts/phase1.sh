@@ -24,14 +24,14 @@
 #cd /home/nathaniel/leads/.claude/worktrees/you-are-a-lead-sourcing-glittery-curry && set -a && source .env && set +a && ./scripts/pipeline.sh --phase prompt1 --service-category dog_training --metro "New York, NY" --workers 3
 
 ## PENDING (in priority order)
-cd /home/nathaniel/leads/.claude/worktrees/you-are-a-lead-sourcing-glittery-curry && set -a && source .env && set +a && ./scripts/pipeline.sh --phase prompt1 --service-category dog_training --metro "Chicago, IL" --workers 3
-cd /home/nathaniel/leads/.claude/worktrees/you-are-a-lead-sourcing-glittery-curry && set -a && source .env && set +a && ./scripts/pipeline.sh --phase prompt1 --service-category dog_training --metro "Houston, TX" --workers 3
-cd /home/nathaniel/leads/.claude/worktrees/you-are-a-lead-sourcing-glittery-curry && set -a && source .env && set +a && ./scripts/pipeline.sh --phase prompt1 --service-category dog_training --metro "Phoenix, AZ" --workers 3
-cd /home/nathaniel/leads/.claude/worktrees/you-are-a-lead-sourcing-glittery-curry && set -a && source .env && set +a && ./scripts/pipeline.sh --phase prompt1 --service-category dog_training --metro "Dallas, TX" --workers 3
-cd /home/nathaniel/leads/.claude/worktrees/you-are-a-lead-sourcing-glittery-curry && set -a && source .env && set +a && ./scripts/pipeline.sh --phase prompt1 --service-category dog_training --metro "San Francisco Bay Area, CA" --workers 3
-cd /home/nathaniel/leads/.claude/worktrees/you-are-a-lead-sourcing-glittery-curry && set -a && source .env && set +a && ./scripts/pipeline.sh --phase prompt1 --service-category dog_training --metro "Seattle, WA" --workers 3
-cd /home/nathaniel/leads/.claude/worktrees/you-are-a-lead-sourcing-glittery-curry && set -a && source .env && set +a && ./scripts/pipeline.sh --phase prompt1 --service-category dog_training --metro "Denver, CO" --workers 3
-cd /home/nathaniel/leads/.claude/worktrees/you-are-a-lead-sourcing-glittery-curry && set -a && source .env && set +a && ./scripts/pipeline.sh --phase prompt1 --service-category dog_training --metro "Boston, MA" --workers 3
+#cd /home/nathaniel/leads/.claude/worktrees/you-are-a-lead-sourcing-glittery-curry && set -a && source .env && set +a && ./scripts/pipeline.sh --phase prompt1 --service-category dog_training --metro "Chicago, IL" --workers 3
+#cd /home/nathaniel/leads/.claude/worktrees/you-are-a-lead-sourcing-glittery-curry && set -a && source .env && set +a && ./scripts/pipeline.sh --phase prompt1 --service-category dog_training --metro "Houston, TX" --workers 3
+#cd /home/nathaniel/leads/.claude/worktrees/you-are-a-lead-sourcing-glittery-curry && set -a && source .env && set +a && ./scripts/pipeline.sh --phase prompt1 --service-category dog_training --metro "Phoenix, AZ" --workers 3
+#cd /home/nathaniel/leads/.claude/worktrees/you-are-a-lead-sourcing-glittery-curry && set -a && source .env && set +a && ./scripts/pipeline.sh --phase prompt1 --service-category dog_training --metro "Dallas, TX" --workers 3
+#cd /home/nathaniel/leads/.claude/worktrees/you-are-a-lead-sourcing-glittery-curry && set -a && source .env && set +a && ./scripts/pipeline.sh --phase prompt1 --service-category dog_training --metro "San Francisco Bay Area, CA" --workers 3
+#cd /home/nathaniel/leads/.claude/worktrees/you-are-a-lead-sourcing-glittery-curry && set -a && source .env && set +a && ./scripts/pipeline.sh --phase prompt1 --service-category dog_training --metro "Seattle, WA" --workers 3
+#cd /home/nathaniel/leads/.claude/worktrees/you-are-a-lead-sourcing-glittery-curry && set -a && source .env && set +a && ./scripts/pipeline.sh --phase prompt1 --service-category dog_training --metro "Denver, CO" --workers 3
+#cd /home/nathaniel/leads/.claude/worktrees/you-are-a-lead-sourcing-glittery-curry && set -a && source .env && set +a && ./scripts/pipeline.sh --phase prompt1 --service-category dog_training --metro "Boston, MA" --workers 3
 cd /home/nathaniel/leads/.claude/worktrees/you-are-a-lead-sourcing-glittery-curry && set -a && source .env && set +a && ./scripts/pipeline.sh --phase prompt1 --service-category dog_training --metro "Miami, FL" --workers 3
 cd /home/nathaniel/leads/.claude/worktrees/you-are-a-lead-sourcing-glittery-curry && set -a && source .env && set +a && ./scripts/pipeline.sh --phase prompt1 --service-category dog_training --metro "Atlanta, GA" --workers 3
 cd /home/nathaniel/leads/.claude/worktrees/you-are-a-lead-sourcing-glittery-curry && set -a && source .env && set +a && ./scripts/pipeline.sh --phase prompt1 --service-category dog_training --metro "Washington, DC" --workers 3
