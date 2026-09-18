@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Phase 2 Pipeline: Dog Training Phase 2 + Daycare/Boarding Phase 1 across all metros
 #
-# Executes both tracks in parallel across all 16 US metros.
-# Track A: Dog Training Phase 2 (refined specialist searches)
-# Track B: Daycare + Boarding Phase 1 (new service category)
+# Dynamically reads metros from queries/metros.json
+# Checks database to skip already-completed batches
+# Executes both tracks in parallel
 #
 # Usage:
-#   ./scripts/phase2-all-metros.sh [--sequential|--parallel] [--skip-completed]
+#   ./scripts/phase2-all-metros.sh [--sequential] [--force-all] [--workers N]
 #
 set -euo pipefail
 
@@ -20,57 +20,18 @@ set +a
 
 # Config
 SEQUENTIAL=0
-SKIP_COMPLETED=0
+FORCE_ALL=0
 WORKERS=3
 
 while (($# > 0)); do
   case "$1" in
-    --sequential)     SEQUENTIAL=1; shift ;;
-    --parallel)       SEQUENTIAL=0; shift ;;
-    --skip-completed) SKIP_COMPLETED=1; shift ;;
-    --workers)        WORKERS=$2; shift 2 ;;
-    *)                echo "Unknown flag: $1" >&2; exit 2 ;;
+    --sequential)  SEQUENTIAL=1; shift ;;
+    --parallel)    SEQUENTIAL=0; shift ;;
+    --force-all)   FORCE_ALL=1; shift ;;
+    --workers)     WORKERS=$2; shift 2 ;;
+    *)             echo "Unknown flag: $1" >&2; exit 2 ;;
   esac
 done
-
-# All 16 metros (priority order for each track)
-METROS_TRACK_A=(
-  "New York, NY"
-  "Los Angeles, CA"
-  "Chicago, IL"
-  "Houston, TX"
-  "Phoenix, AZ"
-  "Philadelphia, PA"
-  "San Antonio, TX"
-  "San Diego, CA"
-  "Dallas, TX"
-  "San Francisco Bay Area, CA"
-  "Boston, MA"
-  "Washington, DC"
-  "Seattle, WA"
-  "Denver, CO"
-  "Atlanta, GA"
-  "Miami, FL"
-)
-
-METROS_TRACK_B=(
-  "San Francisco Bay Area, CA"
-  "Los Angeles, CA"
-  "New York, NY"
-  "Boston, MA"
-  "Washington, DC"
-  "Seattle, WA"
-  "Denver, CO"
-  "Chicago, IL"
-  "San Diego, CA"
-  "Philadelphia, PA"
-  "Phoenix, AZ"
-  "Dallas, TX"
-  "Houston, TX"
-  "Atlanta, GA"
-  "Miami, FL"
-  "San Antonio, TX"
-)
 
 # Logging
 LOG_DIR="phase2-logs"
@@ -82,22 +43,26 @@ log_msg() {
   echo "$msg" | tee -a "$MASTER_LOG"
 }
 
+# Read metros from JSON (alphabetical order)
+read_metros() {
+  cat queries/metros.json | jq -r '.metros[].metro' | sort
+}
+
 # Check if batch already completed
 is_completed() {
   local phase=$1 service=$2 metro=$3
-  local batch_dir="map-outputs/${phase}-${service}-"*
 
-  if [ $SKIP_COMPLETED -eq 0 ]; then
-    return 1  # Not skipping; always return false
+  if [ $FORCE_ALL -eq 1 ]; then
+    return 1  # Force all = nothing is completed
   fi
 
-  # Check if any batch exists for this combo
-  for d in $batch_dir; do
-    if [[ "$d" == *"$metro"* ]]; then
-      return 0  # Completed
-    fi
-  done
-  return 1  # Not completed
+  # Query database: if this (phase, service, metro) exists in search_log, it's done
+  local count=$(/usr/bin/psql -X "$LEADS_DB_URL" -t -A -c "
+    SELECT COUNT(*) FROM leads.search_log
+    WHERE phase = '$phase' AND service_category = '$service' AND geo_target LIKE '%${metro}%'
+  " 2>/dev/null || echo "0")
+
+  [ "$count" -gt 0 ]
 }
 
 # Run a single pipeline
@@ -105,7 +70,7 @@ run_pipeline() {
   local phase=$1 service=$2 metro=$3 log_file=$4
 
   if is_completed "$phase" "$service" "$metro"; then
-    log_msg "[SKIP] $phase/$service/$metro (already completed)"
+    log_msg "[SKIP] $phase/$service/$metro (already in DB)"
     return 0
   fi
 
@@ -132,51 +97,70 @@ run_pipeline() {
 #=============================================================================
 
 log_msg "=========================================="
-log_msg "Phase 2 Pipeline: All Metros"
+log_msg "Phase 2 Pipeline: All Metros (Dynamic)"
 log_msg "=========================================="
+
+# Read metros from JSON
+mapfile -t METROS < <(read_metros)
+log_msg "Found ${#METROS[@]} metros from queries/metros.json"
+log_msg ""
+
+# Determine which ones are NOT completed
+PENDING_TRACK_A=()
+PENDING_TRACK_B=()
+
+log_msg "Checking database for completed batches..."
+for metro in "${METROS[@]}"; do
+  # Track A: prompt2/dog_training
+  if ! is_completed "prompt2" "dog_training" "$metro"; then
+    PENDING_TRACK_A+=("$metro")
+  fi
+
+  # Track B: prompt1/daycare_boarding
+  if ! is_completed "prompt1" "daycare_boarding" "$metro"; then
+    PENDING_TRACK_B+=("$metro")
+  fi
+done
+
+log_msg "Track A pending: ${#PENDING_TRACK_A[@]} metros"
+log_msg "Track B pending: ${#PENDING_TRACK_B[@]} metros"
+log_msg ""
 log_msg "Mode: $([ $SEQUENTIAL -eq 1 ] && echo "SEQUENTIAL" || echo "PARALLEL")"
 log_msg "Workers per batch: $WORKERS"
-log_msg "Skip completed: $SKIP_COMPLETED"
-log_msg ""
-log_msg "Track A (dog_training/prompt2): ${#METROS_TRACK_A[@]} metros"
-log_msg "Track B (daycare_boarding/prompt1): ${#METROS_TRACK_B[@]} metros"
+log_msg "Force all: $FORCE_ALL"
 log_msg ""
 
 if [ $SEQUENTIAL -eq 1 ]; then
-  log_msg "Sequential execution: all Track A, then all Track B"
-  log_msg ""
-
-  # Track A sequential
   log_msg "=== TRACK A: Dog Training Phase 2 ==="
-  for metro in "${METROS_TRACK_A[@]}"; do
+  for metro in "${PENDING_TRACK_A[@]}"; do
     run_pipeline "prompt2" "dog_training" "$metro" "$LOG_DIR/track-a-$(echo "$metro" | tr ' ,' '-').log"
   done
 
   log_msg ""
   log_msg "=== TRACK B: Daycare + Boarding Phase 1 ==="
-  for metro in "${METROS_TRACK_B[@]}"; do
+  for metro in "${PENDING_TRACK_B[@]}"; do
     run_pipeline "prompt1" "daycare_boarding" "$metro" "$LOG_DIR/track-b-$(echo "$metro" | tr ' ,' '-').log"
   done
 
 else
-  # Parallel execution: interleave both tracks
-  log_msg "Parallel execution: alternating Track A & B"
+  # Parallel: interleave by metro
+  log_msg "Parallel execution: interleaved by metro"
   log_msg ""
 
-  local max_metros=${#METROS_TRACK_A[@]}
-  [ ${#METROS_TRACK_B[@]} -gt $max_metros ] && max_metros=${#METROS_TRACK_B[@]}
+  max_metros=${#PENDING_TRACK_A[@]}
+  [ ${#PENDING_TRACK_B[@]} -gt $max_metros ] && max_metros=${#PENDING_TRACK_B[@]}
 
   for ((i = 0; i < max_metros; i++)); do
     # Track A
-    if [ $i -lt ${#METROS_TRACK_A[@]} ]; then
-      metro=${METROS_TRACK_A[$i]}
+    if [ $i -lt ${#PENDING_TRACK_A[@]} ]; then
+      metro=${PENDING_TRACK_A[$i]}
       run_pipeline "prompt2" "dog_training" "$metro" "$LOG_DIR/track-a-$(echo "$metro" | tr ' ,' '-').log" &
       sleep 2  # Stagger submissions
     fi
 
     # Track B
-    if [ $i -lt ${#METROS_TRACK_B[@]} ]; then
-      metro=${METROS_TRACK_B[$i]}
+    if [ $i -lt ${#PENDING_TRACK_B[@]} ]; then
+      metro=${PENDING_TRACK_B[$i]}
       run_pipeline "prompt1" "daycare_boarding" "$metro" "$LOG_DIR/track-b-$(echo "$metro" | tr ' ,' '-').log" &
       sleep 2  # Stagger submissions
     fi
@@ -193,7 +177,7 @@ log_msg "Phase 2 Pipeline Complete"
 log_msg "=========================================="
 log_msg "Logs: $LOG_DIR/"
 log_msg ""
-log_msg "=== Summary ==="
+log_msg "=== Final Summary ==="
 /usr/bin/psql -X "$LEADS_DB_URL" -c "
 SELECT
   service_category,

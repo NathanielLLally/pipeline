@@ -1,0 +1,3 @@
+== [1/4] gen-queries -> map-outputs/prompt1-daycare_boarding-20260918083851/queries-e432ad5e.txt ==
+[gen-queries] phase=prompt1 service_category=daycare_boarding metro=Chicago, IL -> 8 geo_targets (2 already covered, skipped), 64 queries written to map-outputs/prompt1-daycare_boarding-20260918083851/queries-e432ad5e.txt (meta: map-outputs/prompt1-daycare_boarding-20260918083851/meta.json)
+== [2/4] create_search_job.py -> map-outputs/prompt1-daycare_boarding-20260918083851/results/ ==
