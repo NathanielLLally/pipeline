@@ -1,3 +1,0 @@
-== [1/4] gen-queries -> map-outputs/prompt2-dog_training-20260918083849/queries-0794f926.txt ==
-[gen-queries] phase=prompt2 service_category=dog_training metro=Dallas, TX -> 6 geo_targets (96 already covered, skipped), 72 queries written to map-outputs/prompt2-dog_training-20260918083849/queries-0794f926.txt (meta: map-outputs/prompt2-dog_training-20260918083849/meta.json)
-== [2/4] create_search_job.py -> map-outputs/prompt2-dog_training-20260918083849/results/ ==
