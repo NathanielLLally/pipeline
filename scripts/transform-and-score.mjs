@@ -6,6 +6,7 @@
 
 import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { scoreIcp, aboutOptionNames } from "./lib/score.mjs";
 
 const STAGING_COLUMNS = [
   "place_id", "domain", "phone_normalized", "name_city_state_key",
@@ -61,59 +62,6 @@ function normalizeNameCityStateKey(name, city, state) {
       .trim();
   const key = `${clean(name)}|${clean(city)}|${clean(state)}`;
   return clean(name) ? key : null;
-}
-
-const ICP_RELEVANT_RE = /dog|pet|puppy|canine/i;
-const BOARD_TRAIN_RE = /board.{0,3}(and|&).{0,3}train|behavior|aggress|reactiv/i;
-const PUPPY_RE = /puppy/i;
-
-function scoreIcp({ serviceCategory, keyword, primaryCategory, categories, description, rating, reviewCount, website, priceRange }) {
-  const textBlob = [keyword, primaryCategory, ...(categories || []), description].filter(Boolean).join(" ").toLowerCase();
-
-  if (!ICP_RELEVANT_RE.test(textBlob)) {
-    return { score: 0, tier: "Tier 4", qcStatus: "REJECTED" };
-  }
-
-  let base;
-  if (serviceCategory === "dog_training") {
-    if (BOARD_TRAIN_RE.test(textBlob)) base = 60;
-    else if (PUPPY_RE.test(textBlob)) base = 50;
-    else base = 40;
-  } else if (serviceCategory === "daycare_boarding") {
-    base = 45;
-  } else if (serviceCategory === "grooming") {
-    base = 35;
-  } else if (serviceCategory === "dog_walking_petsitting") {
-    base = 25;
-  } else {
-    base = 20; // unknown category, conservative default
-  }
-
-  let score = base;
-  const r = rating != null ? Number(rating) : null;
-  const rc = reviewCount != null ? Number(reviewCount) : null;
-
-  if (r != null && rc != null && r >= 4.7 && rc >= 50) score += 15;
-  else if (r != null && rc != null && r >= 4.5 && rc >= 20) score += 10;
-
-  if (website) score += 10;
-  if (priceRange) score += 5;
-
-  const icpCategoryHits = (categories || []).filter((c) => ICP_RELEVANT_RE.test(c) || /groom|board|daycare|walk|sit|train/i.test(c)).length;
-  if (icpCategoryHits >= 2) score += 5;
-
-  if ((rc == null || rc < 3) && !website) score -= 15;
-
-  score = Math.max(0, Math.min(100, score));
-
-  const tier = score >= 70 ? "Tier 1" : score >= 50 ? "Tier 2" : score >= 30 ? "Tier 3" : "Tier 4";
-
-  let qcStatus;
-  if (score < 30) qcStatus = "LOW_PRIORITY";
-  else if (!website && !reviewCount) qcStatus = "NEEDS_ENRICHMENT";
-  else qcStatus = "VALID";
-
-  return { score, tier, qcStatus };
 }
 
 function csvField(v) {
@@ -183,12 +131,17 @@ function main() {
       const nameCityStateKey = normalizeNameCityStateKey(name, city, state);
       const categories = Array.isArray(p.categories) ? p.categories : p.category ? [p.category] : [];
 
-      const { score, tier, qcStatus } = scoreIcp({
-        serviceCategory: matchedMeta.service_category,
+      // serviceCategory comes back derived from the business's own Google categories,
+      // not from the batch: a groomer surfaced by a boarding query is filed as
+      // grooming. It falls back to the batch's category only for a rejected row, so
+      // the NOT NULL column still has a value to record the rejection under.
+      const { score, tier, qcStatus, serviceCategory } = scoreIcp({
+        name,
         keyword: matchedMeta.keyword,
         primaryCategory: p.category,
         categories,
         description: p.description,
+        about: aboutOptionNames(p.about),
         rating: p.review_rating,
         reviewCount: p.review_count,
         website,
@@ -218,7 +171,7 @@ function main() {
         hours: p.open_hours ? JSON.stringify(p.open_hours) : null,
         price_range: p.price_range || null,
         status: p.status || null,
-        service_category: matchedMeta.service_category,
+        service_category: serviceCategory || matchedMeta.service_category,
         icp_score: score,
         icp_tier: tier,
         qc_status: qcStatus,

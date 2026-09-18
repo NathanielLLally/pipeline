@@ -122,10 +122,11 @@ WHERE s.matched_id IS NULL;
 -- Log this batch: one row per (geo_target, service_category) touched. results_discovered
 -- counts raw (pre-dedup) staging rows for that geo/category; new/duplicates/qualified/
 -- rejected count the deduped representative rows attributed to it via staging_sources.
-INSERT INTO leads.search_log (query_batch_label, geo_target, service_category, phase, searched_at,
+INSERT INTO leads.search_log (query_batch_label, query, geo_target, service_category, phase, searched_at,
                                results_discovered, new_businesses, duplicates, qualified, rejected)
 SELECT
   :'batch_label',
+  raw.query,
   raw.geo_target,
   raw.service_category,
   :'phase',
@@ -136,12 +137,13 @@ SELECT
   COALESCE(dd.qualified, 0),
   COALESCE(dd.rejected, 0)
 FROM (
-  SELECT geo_target, service_category, count(*) AS results_discovered
+  SELECT query, geo_target, service_category, count(*) AS results_discovered
   FROM staging_work
-  GROUP BY geo_target, service_category
+  GROUP BY query, geo_target, service_category
 ) raw
 LEFT JOIN (
   SELECT
+    src.value->>'query' AS query,
     src.value->>'geo_target' AS geo_target,
     src.value->>'service_category' AS service_category,
     count(DISTINCT sd.dedup_key) FILTER (WHERE sd.matched_id IS NULL) AS new_businesses,
@@ -151,7 +153,9 @@ LEFT JOIN (
   FROM staging_dedup sd
   JOIN staging_sources ss ON ss.dedup_key = sd.dedup_key
   CROSS JOIN LATERAL jsonb_array_elements(ss.new_sources) AS src(value)
-  GROUP BY 1, 2
-) dd ON dd.geo_target = raw.geo_target AND dd.service_category = raw.service_category;
+  GROUP BY 1, 2, 3
+) dd ON dd.query IS NOT DISTINCT FROM raw.query
+    AND dd.geo_target = raw.geo_target
+    AND dd.service_category = raw.service_category;
 
 COMMIT;

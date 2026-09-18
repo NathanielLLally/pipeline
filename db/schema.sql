@@ -39,7 +39,12 @@ CREATE TABLE IF NOT EXISTS leads.businesses (
   description               text,
   hours                     jsonb,
   price_range               text,
-  status                    text,               -- as scraped, e.g. "OPERATIONAL", "CLOSED_PERMANENTLY"
+  -- As scraped. Note this is NOT an open/closed flag despite the name: Google returns
+  -- a one-line editorial blurb here ("Casual, kid-friendly American brewpub", "$227").
+  -- Exactly 1 of 3,686 rows contains the word "closed", so there is no closure signal
+  -- in this feed and qc_status = 'CLOSED' has nothing to key off.
+  status                    text,
+  state_source              text,               -- 'scraped' | 'inferred_from_geo_target' (see 002_qc_pass.sql)
 
   -- campaign fields
   service_category          text NOT NULL,       -- dog_training | daycare_boarding | grooming | dog_walking_petsitting
@@ -87,6 +92,7 @@ CREATE INDEX IF NOT EXISTS businesses_icp_score_idx ON leads.businesses (icp_sco
 CREATE TABLE IF NOT EXISTS leads.search_log (
   id                         bigserial PRIMARY KEY,
   query_batch_label          text NOT NULL,
+  query                      text,   -- the exact keyword searched; NULL only on pre-per-term rows
   geo_target                 text NOT NULL,
   service_category           text NOT NULL,
   phase                      text,
@@ -101,6 +107,11 @@ CREATE TABLE IF NOT EXISTS leads.search_log (
 );
 
 CREATE INDEX IF NOT EXISTS search_log_service_geo_idx ON leads.search_log (service_category, geo_target);
+
+-- Coverage lookups in gen-queries.mjs are keyed on (service_category, geo_target, query):
+-- a geo is only "covered" for the specific terms already run against it.
+CREATE INDEX IF NOT EXISTS search_log_coverage_idx
+  ON leads.search_log (service_category, geo_target, query);
 
 -- Scratch table for the load step. Truncated and reloaded every batch via \copy.
 -- Same shape as the ingest-relevant subset of leads.businesses (no merge-only
@@ -153,3 +164,21 @@ CREATE TABLE IF NOT EXISTS leads.worker_health_log (
 
 CREATE INDEX IF NOT EXISTS worker_health_log_checked_at_idx
   ON leads.worker_health_log (checked_at DESC);
+
+-- Duplicate candidates and other QC flags awaiting human adjudication.
+-- Nothing here is resolved by machine: see the rationale in
+-- db/migrations/002_qc_pass.sql for why matching domains/phones are NOT merged
+-- automatically (franchise branches share both, and they are separate prospects).
+CREATE TABLE IF NOT EXISTS leads.qc_review (
+  id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  kind          text NOT NULL,          -- what rule flagged it, e.g. 'dup_candidate'
+  reason        text NOT NULL,          -- human-readable evidence for the flag
+  business_ids  uuid[] NOT NULL,        -- the rows involved
+  details       jsonb NOT NULL DEFAULT '{}'::jsonb,
+  resolution    text,                   -- NULL = unreviewed; else 'merged'/'distinct'/'ignored'
+  resolved_at   timestamptz,
+  created_at    timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS qc_review_open_uidx
+  ON leads.qc_review (kind, business_ids) WHERE resolution IS NULL;
