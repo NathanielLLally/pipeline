@@ -65,7 +65,7 @@ def submit_job(base_url: str, api_key: str, keyword: str, lang: str = "en",
 
 
 def poll_job(base_url: str, api_key: str, job_id: str, keyword: str,
-             output_dir: str, poll_interval: float = 5.0, ssl_ctx=None):
+             output_dir: str, jobids_dir: str = None, poll_interval: float = 5.0, ssl_ctx=None):
     """Poll a job until completion, then save results."""
     while True:
         resp = api_request(base_url, api_key, "GET", f"/api/v1/jobs/{job_id}",
@@ -79,6 +79,14 @@ def poll_job(base_url: str, api_key: str, job_id: str, keyword: str,
                 json.dump(resp.get("results", []), f, indent=2)
             count = resp.get("result_count", 0)
             print(f"  [done] {keyword!r} -> {count} results -> {fname}")
+
+            # Create symlink in jobids directory if provided
+            if jobids_dir:
+                os.makedirs(jobids_dir, exist_ok=True)
+                jobid_link = os.path.join(jobids_dir, job_id)
+                # Create symlink pointing to the result file
+                if not os.path.exists(jobid_link):
+                    os.symlink(path, jobid_link)
             return
 
         if status == "failed":
@@ -90,7 +98,7 @@ def poll_job(base_url: str, api_key: str, job_id: str, keyword: str,
 
 
 def process_keyword(base_url: str, api_key: str, keyword: str, output_dir: str,
-                    lang: str = "en", max_depth: int = 1, ssl_ctx=None):
+                    jobids_dir: str = None, lang: str = "en", max_depth: int = 1, ssl_ctx=None):
     """Submit a keyword, poll until done, save results."""
     try:
         job = submit_job(base_url, api_key, keyword, lang=lang, max_depth=max_depth,
@@ -104,7 +112,7 @@ def process_keyword(base_url: str, api_key: str, keyword: str, output_dir: str,
         return
 
     print(f"  [submitted] {keyword!r} -> job {job['job_id']}")
-    poll_job(base_url, api_key, job["job_id"], keyword, output_dir, ssl_ctx=ssl_ctx)
+    poll_job(base_url, api_key, job["job_id"], keyword, output_dir, jobids_dir=jobids_dir, ssl_ctx=ssl_ctx)
 
 
 def main():
@@ -115,6 +123,8 @@ def main():
     parser.add_argument("--api-key", default=os.environ.get('API_KEY'), help="API key")
     parser.add_argument("-o", "--output", default="map-outputs",
                         help="Output directory (default: map-outputs)")
+    parser.add_argument("--jobids-dir", default=None,
+                        help="Directory for jobid symlinks (optional)")
     parser.add_argument("-w", "--workers", type=int, default=20,
                         help="Max parallel jobs (default: 20)")
     parser.add_argument("--lang", default="en",
@@ -150,7 +160,7 @@ def main():
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         futures = {
             pool.submit(process_keyword, args.base_url, args.api_key, kw, args.output,
-                        args.lang, args.max_depth, ssl_ctx): kw
+                        args.jobids_dir, args.lang, args.max_depth, ssl_ctx): kw
             for kw in keywords
         }
         for future in as_completed(futures):

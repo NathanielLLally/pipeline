@@ -33,23 +33,27 @@ fi
 
 batch_label="${phase:-adhoc}-${service_category}-$(date +%Y%m%d%H%M%S)"
 batch_dir="map-outputs/$batch_label"
-mkdir -p "$batch_dir/results"
+mkdir -p "$batch_dir/results" "$batch_dir/jobids"
 
-echo "== [1/4] gen-queries -> $batch_dir/queries.txt =="
-gen_args=(--service-category "$service_category" --out "$batch_dir/queries.txt" --meta "$batch_dir/meta.json")
+# Generate queries with a hash/counter for deduplication and retry tracking
+queries_hash=$(date +%s%N | md5sum | cut -c1-8)
+queries_file="$batch_dir/queries-${queries_hash}.txt"
+
+echo "== [1/4] gen-queries -> $queries_file =="
+gen_args=(--service-category "$service_category" --out "$queries_file" --meta "$batch_dir/meta.json")
 [[ -n "$phase" ]] && gen_args+=(--phase "$phase")
 [[ -n "$metro" ]] && gen_args+=(--metro "$metro")
 [[ -n "$max_geo" ]] && gen_args+=(--max-geo "$max_geo")
 node scripts/gen-queries.mjs "${gen_args[@]}"
 
-if [[ ! -s "$batch_dir/queries.txt" ]]; then
+if [[ ! -s "$queries_file" ]]; then
   echo "No uncovered queries to run for this phase/service/metro (already covered). Nothing to do." >&2
   exit 0
 fi
 
 echo "== [2/4] create_search_job.py -> $batch_dir/results/ =="
 python3 scripts/create_search_job.py --base-url "$BASE_URL" --api-key "$API_KEY" \
-  -o "$batch_dir/results" -w "$workers" < "$batch_dir/queries.txt"
+  -o "$batch_dir/results" --jobids-dir "$batch_dir/jobids" -w "$workers" < "$queries_file"
 
 echo "== [3/4] transform-and-score -> $batch_dir/staging.csv =="
 node scripts/transform-and-score.mjs --batch-dir "$batch_dir/results" --meta "$batch_dir/meta.json" --out "$batch_dir/staging.csv"
@@ -59,5 +63,9 @@ staging_columns="place_id, domain, phone_normalized, name_city_state_key, name, 
 /usr/bin/psql -X "$LEADS_DB_URL" -v ON_ERROR_STOP=1 -c "TRUNCATE leads.staging_businesses;"
 /usr/bin/psql -X "$LEADS_DB_URL" -v ON_ERROR_STOP=1 -c "\copy leads.staging_businesses ($staging_columns) FROM '$batch_dir/staging.csv' WITH (FORMAT csv, HEADER true)"
 /usr/bin/psql -X "$LEADS_DB_URL" -v ON_ERROR_STOP=1 -v batch_label="$batch_label" -v phase="${phase:-adhoc}" -f db/upsert.sql
+
+# Cleanup: remove queries file and jobids symlinks on success
+rm -f "$queries_file"
+rm -rf "$batch_dir/jobids"
 
 echo "Batch $batch_label complete."

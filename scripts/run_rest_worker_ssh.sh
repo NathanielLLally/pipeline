@@ -12,11 +12,11 @@ TOP=$PWD
 
 #ssh to vps host, run scraping worker process from docker container
 
-ssh -p $REST_SSH_PORT $REST_SSH_USER@$REST_SSH_HOST "sudo sh -c 'if [ ! -d /opt/gms-worker ]; then mkdir /opt/gms-worker; cp /opt/gms-server/.env /opt/gms-worker; fi;'"
+#ssh -p $REST_SSH_PORT $REST_SSH_USER@$REST_SSH_HOST "sudo sh -c 'if [ ! -d /opt/gms-worker ]; then mkdir /opt/gms-worker; cp /opt/gms-server/.env /opt/gms-worker; fi;'"
 
 # Push the refresh script up (avoids nested heredoc/escaping issues of embedding it inline)
-scp -P $REST_SSH_PORT refresh-proxies.sh $REST_SSH_USER@$REST_SSH_HOST:/tmp/refresh-proxies.sh
-ssh -p $REST_SSH_PORT $REST_SSH_USER@$REST_SSH_HOST "sudo mv /tmp/refresh-proxies.sh /opt/gms-worker/refresh-proxies.sh && sudo chmod +x /opt/gms-worker/refresh-proxies.sh"
+#scp -P $REST_SSH_PORT refresh-proxies.sh $REST_SSH_USER@$REST_SSH_HOST:/tmp/refresh-proxies.sh
+#ssh -p $REST_SSH_PORT $REST_SSH_USER@$REST_SSH_HOST "sudo mv /tmp/refresh-proxies.sh /opt/gms-worker/refresh-proxies.sh && sudo chmod +x /opt/gms-worker/refresh-proxies.sh"
 
 # Fetches the current proxy list, writes docker-compose.yml with -proxies baked in, and runs docker compose up -d
-ssh -p $REST_SSH_PORT $REST_SSH_USER@$REST_SSH_HOST "sudo /opt/gms-worker/refresh-proxies.sh"
+ssh -p $REST_SSH_PORT $REST_SSH_USER@$REST_SSH_HOST
