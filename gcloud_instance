@@ -1,0 +1,29 @@
+gcloud compute instances create worker2 \
+    --project=leadsdata-508315 \
+    --zone=us-central1-a \
+    --machine-type=n2d-standard-2 \
+    --network-interface=network-tier=PREMIUM,stack-type=IPV4_ONLY,subnet=default \
+    --maintenance-policy=MIGRATE \
+    --provisioning-model=STANDARD \
+    --service-account=655175771910-compute@developer.gserviceaccount.com \
+    --scopes=https://www.googleapis.com/auth/devstorage.read_only,https://www.googleapis.com/auth/logging.write,https://www.googleapis.com/auth/monitoring.write,https://www.googleapis.com/auth/service.management.readonly,https://www.googleapis.com/auth/servicecontrol,https://www.googleapis.com/auth/trace.append \
+    --tags=http-server,https-server \
+    --create-disk=auto-delete=yes,boot=yes,device-name=worker2,mode=rw,size=10,type=pd-balanced \
+    --no-shielded-secure-boot \
+    --no-shielded-vtpm \
+    --no-shielded-integrity-monitoring \
+    --labels=goog-ec-src=vm_add-gcloud \
+    --reservation-affinity=any \
+&& \
+gcloud compute resource-policies create snapshot-schedule default-schedule-1 \
+    --project=leadsdata-508315 \
+    --region=us-central1 \
+    --max-retention-days=14 \
+    --on-source-disk-delete=keep-auto-snapshots \
+    --daily-schedule \
+    --start-time=13:00 \
+&& \
+gcloud compute disks add-resource-policies worker2 \
+    --project=leadsdata-508315 \
+    --zone=us-central1-a \
+    --resource-policies=projects/leadsdata-508315/regions/us-central1/resourcePolicies/default-schedule-1

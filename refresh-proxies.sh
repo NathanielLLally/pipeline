@@ -1,7 +1,10 @@
 #!/bin/sh
 set -e
 cd /opt/gms-worker
-docker compose down
+
+if [ -e docker-compose.yml ]; then
+  docker compose down
+fi
 
 PROXY_LIST_URL="https://proxy.webshare.io/api/v2/proxy/list/download/rrwjcxkqniigvnppgpytbsrvarhysisibeqyniax/-/any/username/direct/-/?plan_id=14299704"
 

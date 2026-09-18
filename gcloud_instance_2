@@ -1,0 +1,32 @@
+gcloud compute instances create worker2 \
+    --project=leadsdata-508315 \
+    --zone=us-central1-a \
+    --machine-type=e2-standard-2 \
+    --network-interface=network-tier=PREMIUM,stack-type=IPV4_ONLY,subnet=default \
+    --metadata=ssh-keys=nathaniel:ssh-rsa\ \
+AAAAB3NzaC1yc2EAAAADAQABAAABgQCp4lUBRQJ3egt1qk6aDHiVwhWL/jR5vhL1qZ/nZV5BTaf/Y3vRtfFCLK9IhiDQ4VQ9ARCtimZz\+sB3df915mohoLEeK/Mi1ilgZGibdIKcwsDtPJ2bPHMIaS8iVB31hk7XsahYQI2wyXG4PHKIK9VZJJfWBilZsQiG\+a7AxeWP6yjYokdXfG5gPW83\+0LZtYTenOVgS1m7Y79/mJ5vo1pYbbOF0Fv/GxYOy3OzUO0FKugUYBMhoElBCSt1fB4s9etQ93Ke\+htgkKBo2HOpFVqUjX2mMLPIjcLt5cP8G\+2OJzjxGnHsQx0sqD3/T5LjYQnB47BH/sAiNd2s3HPlZUNLgMk\+HMT0CrJ0WeiTY8SGSeFqtWUfNLwW0iwyzzbRbG7MULYROP7ZsYjRaReFcJ1K1LTZBVxm\+1ETGmpkCyChzQAfaaQq/p1y8yRZjdcjASuf6am61RqP0ybCkqln7uy/kweVdXfdJTj7nhvlLdjpZcU3dkVDwY5K9F8xbjcD5ik=\ nathaniel@hawkeye \
+    --maintenance-policy=MIGRATE \
+    --provisioning-model=STANDARD \
+    --service-account=svc-places@leadsdata-508315.iam.gserviceaccount.com \
+    --scopes=https://www.googleapis.com/auth/cloud-platform \
+    --min-cpu-platform=Automatic \
+    --tags=http-server,https-server \
+    --no-shielded-secure-boot \
+    --shielded-vtpm \
+    --shielded-integrity-monitoring \
+    --labels=goog-ec-src=vm_add-gcloud \
+    --reservation-affinity=any \
+    --source-machine-image=gmapssaas-worker \
+&& \
+gcloud compute resource-policies create snapshot-schedule default-schedule-1 \
+    --project=leadsdata-508315 \
+    --region=us-central1 \
+    --max-retention-days=14 \
+    --on-source-disk-delete=keep-auto-snapshots \
+    --daily-schedule \
+    --start-time=13:00 \
+&& \
+gcloud compute disks add-resource-policies worker2 \
+    --project=leadsdata-508315 \
+    --zone=us-central1-a \
+    --resource-policies=projects/leadsdata-508315/regions/us-central1/resourcePolicies/default-schedule-1

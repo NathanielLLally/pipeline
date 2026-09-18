@@ -1,0 +1,3 @@
+== [1/4] gen-queries -> map-outputs/prompt2-dog_training-20260918070722/queries-fcbe9e86.txt ==
+[gen-queries] phase=prompt2 service_category=dog_training metro=Los Angeles, CA -> 0 geo_targets (87 already covered, skipped), 0 queries written to map-outputs/prompt2-dog_training-20260918070722/queries-fcbe9e86.txt (meta: map-outputs/prompt2-dog_training-20260918070722/meta.json)
+No uncovered queries to run for this phase/service/metro (already covered). Nothing to do.

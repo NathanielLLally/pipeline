@@ -1,0 +1,100 @@
+== [1/4] gen-queries -> map-outputs/prompt1-daycare_boarding-20260918070722/queries-3d6e549b.txt ==
+[gen-queries] phase=prompt1 service_category=daycare_boarding metro=Los Angeles, CA -> 11 geo_targets (2 already covered, skipped), 88 queries written to map-outputs/prompt1-daycare_boarding-20260918070722/queries-3d6e549b.txt (meta: map-outputs/prompt1-daycare_boarding-20260918070722/meta.json)
+== [2/4] create_search_job.py -> map-outputs/prompt1-daycare_boarding-20260918070722/results/ ==
+  [error] 'overnight dog boarding in Los Angeles, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog daycare and boarding in Los Angeles, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'luxury dog boarding in Los Angeles, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog resort in Los Angeles, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'pet resort in Los Angeles, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'boarding daycare grooming in Los Angeles, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog daycare in Santa Monica, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog boarding in Santa Monica, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'overnight dog boarding in Santa Monica, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog daycare and boarding in Santa Monica, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'luxury dog boarding in Santa Monica, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog resort in Santa Monica, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'pet resort in Santa Monica, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'boarding daycare grooming in Santa Monica, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog daycare in Pasadena, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog boarding in Pasadena, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'overnight dog boarding in Pasadena, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog daycare and boarding in Pasadena, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'luxury dog boarding in Pasadena, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog resort in Pasadena, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'pet resort in Pasadena, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'boarding daycare grooming in Pasadena, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog daycare in Beverly Hills, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog boarding in Beverly Hills, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'overnight dog boarding in Beverly Hills, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog daycare and boarding in Beverly Hills, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'luxury dog boarding in Beverly Hills, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog resort in Beverly Hills, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'pet resort in Beverly Hills, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'boarding daycare grooming in Beverly Hills, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog daycare in Culver City, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog boarding in Culver City, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'overnight dog boarding in Culver City, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog daycare and boarding in Culver City, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'luxury dog boarding in Culver City, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog resort in Culver City, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'pet resort in Culver City, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'boarding daycare grooming in Culver City, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog daycare in Manhattan Beach, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog boarding in Manhattan Beach, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'overnight dog boarding in Manhattan Beach, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog daycare and boarding in Manhattan Beach, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'luxury dog boarding in Manhattan Beach, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog resort in Manhattan Beach, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'pet resort in Manhattan Beach, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'boarding daycare grooming in Manhattan Beach, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog daycare in Sherman Oaks, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog boarding in Sherman Oaks, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'overnight dog boarding in Sherman Oaks, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog daycare and boarding in Sherman Oaks, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'luxury dog boarding in Sherman Oaks, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog resort in Sherman Oaks, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'pet resort in Sherman Oaks, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'boarding daycare grooming in Sherman Oaks, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog daycare in Studio City, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog boarding in Studio City, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'overnight dog boarding in Studio City, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog daycare and boarding in Studio City, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'luxury dog boarding in Studio City, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog resort in Studio City, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'pet resort in Studio City, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'boarding daycare grooming in Studio City, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog daycare in Glendale, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog boarding in Glendale, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'overnight dog boarding in Glendale, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog daycare and boarding in Glendale, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'luxury dog boarding in Glendale, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog resort in Glendale, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'pet resort in Glendale, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'boarding daycare grooming in Glendale, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog daycare in West Hollywood, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog boarding in West Hollywood, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'overnight dog boarding in West Hollywood, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog daycare and boarding in West Hollywood, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'luxury dog boarding in West Hollywood, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog resort in West Hollywood, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'pet resort in West Hollywood, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'boarding daycare grooming in West Hollywood, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog daycare in Calabasas, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog boarding in Calabasas, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'overnight dog boarding in Calabasas, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog daycare and boarding in Calabasas, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'luxury dog boarding in Calabasas, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog resort in Calabasas, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'pet resort in Calabasas, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'boarding daycare grooming in Calabasas, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] 'dog daycare in Los Angeles, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] 'dog boarding in Los Angeles, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+Scraping 88 keyword(s), max 3 parallel, output -> map-outputs/prompt1-daycare_boarding-20260918070722/results/
+  [submitted] 'dog boarding in Los Angeles, CA' -> job o6XaWMZeExgqbnArl6VmK7OGJB2z9Dkw
+  [submitted] 'dog daycare in Los Angeles, CA' -> job jB985dy2oDg0JRBrl3RGXwNz1avm3Qpx
+  [submitted] 'overnight dog boarding in Los Angeles, CA' -> job jL38XyJZGOw1KnlpQknWxQ7NkAeplagE
+Done.
+== [3/4] transform-and-score -> map-outputs/prompt1-daycare_boarding-20260918070722/staging.csv ==
+[transform-and-score] 0 result files (0 unmatched) -> 0 place rows -> map-outputs/prompt1-daycare_boarding-20260918070722/staging.csv
+== [4/4] load + upsert into leads.businesses ==
+psql: error: could not translate host name "mail.accurateleadinfo.com" to address: Temporary failure in name resolution

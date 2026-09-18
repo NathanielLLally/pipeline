@@ -1,0 +1,96 @@
+== [1/4] gen-queries -> map-outputs/prompt1-daycare_boarding-20260918065308/queries-edca3d5b.txt ==
+[gen-queries] phase=prompt1 service_category=daycare_boarding metro=San Francisco Bay Area, CA -> 7 geo_targets (0 already covered, skipped), 56 queries written to map-outputs/prompt1-daycare_boarding-20260918065308/queries-edca3d5b.txt (meta: map-outputs/prompt1-daycare_boarding-20260918065308/meta.json)
+== [2/4] create_search_job.py -> map-outputs/prompt1-daycare_boarding-20260918065308/results/ ==
+  [error] 'overnight dog boarding in Palo Alto, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'luxury dog boarding in Palo Alto, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog resort in Palo Alto, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'pet resort in Palo Alto, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'boarding daycare grooming in Palo Alto, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog daycare in Berkeley, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog boarding in Berkeley, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'overnight dog boarding in Berkeley, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog daycare and boarding in Berkeley, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'luxury dog boarding in Berkeley, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog resort in Berkeley, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'pet resort in Berkeley, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'boarding daycare grooming in Berkeley, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog daycare in Marin County, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog boarding in Marin County, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'overnight dog boarding in Marin County, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog daycare and boarding in Marin County, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'luxury dog boarding in Marin County, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog resort in Marin County, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'pet resort in Marin County, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'boarding daycare grooming in Marin County, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog daycare in San Mateo, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog boarding in San Mateo, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'overnight dog boarding in San Mateo, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog daycare and boarding in San Mateo, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'luxury dog boarding in San Mateo, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog resort in San Mateo, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'pet resort in San Mateo, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'boarding daycare grooming in San Mateo, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog daycare in Walnut Creek, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog boarding in Walnut Creek, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'overnight dog boarding in Walnut Creek, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog daycare and boarding in Walnut Creek, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'luxury dog boarding in Walnut Creek, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog resort in Walnut Creek, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'pet resort in Walnut Creek, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'boarding daycare grooming in Walnut Creek, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog daycare in Los Gatos, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog boarding in Los Gatos, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'overnight dog boarding in Los Gatos, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog daycare and boarding in Los Gatos, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'luxury dog boarding in Los Gatos, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog resort in Los Gatos, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'pet resort in Los Gatos, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'boarding daycare grooming in Los Gatos, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] 'dog daycare and boarding in Palo Alto, CA': <urlopen error [Errno -3] Temporary failure in name resolution>
+Scraping 56 keyword(s), max 3 parallel, output -> map-outputs/prompt1-daycare_boarding-20260918065308/results/
+  [submitted] 'dog boarding in San Francisco, CA' -> job QMb6dOGDeEXvAnOWoqnN7lkLxya153K9
+  [submitted] 'overnight dog boarding in San Francisco, CA' -> job dxbKv1mkg08DznezD2V6w94qoyOAeWNa
+  [submitted] 'dog daycare in San Francisco, CA' -> job Dr6kGZ8zexXM7npv2wPpbql0JLmj2aA1
+  [done] 'overnight dog boarding in San Francisco, CA' -> 16 results -> dxbKv1mkg08DznezD2V6w94qoyOAeWNa-overnight_dog_boarding_in_san_francisco_ca.json
+  [submitted] 'dog daycare and boarding in San Francisco, CA' -> job dXvqW8g36BGbARZ7O8nN7E5eYloa0wmK
+  [done] 'dog boarding in San Francisco, CA' -> 16 results -> QMb6dOGDeEXvAnOWoqnN7lkLxya153K9-dog_boarding_in_san_francisco_ca.json
+  [submitted] 'luxury dog boarding in San Francisco, CA' -> job JYgXKyew3xz26V7elKRA7ZQjl1v9EN5W
+  [done] 'dog daycare in San Francisco, CA' -> 16 results -> Dr6kGZ8zexXM7npv2wPpbql0JLmj2aA1-dog_daycare_in_san_francisco_ca.json
+  [submitted] 'dog resort in San Francisco, CA' -> job GoJv9xWqXal1rR8rlXVbpwgN248L7meO
+  [done] 'dog daycare and boarding in San Francisco, CA' -> 16 results -> dXvqW8g36BGbARZ7O8nN7E5eYloa0wmK-dog_daycare_and_boarding_in_san_francisco_ca.json
+  [submitted] 'pet resort in San Francisco, CA' -> job bQ8X6EAzYNemDVJplvRBGpL5wkl093xd
+  [done] 'luxury dog boarding in San Francisco, CA' -> 16 results -> JYgXKyew3xz26V7elKRA7ZQjl1v9EN5W-luxury_dog_boarding_in_san_francisco_ca.json
+  [submitted] 'boarding daycare grooming in San Francisco, CA' -> job 24Xeg90MYGN8ZnD9lKVDOjJB1ldxWKqm
+  [done] 'dog resort in San Francisco, CA' -> 16 results -> GoJv9xWqXal1rR8rlXVbpwgN248L7meO-dog_resort_in_san_francisco_ca.json
+  [submitted] 'dog daycare in Palo Alto, CA' -> job 4gzvb0WOE8QJZVdZJaRYKAdrmaG56kjp
+  [done] 'pet resort in San Francisco, CA' -> 16 results -> bQ8X6EAzYNemDVJplvRBGpL5wkl093xd-pet_resort_in_san_francisco_ca.json
+  [submitted] 'dog boarding in Palo Alto, CA' -> job 6jWmaZNqgdKJ7V47EGnYxDArkE94ol3z
+  [done] 'boarding daycare grooming in San Francisco, CA' -> 16 results -> 24Xeg90MYGN8ZnD9lKVDOjJB1ldxWKqm-boarding_daycare_grooming_in_san_francisco_ca.json
+  [submitted] 'overnight dog boarding in Palo Alto, CA' -> job Ad15L4weqJDYjnvWwlVozXBvNx9Qk8l2
+  [done] 'dog daycare in Palo Alto, CA' -> 16 results -> 4gzvb0WOE8QJZVdZJaRYKAdrmaG56kjp-dog_daycare_in_palo_alto_ca.json
+  [submitted] 'dog daycare and boarding in Palo Alto, CA' -> job kr5Bmq2G7ye0JnQWKXPgbYdDpEQalvjZ
+  [done] 'dog boarding in Palo Alto, CA' -> 20 results -> 6jWmaZNqgdKJ7V47EGnYxDArkE94ol3z-dog_boarding_in_palo_alto_ca.json
+Done.
+== [3/4] transform-and-score -> map-outputs/prompt1-daycare_boarding-20260918065308/staging.csv ==
+[transform-and-score] 10 result files (0 unmatched) -> 164 place rows -> map-outputs/prompt1-daycare_boarding-20260918065308/staging.csv
+== [4/4] load + upsert into leads.businesses ==
+TRUNCATE TABLE
+COPY 164
+BEGIN
+SELECT 164
+ALTER TABLE
+ALTER TABLE
+UPDATE 164
+DELETE 0
+SELECT 53
+SELECT 53
+ALTER TABLE
+UPDATE 2
+UPDATE 2
+UPDATE 0
+UPDATE 0
+UPDATE 4
+INSERT 0 49
+INSERT 0 2
+COMMIT
+Batch prompt1-daycare_boarding-20260918065308 complete.

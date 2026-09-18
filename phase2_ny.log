@@ -1,0 +1,69 @@
+== [1/4] gen-queries -> map-outputs/prompt2-dog_training-20260918065105/queries-0fabe971.txt ==
+[gen-queries] phase=prompt2 service_category=dog_training metro=New York, NY -> 2 geo_targets (87 already covered, skipped), 24 queries written to map-outputs/prompt2-dog_training-20260918065105/queries-0fabe971.txt (meta: map-outputs/prompt2-dog_training-20260918065105/meta.json)
+== [2/4] create_search_job.py -> map-outputs/prompt2-dog_training-20260918065105/results/ ==
+  [error] 'reactive dog training in Montclair, NJ': <urlopen error _ssl.c:1126: The handshake operation timed out>
+  [error] 'dog behavior training in Long Island City, NY': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'aggressive dog training in Long Island City, NY': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'reactive dog training in Long Island City, NY': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'puppy training in Long Island City, NY': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'private dog trainer in Long Island City, NY': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'in home dog training in Long Island City, NY': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog obedience training in Long Island City, NY': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] submit 'dog training academy in Long Island City, NY': <urlopen error [Errno -3] Temporary failure in name resolution>
+  [error] 'board and train in Long Island City, NY': <urlopen error [Errno 113] No route to host>
+  [error] 'dog behaviorist in Long Island City, NY': <urlopen error [Errno 113] No route to host>
+Scraping 24 keyword(s), max 3 parallel, output -> map-outputs/prompt2-dog_training-20260918065105/results/
+  [submitted] 'board and train in Montclair, NJ' -> job 54WYq1Xl7ZdxBnNxGWPovm9yQEeJMwON
+  [submitted] 'dog training in Montclair, NJ' -> job Gw45dQpK7jo8LR07lKPBDvzkXJrWxbZ3
+  [submitted] 'dog trainer in Montclair, NJ' -> job Q2L1Mj9qbAEzkVqkMeRDBoJ0mw5g7Ke4
+  [done] 'board and train in Montclair, NJ' -> 20 results -> 54WYq1Xl7ZdxBnNxGWPovm9yQEeJMwON-board_and_train_in_montclair_nj.json
+  [submitted] 'dog behaviorist in Montclair, NJ' -> job drxvAzok5B8Y3ng3WKnawygJelMEZ9bO
+  [done] 'dog training in Montclair, NJ' -> 20 results -> Gw45dQpK7jo8LR07lKPBDvzkXJrWxbZ3-dog_training_in_montclair_nj.json
+  [submitted] 'dog behavior training in Montclair, NJ' -> job 9oyqgJxpwva3BPLW2xV16LdWk5YOr0ZX
+  [done] 'dog trainer in Montclair, NJ' -> 20 results -> Q2L1Mj9qbAEzkVqkMeRDBoJ0mw5g7Ke4-dog_trainer_in_montclair_nj.json
+  [submitted] 'aggressive dog training in Montclair, NJ' -> job wBozag62QdNAjVkdvqPbYErZOe10GLJ5
+  [done] 'dog behaviorist in Montclair, NJ' -> 20 results -> drxvAzok5B8Y3ng3WKnawygJelMEZ9bO-dog_behaviorist_in_montclair_nj.json
+  [submitted] 'reactive dog training in Montclair, NJ' -> job yWMZaYAzkJK5gnYWpoP71qOmdNvrxj26
+  [done] 'dog behavior training in Montclair, NJ' -> 20 results -> 9oyqgJxpwva3BPLW2xV16LdWk5YOr0ZX-dog_behavior_training_in_montclair_nj.json
+  [submitted] 'puppy training in Montclair, NJ' -> job zBw8D0y6KvmoLV1vlvPxNW1ajX5deMlg
+  [done] 'aggressive dog training in Montclair, NJ' -> 20 results -> wBozag62QdNAjVkdvqPbYErZOe10GLJ5-aggressive_dog_training_in_montclair_nj.json
+  [submitted] 'private dog trainer in Montclair, NJ' -> job 6ELZXDzrx0gkAV9Xlwnpq75bK8aw92yO
+  [submitted] 'in home dog training in Montclair, NJ' -> job eoJj7x40YOyXQPaL9kV92aLbqm1zEGrl
+  [done] 'puppy training in Montclair, NJ' -> 20 results -> zBw8D0y6KvmoLV1vlvPxNW1ajX5deMlg-puppy_training_in_montclair_nj.json
+  [submitted] 'dog obedience training in Montclair, NJ' -> job jD6KzOZl2BYExVGLl8PwoW75ek0yXQrG
+  [done] 'private dog trainer in Montclair, NJ' -> 20 results -> 6ELZXDzrx0gkAV9Xlwnpq75bK8aw92yO-private_dog_trainer_in_montclair_nj.json
+  [submitted] 'dog training academy in Montclair, NJ' -> job 82xDX7wdaGeMrVWjLqnJom13OkQKpLAB
+  [done] 'in home dog training in Montclair, NJ' -> 20 results -> eoJj7x40YOyXQPaL9kV92aLbqm1zEGrl-in_home_dog_training_in_montclair_nj.json
+  [submitted] 'dog trainer in Long Island City, NY' -> job 4JqGewgoy9rZKVrEmznEMmaB26pxb80N
+  [done] 'dog obedience training in Montclair, NJ' -> 20 results -> jD6KzOZl2BYExVGLl8PwoW75ek0yXQrG-dog_obedience_training_in_montclair_nj.json
+  [submitted] 'dog training in Long Island City, NY' -> job BZJDql96aAYzQnXWeqRMGWwrgyvoe871
+  [done] 'dog training academy in Montclair, NJ' -> 20 results -> 82xDX7wdaGeMrVWjLqnJom13OkQKpLAB-dog_training_academy_in_montclair_nj.json
+  [submitted] 'board and train in Long Island City, NY' -> job K70xj6DLeNX9ZPzegBV1wgM8QEkobvWl
+  [done] 'dog trainer in Long Island City, NY' -> 20 results -> 4JqGewgoy9rZKVrEmznEMmaB26pxb80N-dog_trainer_in_long_island_city_ny.json
+  [submitted] 'dog behaviorist in Long Island City, NY' -> job OZ0Qjo6m2eXKrRj54ePdM8wvkJ7xzgWL
+  [done] 'dog training in Long Island City, NY' -> 20 results -> BZJDql96aAYzQnXWeqRMGWwrgyvoe871-dog_training_in_long_island_city_ny.json
+  [submitted] 'dog behavior training in Long Island City, NY' -> job yJEW87Dz5vYoQV3elmRpMG0gjmqkbaLN
+Done.
+== [3/4] transform-and-score -> map-outputs/prompt2-dog_training-20260918065105/staging.csv ==
+[transform-and-score] 13 result files (0 unmatched) -> 260 place rows -> map-outputs/prompt2-dog_training-20260918065105/staging.csv
+== [4/4] load + upsert into leads.businesses ==
+TRUNCATE TABLE
+COPY 260
+BEGIN
+SELECT 0
+ALTER TABLE
+ALTER TABLE
+UPDATE 0
+DELETE 0
+SELECT 0
+SELECT 0
+ALTER TABLE
+UPDATE 0
+UPDATE 0
+UPDATE 0
+UPDATE 0
+UPDATE 0
+INSERT 0 0
+INSERT 0 0
+COMMIT
+Batch prompt2-dog_training-20260918065105 complete.
