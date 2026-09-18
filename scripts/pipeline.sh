@@ -13,7 +13,7 @@ phase=""
 service_category=""
 metro=""
 max_geo=""
-workers=10
+workers=3
 
 while (($# > 0)); do
   case "$1" in

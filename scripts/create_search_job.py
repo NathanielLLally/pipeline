@@ -65,8 +65,16 @@ def submit_job(base_url: str, api_key: str, keyword: str, lang: str = "en",
 
 
 def poll_job(base_url: str, api_key: str, job_id: str, keyword: str,
-             output_dir: str, jobids_dir: str = None, poll_interval: float = 5.0, ssl_ctx=None):
-    """Poll a job until completion, then save results."""
+             output_dir: str, jobids_dir: str = None, poll_interval: float = 5.0,
+             poll_timeout: float = 600.0, ssl_ctx=None):
+    """Poll a job until completion. Returns True on success, False on a
+    terminal 'failed' status or if the job outlives poll_timeout seconds.
+    Raises on transport/HTTP errors so the caller can decide whether to retry.
+
+    The timeout exists because a job wedged server-side stays in 'running'
+    forever -- without it a single stuck job parks a worker thread for the
+    rest of the batch."""
+    deadline = time.monotonic() + poll_timeout
     while True:
         resp = api_request(base_url, api_key, "GET", f"/api/v1/jobs/{job_id}",
                            ssl_ctx=ssl_ctx)
@@ -84,35 +92,57 @@ def poll_job(base_url: str, api_key: str, job_id: str, keyword: str,
             if jobids_dir:
                 os.makedirs(jobids_dir, exist_ok=True)
                 jobid_link = os.path.join(jobids_dir, job_id)
-                # Create symlink pointing to the result file
                 if not os.path.exists(jobid_link):
                     os.symlink(path, jobid_link)
-            return
+            return True
 
         if status == "failed":
             err = resp.get("error", "unknown error")
             print(f"  [fail] {keyword!r}: {err}", file=sys.stderr)
-            return
+            return False
+
+        if time.monotonic() >= deadline:
+            print(f"  [timeout] {keyword!r}: job {job_id} still {status!r} after "
+                  f"{poll_timeout:.0f}s, abandoning", file=sys.stderr)
+            return False
 
         time.sleep(poll_interval)
 
 
 def process_keyword(base_url: str, api_key: str, keyword: str, output_dir: str,
-                    jobids_dir: str = None, lang: str = "en", max_depth: int = 1, ssl_ctx=None):
-    """Submit a keyword, poll until done, save results."""
-    try:
-        job = submit_job(base_url, api_key, keyword, lang=lang, max_depth=max_depth,
+                    jobids_dir: str = None, lang: str = "en", max_depth: int = 1, ssl_ctx=None,
+                    max_retries: int = 3, retry_delay: float = 15.0,
+                    poll_timeout: float = 600.0):
+    """Submit a keyword, poll until done, save results. Any failure -- a
+    submit error, a transport error while polling, a terminal 'failed'
+    job status, or a job that outlives poll_timeout -- reschedules the
+    keyword (resubmits as a brand new job) with linear backoff, up to
+    max_retries times."""
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            job = submit_job(base_url, api_key, keyword, lang=lang, max_depth=max_depth,
+                             ssl_ctx=ssl_ctx)
+            print(f"  [submitted] {keyword!r} -> job {job['job_id']} (attempt {attempt}/{max_retries + 1})")
+            ok = poll_job(base_url, api_key, job["job_id"], keyword, output_dir,
+                         jobids_dir=jobids_dir, poll_timeout=poll_timeout,
                          ssl_ctx=ssl_ctx)
-    except HTTPError as e:
-        body = e.read().decode()
-        print(f"  [error] submit {keyword!r}: HTTP {e.code} {body}", file=sys.stderr)
-        return
-    except Exception as e:
-        print(f"  [error] submit {keyword!r}: {e}", file=sys.stderr)
-        return
+            if ok:
+                return
+        except HTTPError as e:
+            body = e.read().decode()
+            print(f"  [error] {keyword!r} (attempt {attempt}/{max_retries + 1}): HTTP {e.code} {body}", file=sys.stderr)
+        except Exception as e:
+            print(f"  [error] {keyword!r} (attempt {attempt}/{max_retries + 1}): {e}", file=sys.stderr)
 
-    print(f"  [submitted] {keyword!r} -> job {job['job_id']}")
-    poll_job(base_url, api_key, job["job_id"], keyword, output_dir, jobids_dir=jobids_dir, ssl_ctx=ssl_ctx)
+        if attempt > max_retries:
+            print(f"  [gave up] {keyword!r} after {attempt} attempt(s)", file=sys.stderr)
+            return
+
+        wait = retry_delay * attempt
+        print(f"  [reschedule] {keyword!r} retrying in {wait:.0f}s", file=sys.stderr)
+        time.sleep(wait)
 
 
 def main():
@@ -131,6 +161,12 @@ def main():
                         help="Language for results (default: en)")
     parser.add_argument("--max-depth", type=int, default=1,
                         help="Max scrape depth (default: 1)")
+    parser.add_argument("--max-retries", type=int, default=3,
+                        help="Reschedule a failed job up to this many times (default: 3)")
+    parser.add_argument("--retry-delay", type=float, default=15.0,
+                        help="Base delay in seconds before rescheduling a failed job, scaled by attempt number (default: 15)")
+    parser.add_argument("--poll-timeout", type=float, default=600.0,
+                        help="Give up polling a single job after this many seconds and reschedule it (default: 600)")
     parser.add_argument("-k", "--insecure", action="store_true",
                         help="Skip TLS certificate verification (e.g. for self-signed certs)")
     parser.add_argument("keywords", nargs="*",
@@ -160,7 +196,8 @@ def main():
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         futures = {
             pool.submit(process_keyword, args.base_url, args.api_key, kw, args.output,
-                        args.jobids_dir, args.lang, args.max_depth, ssl_ctx): kw
+                        args.jobids_dir, args.lang, args.max_depth, ssl_ctx,
+                        args.max_retries, args.retry_delay, args.poll_timeout): kw
             for kw in keywords
         }
         for future in as_completed(futures):
