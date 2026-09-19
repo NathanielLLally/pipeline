@@ -18,13 +18,24 @@ Last verified: 2026-09-18.
 All hosts are under `accurateleadinfo.com`. Their addresses come from `.env`, which is
 gitignored and symlinked into each git worktree from the main checkout.
 
-| Role | Host | Notes |
-|---|---|---|
-| Database + watchdog | `mail.accurateleadinfo.com` | Postgres (`leads` schema). SSH on port 22 is **refused** from the workstation; administer it by other means. |
-| Queue API + scraper #1 | `worker.accurateleadinfo.com` | Runs `gms-server-server-1` (REST API + River queue) **and** `gms-worker-worker-1`. |
-| Scraper #2 | `worker2.accurateleadinfo.com` | Worker container only. |
-| Scraper #3 | `worker3.accurateleadinfo.com` | Worker container only. |
-| Workstation | `hawkeye` (local) | Runs the pipeline scripts and a second copy of the watchdog timer. |
+| Role | Host | SSH | Notes |
+|---|---|---|---|
+| Database + watchdog | `accurateleadinfo.com` = `mail.accurateleadinfo.com` (144.91.96.230) | **port 2222** | Postgres (`leads` schema) and the canonical watchdog deployment. |
+| Queue API + scraper #1 | `worker.accurateleadinfo.com` (136.119.65.9) | port 22 | Runs `gms-server-server-1` (REST API + River queue) **and** `gms-worker-worker-1`. |
+| Scraper #2 | `worker2.accurateleadinfo.com` | port 22 | Worker container only. |
+| Scraper #3 | `worker3.accurateleadinfo.com` | port 22 | Worker container only. |
+| Workstation | `hawkeye` (local) | — | Runs the pipeline scripts and a second copy of the watchdog timer. |
+
+### SSH: the database host uses a non-standard port
+
+`REST_SSH_PORT` in `.env` is `22`, which is correct for the worker hosts but **wrong for
+the database host**, which listens on **2222**. Connecting to it on port 22 returns
+"Connection refused," which reads like "no access to this machine" but only means the
+port is wrong. If one host in the fleet refuses SSH while the others accept it, probe
+for an alternate port before concluding access does not exist.
+
+The `REST_SSH_USER` account has passwordless sudo on these hosts, and the database host
+can SSH to all three workers (verified).
 
 ### `REST_SSH_HOST` overlaps `SCRAPER_SSH_HOSTS`
 
@@ -47,10 +58,15 @@ appends a row to `leads.worker_health_log`.
 
 ### Two schedulers write to one table
 
-The canonical deployment is on **accurateleadinfo.com** (per the project owner). The
-local workstation *also* has a `leads-watchdog.timer` systemd **user** unit in
-`~/.config/systemd/user/`, invoking `/home/nathaniel/leads/scripts/worker-watchdog.sh`
-from the **main checkout**.
+The canonical deployment is on the database host (`accurateleadinfo.com`), as a systemd
+**user** timer: `~/.config/systemd/user/leads-watchdog.{timer,service}`, with
+`OnBootSec=30s`, `OnUnitActiveSec=60s`, `AccuracySec=10s`. Its `ExecStart` is
+`/home/nathaniel/leads/scripts/worker-watchdog.sh`, where `~/leads` is a **symlink** to
+`/home/nathaniel/src/git/pipeline` — one checkout on `main`, not two. A full-filesystem
+`find` confirmed no watchdog exists on any of the three worker hosts.
+
+The local workstation *also* has an identically named `leads-watchdog.timer` user unit
+running its own copy from the main checkout.
 
 Both write to the same `leads.worker_health_log`. This is why the tick log shows rows in
 phase-locked pairs roughly 13 seconds apart: two independent schedulers, not a bug. Two
@@ -62,11 +78,23 @@ consequences follow:
 - Hysteresis logic that counts consecutive verdicts is counting the interleaving of both
   writers. Anything depending on consecutive-tick counts must tolerate that.
 
-### Editing the watchdog
+### Editing and deploying the watchdog
 
-Editing the file inside a git worktree changes nothing that is running. The local timer
-executes the main checkout's copy; the real deployment is remote. A change is live only
-after it is committed, merged, and deployed.
+Editing the file inside a git worktree changes nothing that is running. Both timers
+execute a main-checkout copy; the canonical one is remote. A change is live only after
+it is committed, merged to `main`, and pulled on the database host.
+
+**Deployment prerequisite:** the fleet-aware watchdog reads `SCRAPER_SSH_HOSTS` (a bash
+array) from `.env`. The deployed `.env` on the database host currently has only the
+legacy singular `SCRAPER_SSH_HOST`. The host-derivation block falls back cleanly to that
+single host rather than failing, but the result is a watchdog that supervises one worker
+out of three. Add the array line to the deployed `.env` before or alongside deploying
+the new script. All four derivation paths (array / comma-string / singular / neither)
+were tested under `set -u`; the empty case yields a `suppressed:` reason rather than a
+crash.
+
+Note the deployed checkout carries uncommitted local modifications
+(`scripts/phase1.sh`) and untracked files, so a deploy should not assume a clean pull.
 
 ### Never lock the health-log table for testing
 
@@ -157,8 +185,10 @@ days and labels such figures `>=` and `[capped sample]`.
 
 ## Open items / unverified
 
-- The watchdog's deployment details on the mail host (unit name, schedule, which copy of
-  the script) are **unverified** — SSH to that host is refused from the workstation. The
-  fact that it runs there is from the project owner, not observed directly.
-- The local workstation timer's continued presence may be intentional or vestigial; it
-  has not been confirmed either way.
+- The fleet-aware watchdog (commit `da4e4e6`) is **committed but not deployed**. The
+  live copy on the database host is still the stubbed version (no `SCRAPER_SSH_HOSTS`,
+  no `worker_states`, `TODO` intact). Deploying it also requires adding the
+  `SCRAPER_SSH_HOSTS` array to that host's `.env` — see above.
+- Whether the local workstation timer should keep running is undecided. It duplicates
+  the remote one into the same table; if the remote deployment is canonical, the local
+  timer is arguably redundant and could be disabled to make the tick log single-writer.
