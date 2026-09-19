@@ -255,6 +255,60 @@ days and labels such figures `>=` and `[capped sample]`.
 
 ---
 
+## Claiming ad spend: what `marketing_active` does and does not mean
+
+Prompt 7 forbids claiming a business runs paid advertising without reliable evidence.
+`scripts/lib/site-signals.mjs` enforces that by setting `marketing_active` **only** on a
+confirmed paid-media pixel — a `gtag/js?id=AW-` conversion id, `googleadservices`, a
+`google_conversion_id`, `fbevents.js`, or an `fbq('init')` call. GA4, Google Tag Manager,
+Hotjar, Klaviyo and HubSpot are recorded separately as `martech` and never set the flag.
+That asymmetry is deliberate: analytics means someone measures traffic, a pixel means
+someone bought it.
+
+The flag's honest reading is **"paid acquisition infrastructure is present"**, not "this
+business is running ads today". A pixel outlives the campaign that installed it, so one
+left from a six-week push two years ago is byte-identical to one backing $8k/month. The
+column is evidence of intent and capability; it is not evidence of live spend, and it
+must not be described as "running ads" in exports, segments or campaign copy.
+
+Base rate, measured across the reachable `dog_training` sites rather than a sample:
+**about 18%** carry a paid-media pixel. An earlier figure of 59% quoted in conversation
+was wrong — it came from a 20-row dry run drawn from the *top* of the database by ICP
+score, which is the most heavily marketed tail of the distribution. Any future rate
+claim should name the population it was computed over.
+
+### Google Ads Transparency: attempted, not working (2026-09-18)
+
+Upgrading a subset of businesses from "infrastructure present" to *confirmed current
+spend* needs a second source. Google's Ads Transparency Center is the plausible one —
+unlike Meta's Ad Library, it is reachable from the datacenter proxy pool (HTTP 200,
+~2.5MB). Meta is not: the Ad Library page returns 403 and its API 500 through this pool.
+
+The attempt did not succeed and is recorded here so it is not blindly repeated:
+
+- The public page at `adstransparency.google.com/?region=US&domain=<domain>` renders
+  client-side and contains none of the ad data in its HTML. It only echoes the query.
+- The data comes from an internal RPC, `POST /anji/_/rpc/SearchService/SearchAdvertisers`
+  (and `SearchCreatives`), with an `f.req=<json array>` form body and the public API key
+  that is baked into the page (`AIzaSy…`, a client key, not a project secret).
+- The endpoint **is** reachable and does parse the payload: a wrongly-typed field returns
+  `BadRequestException: Trouble converting f.req=… to class …SearchAdvertisersRequest`,
+  which confirms both the method name and that the request arrives intact.
+- Roughly 25 positional layouts were probed. Index 2 is a numeric enum (a string, bool or
+  array there is rejected; a number is accepted). No arrangement of the query string at
+  any index returned rows — including for `Nike`, which is certainly an advertiser, and
+  including a bare request that should have failed if the query field were required.
+  Every accepted shape returned `{}`.
+
+The conclusion is that the call needs session state the page carries and a bare POST does
+not — most likely cookies or a per-session token beyond the API key. Cracking that would
+mean either driving a real browser (Playwright is available) and reading the request off
+the network tab, or reverse-engineering the obfuscated bundle. Neither was judged worth
+the budget at the time. Until it is solved, **there is no confirmed-current-spend signal
+in this database**, and `marketing_active` stands alone with the meaning above.
+
+---
+
 ## Open items / unverified
 
 - The fleet-aware watchdog (commit `da4e4e6`) is **committed but not deployed**. The
