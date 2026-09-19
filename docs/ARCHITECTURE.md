@@ -271,8 +271,9 @@ left from a six-week push two years ago is byte-identical to one backing $8k/mon
 column is evidence of intent and capability; it is not evidence of live spend, and it
 must not be described as "running ads" in exports, segments or campaign copy.
 
-Base rate, measured across the reachable `dog_training` sites rather than a sample:
-**about 18%** carry a paid-media pixel. An earlier figure of 59% quoted in conversation
+Base rate, measured across all 1,206 reachable `dog_training` sites rather than a
+sample: **16%** (195) carry a paid-media pixel. For comparison from the same full pass:
+booking 28%, lead form 36%, an about page 70%, a person-shaped email 59%. An earlier figure of 59% quoted in conversation
 was wrong — it came from a 20-row dry run drawn from the *top* of the database by ICP
 score, which is the most heavily marketed tail of the distribution. Any future rate
 claim should name the population it was computed over.
