@@ -318,7 +318,7 @@ was wrong — it came from a 20-row dry run drawn from the *top* of the database
 score, which is the most heavily marketed tail of the distribution. Any future rate
 claim should name the population it was computed over.
 
-### Google Ads Transparency: attempted, not working (2026-09-18)
+### Google Ads Transparency: SOLVED (2026-09-19)
 
 Upgrading a subset of businesses from "infrastructure present" to *confirmed current
 spend* needs a second source. Google's Ads Transparency Center is the plausible one —
@@ -341,12 +341,36 @@ The attempt did not succeed and is recorded here so it is not blindly repeated:
   including a bare request that should have failed if the query field were required.
   Every accepted shape returned `{}`.
 
-The conclusion is that the call needs session state the page carries and a bare POST does
-not — most likely cookies or a per-session token beyond the API key. Cracking that would
-mean either driving a real browser (Playwright is available) and reading the request off
-the network tab, or reverse-engineering the obfuscated bundle. Neither was judged worth
-the budget at the time. Until it is solved, **there is no confirmed-current-spend signal
-in this database**, and `marketing_active` stands alone with the meaning above.
+**That conclusion was wrong, and the way it was wrong is worth recording.** Driving
+Playwright to the page and reading the real request off the network tab took minutes and
+showed the payload is a **JSON object with numeric string keys**, not the positional
+array that roughly 25 probes had assumed:
+
+```
+f.req={"2":40,"3":{"8":[2840],"12":{"1":"<domain>","2":true}},"7":{"1":1,"2":0,"3":2840}}
+```
+
+POSTed form-encoded to `/anji/_/rpc/SearchService/SearchCreatives?authuser=` with
+`content-type: application/x-www-form-urlencoded`, `x-same-domain: 1`, a browser
+user-agent and a referer. **No cookies, no XSRF token, no API key** — the browser's own
+request carries an empty `x-framework-xsrf-token` header.
+
+The diagnostic trap: a JSON array is structurally valid protobuf-JSON, so the server
+accepted every malformed probe and answered `{}` rather than erroring. `{}` was read as
+"authenticated but empty" when it actually means **"this advertiser runs no ads"** — the
+same answer the real page gets for a small dog trainer. The lesson is that an empty
+success is not evidence of an auth wall, and that capturing one real request is worth
+more than any number of black-box probes.
+
+Verified: `nike.com` returns ~15KB of creatives, `booking.com` ~22KB,
+`offleashk9training.com` `{}` (genuinely not advertising). Also verified through the
+Webshare datacenter pool, 5 proxies out of 5 — unlike Meta, Google does not refuse this
+ASN, so a full pass over the database is viable from the existing infrastructure.
+
+This is a **confirmed-current-spend** signal and is materially stronger than
+`marketing_active`: a returned creative is an ad Google is serving now, not a pixel left
+over from a campaign that ended two years ago. It is not yet wired into any script or
+column.
 
 ---
 
@@ -422,11 +446,9 @@ rather than printing a sample.
   idempotent installer now live in `deploy/`, so the remaining work is a `git pull` plus
   `./deploy/install-watchdog.sh` on that host; the installer's preflight checks the
   `.env` prerequisite rather than letting it fail silently.
-- `scripts/enrich-decision-makers.mjs` has **never been run for real**; every figure in
-  the decision-maker section above comes from `--dry-run`, and all four
-  `decision_maker_*` columns are still empty for all 3,686 rows. The write was blocked by
-  the auto-mode permission classifier as a shared-resource modification and needs
-  explicit approval to proceed.
+- Google Ads Transparency is solved and verified through the proxy pool, but **nothing
+  consumes it yet** — there is no script, no column and no stored evidence. Wiring it up
+  would give the database its first confirmed-current-spend signal.
 - Whether the local workstation timer should keep running is undecided. It duplicates
   the remote one into the same table; if the remote deployment is canonical, the local
   timer is arguably redundant and could be disabled to make the tick log single-writer.
