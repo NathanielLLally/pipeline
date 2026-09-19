@@ -155,7 +155,11 @@ CREATE TABLE IF NOT EXISTS leads.staging_businesses (
 CREATE TABLE IF NOT EXISTS leads.worker_health_log (
   id           bigserial PRIMARY KEY,
   checked_at   timestamptz NOT NULL DEFAULT now(),
-  verdict      text NOT NULL,          -- IDLE|HEALTHY|PROXY_DEGRADED|WEDGED|STALLED|HOST_UNREACHABLE
+  -- IDLE|HEALTHY|PROXY_DEGRADED|WEDGED|STALLED|HOST_UNREACHABLE|WORKER_DEGRADED|FLEET_DOWN
+  -- WORKER_DEGRADED/FLEET_DOWN come from per-host container probes. The queue-level
+  -- metrics cannot see a dead worker: the survivors keep draining the backlog, so a
+  -- partial outage reads as HEALTHY until someone notices jobs timing out.
+  verdict      text NOT NULL,
   signals      jsonb NOT NULL,         -- all metrics: backlog, last_progress, longest_running, zero_yield_ratio, recent_timeouts
   action       text,                   -- null|restart|proxy_refresh|alert
   action_ok    boolean,

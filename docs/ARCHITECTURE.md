@@ -56,6 +56,24 @@ connections originating on the workstation versus inside the cluster.
 database, probes container state over SSH, decides a verdict, optionally acts, and
 appends a row to `leads.worker_health_log`.
 
+### Verdicts
+
+`IDLE`, `HEALTHY`, `PROXY_DEGRADED`, `WEDGED`, `STALLED`, `HOST_UNREACHABLE`, plus two
+from per-host container probes:
+
+- `WORKER_DEGRADED` — some but not all workers are down. Restarts **only** the dead
+  hosts, leaving healthy workers mid-job alone.
+- `FLEET_DOWN` — every worker is down. Suppressed rather than acted on: a restart loop
+  across the whole fleet is unlikely to help and usually indicates a network or
+  provider problem.
+
+**Why per-host probing is necessary.** The queue-level metrics cannot detect a dead
+worker. When a container dies it silently stops drawing jobs, and the surviving workers
+keep draining the backlog — so backlog, progress and yield all still look fine. This was
+observed on 2026-09-18: two of three workers sat dead for roughly an hour while every
+tick recorded `IDLE` or `HEALTHY`, and the LA grooming run timed out job after job until
+the workers were restarted by hand. Aggregate health is not fleet health.
+
 ### Two schedulers write to one table
 
 The canonical deployment is on the database host (`accurateleadinfo.com`), as a systemd

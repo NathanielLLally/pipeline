@@ -114,8 +114,35 @@ probe_workers() {
 }
 
 #===== DECIDE VERDICT =====
+# Which hosts are not serving, as "host=state" lines. A container that is not
+# `running` and a host that cannot be reached are both unavailable for work; they
+# differ only in whether a restart can fix it, which choose_action sorts out.
+degraded_hosts() {
+  local states=$1
+  printf '%s\n' "$states" | awk -F= 'NF==2 && $2 != "running" { print $1 }'
+}
+
 decide() {
   local backlog=$1 last_progress=$2 longest_running_sec=$3 zero_yield_ratio=$4 recent_timeouts=$5 host_state=$6
+  local worker_states=${7:-}
+
+  # Fleet health first, because the queue-level metrics cannot see it. A worker whose
+  # container has died stops drawing jobs silently: the survivors keep draining the
+  # queue, so backlog, progress and yield all still look fine. That is exactly how two
+  # of three workers sat dead through a scraping run while every tick recorded IDLE or
+  # HEALTHY and the run timed out job after job.
+  local total down
+  total=$(printf '%s\n' "$worker_states" | grep -c '=' || true)
+  down=$(degraded_hosts "$worker_states" | grep -c . || true)
+
+  if [ "$total" -gt 0 ] && [ "$down" -gt 0 ]; then
+    # Everything down is a different problem from a partial outage: no restart loop is
+    # going to help if the whole fleet vanished at once, and it usually means the
+    # network or the provider rather than the containers.
+    [ "$down" -ge "$total" ] && echo "FLEET_DOWN" && return 0
+    echo "WORKER_DEGRADED"
+    return 0
+  fi
 
   # Priority: HOST_UNREACHABLE > IDLE > ... > HEALTHY
   [ "$host_state" = "unreachable" ] && echo "HOST_UNREACHABLE" && return 0
@@ -194,6 +221,12 @@ choose_action() {
   case "$verdict" in
     PROXY_DEGRADED)            want="proxy_refresh"; cooldown=$PROXY_COOLDOWN_MIN ;;
     WEDGED|STALLED)            want="restart";       cooldown=$RESTART_COOLDOWN_MIN ;;
+    # A dead container is the one failure a restart reliably fixes, and it is repaired
+    # per-host: the healthy workers are left alone rather than bounced along with it.
+    WORKER_DEGRADED)           want="restart";       cooldown=$RESTART_COOLDOWN_MIN ;;
+    # Whole fleet gone at once. A restart loop across every host is unlikely to help
+    # and would hammer machines that may be having a network or provider problem.
+    FLEET_DOWN)                echo "suppressed:entire fleet down; needs human attention"; return 0 ;;
     # An unreachable REST host is a network or provider problem; restarting workers
     # cannot fix it and the SSH needed to try is the very thing that is failing.
     HOST_UNREACHABLE)          echo "suppressed:host unreachable; needs human attention"; return 0 ;;
@@ -228,9 +261,15 @@ choose_action() {
 # queue, and failing the whole action would suppress the log line that says so.
 do_action() {
   local action=$1
+  shift
+  # Optional explicit target list. A WORKER_DEGRADED restart passes only the hosts whose
+  # container is actually down, so a healthy worker mid-job is never bounced to repair
+  # its neighbour. With no list, the action applies to the whole fleet.
+  local -a targets=("$@")
+  [ "${#targets[@]}" -eq 0 ] && targets=("${WORKER_HOSTS[@]}")
   local host rc=0 ok=0 fail=0 notes=""
 
-  for host in "${WORKER_HOSTS[@]}"; do
+  for host in "${targets[@]}"; do
     case "$action" in
       restart)
         # `docker compose up -d` after a down, rather than `restart`, so a container
@@ -293,9 +332,16 @@ main() {
 
   # Decide verdict
   local verdict
-  verdict=$(decide "$backlog" "$last_progress" "$longest_running_sec" "$zero_yield_ratio" "$recent_timeouts" "$host_state")
+  verdict=$(decide "$backlog" "$last_progress" "$longest_running_sec" "$zero_yield_ratio" \
+                   "$recent_timeouts" "$host_state" "$worker_states")
 
-  log_msg "Verdict: $verdict (backlog=$backlog, running=${longest_running_sec}s, zero_yield=$zero_yield_ratio, timeouts=$recent_timeouts)"
+  # A WORKER_DEGRADED restart is aimed only at the hosts that are actually down.
+  local -a targets=()
+  if [ "$verdict" = "WORKER_DEGRADED" ]; then
+    mapfile -t targets < <(degraded_hosts "$worker_states")
+  fi
+
+  log_msg "Verdict: $verdict (backlog=$backlog, running=${longest_running_sec}s, zero_yield=$zero_yield_ratio, timeouts=$recent_timeouts${targets[0]:+, down=${targets[*]}})"
 
   # Decide and perform the action for this verdict.
   local action="null" action_ok="false" action_note=""
@@ -310,13 +356,15 @@ main() {
       log_verbose "No action: $action_note" ;;
     restart|proxy_refresh)
       action="$decision"
+      local -a scope=("${targets[@]}")
+      [ "${#scope[@]}" -eq 0 ] && scope=("${WORKER_HOSTS[@]}")
       if [ "$DRY_RUN" -eq 1 ]; then
         action_ok="false"
-        action_note="dry-run: would have run $action on ${#WORKER_HOSTS[@]} host(s)"
+        action_note="dry-run: would have run $action on ${#scope[@]} host(s): ${scope[*]}"
         log_msg "$action_note"
       else
         local out rc=0
-        out=$(do_action "$action" 2>&1) || rc=$?
+        out=$(do_action "$action" "${scope[@]}" 2>&1) || rc=$?
         [ "$rc" -eq 0 ] && action_ok="true" || action_ok="false"
         action_note="$out"
         log_msg "Action $action -> ok=$action_ok: $out"
