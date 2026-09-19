@@ -379,12 +379,19 @@ columns on `leads.businesses`: `ads_confirmed_active`, `ads_last_shown`,
 `ads_creative_count`. `scripts/lib/ads-transparency.mjs` holds the request shape and the
 response decoder, with 41 unit tests over captured fixtures.
 
-**It disagrees with `marketing_active` in both directions, which is the point.** Over
-1,189 checked domains, 527 are advertising. In a hand-checked sample of 28 top-tier
-prospects, 9 confirmed advertisers had **no pixel at all**, and 2 had a pixel but run no
-ads — including `timelessk9.com`, whose last creative ran 128 days ago. Neither column
-subsumes the other: the pixel proves configuration, the creative proves spend. Segment
-on `ads_confirmed_active` when the campaign copy claims the prospect is advertising.
+**The pass is complete: 3,347 domains checked, zero unchecked, zero errors.** 935 are
+advertising (28%), 761 of them within the last 30 days, and 14,212 creatives are stored.
+
+**It disagrees with `marketing_active` in both directions, which is the point.** In the
+final 1,949-domain run alone, **302 confirmed advertisers had no pixel at all** and 35
+carried a pixel while running no ads — `timelessk9.com` among them, last creative 128
+days old. Neither column subsumes the other: the pixel proves configuration, the
+creative proves spend. Segment on `ads_confirmed_active` when the campaign copy claims
+the prospect is advertising.
+
+Confirmed spend rises monotonically with ICP tier, which is a useful independent check
+that the tiers mean something: Tier 1 48% advertising, Tier 2 19%, Tier 3 13%, Tier 4 7%
+(measured before the 2026-09-19 rescore, against the tiers as they then stood).
 
 Field meanings are recorded in `scripts/lib/ads-transparency.mjs`; the ones that matter
 are per-ad `7.1` (last shown — the recency signal), `6.1` (first shown), `12`
@@ -419,6 +426,97 @@ response is indistinguishable from a malformed request, so without that check a 
 payload would silently write "no ads" for the entire database. The probe distinguishes
 its two failure modes: a throttle exits 3 and says to wait, a genuinely empty result
 exits 1 and says to re-capture the request with Playwright.
+
+### Transports, and what each one costs
+
+Google blocks the **Webshare datacenter ASN outright** on this endpoint, so a
+residential exit is not an optimisation here — it is the only thing that works. The
+script tries three transports in preference order, selected automatically from `.env`:
+
+| Transport | Env var | Billing | Verdict |
+|---|---|---|---|
+| DataImpulse residential | `DATAIMPULSE_PROXY` | per **gigabyte** | **Use this.** |
+| scrape.do `super=true` | `SCRAPEDO_TOKEN` | 10 credits/request | Works; far too dear. |
+| Webshare SOCKS5 pool | `PROXY_LIST_URL` | free | Blocked by Google. |
+
+`--no-residential` and `--no-scrapedo` step down the chain for testing.
+
+**The cost difference is not marginal.** A response is ~2.9KB gzipped (55.7% of domains
+return `{}`, mean 7.5 creatives), so the entire 2,000-domain remainder is about 6MB.
+scrape.do billed 10 credits for each of those ~3KB responses: a 1,000-credit account
+bought **95 domains** before running dry. DataImpulse did the remaining 1,949 domains in
+801 seconds at a steady 2.4/s with **zero throttling and zero errors** — the /sorry
+redirect never appeared once. Measure bytes before buying per-request pricing for an
+endpoint whose responses are this small.
+
+Credentials for both are in `.env` (gitignored) and never in committed code. The
+scrape.do token sits in a URL, so `scrub()` strips it from anything printed or written
+to `fetch_error`; the residential password is passed via curl's `--proxy-user` rather
+than an inline URL, and is scrubbed from stored errors for the same reason.
+
+---
+
+## Scoring: tier calibration and the enrichment bonuses
+
+`scripts/lib/score.mjs` is the single definition of ICP fit, shared by
+`transform-and-score.mjs` (ingest) and `rescore.mjs` (backfill). Enrichment fields —
+`bookingPresent`, `growthScore`, `adsConfirmedActive`, `adsCreativeCount` — are optional
+and default to `null`, because ingest scores a business the moment it is discovered,
+before any enrichment has run. **`null` means "not checked", not "does not have it"**, so
+an unenriched row is never penalised for missing evidence it was never asked for.
+
+Confirmed ad spend is weighted at **+12**, above booking (+8) and growth (+8), with a
+further +4 for 10 or more concurrent creatives. The reasoning: a business currently
+paying Google to acquire customers has already decided that buying customers is worth
+money, which is precisely the decision a lead buyer must have made. Booking and growth
+are evidence of a well-run business; ad spend is evidence of budget. A business that
+advertised at some point but has nothing live in 30 days gets +4 ("lapsed ad spend"),
+not the full bonus, because the campaign is off and may have been stopped for cost.
+
+The scorer deliberately does **not** key this off `marketing_active` — see the section
+above on why a pixel and a live creative are different claims.
+
+### Tier calibration, and why it had to move (2026-09-19)
+
+Thresholds are **83 / 70 / 50**, not the original 70/50/30.
+
+The original cutoffs were set when the scorer saw only the Google Maps record. Once
+booking, growth and ad spend began contributing there were up to 32 further points in
+play, and at a cutoff of 70 the top tier drifted to **36% of the database** — 1,417
+rows, which is not a priority list. `CLAUDE.md` is explicit that the highest-priority
+segment must not be diluted, so the cutoffs were re-derived from the actual score
+distribution to hold Tier 1 near 15%.
+
+A caution worth recording, because it nearly caused a wrong diagnosis: when the first
+post-enrichment rescore showed Tier 1 tripling, the obvious culprit was the new ads
+bonus. Decomposing the shift signal by signal showed otherwise —
+
+| Scenario | Tier 1 |
+|---|---|
+| stored in DB (pre-rescore) | 540 (13.9%) |
+| scorer with no enrichment | 526 (13.5%) |
+| + booking | 921 (23.7%) |
+| + booking + growth | 1,137 (29.2%) |
+| + ads as well | 1,417 (36.4%) |
+
+— most of the movement was `booking_present` and `growth_score`, whose bonuses had been
+**coded but never applied**, because no rescore had been run since Phase A enrichment
+populated them. Ads contributed 280 rows of the 891. The lesson generalises: after an
+enrichment pass writes new columns, the stored scores are stale until `rescore.mjs`
+runs, and a tier histogram read before that reflects the old inputs.
+
+Resulting distribution over 3,888 businesses: Tier 1 621 (16.0%), Tier 2 796 (20.5%),
+Tier 3 1,621 (41.7%), Tier 4 850 (21.9%). Of the 621 in Tier 1, **473 have confirmed ad
+spend**, 449 have booking, exactly one has no enrichment evidence at all, and zero are
+veterinarians, pet-supply stores or dog parks.
+
+`qc_status = LOW_PRIORITY` is still keyed to an absolute score below 30 rather than to a
+tier. That is deliberate: it answers "is this row worth keeping at all", which is a
+different question from where a row ranks, and it should not move when tiers are
+recalibrated.
+
+**Re-measure before moving these cutoffs again.** Picking a round number rather than
+reading the distribution is what inflated Tier 1 the first time.
 
 ---
 
@@ -494,11 +592,12 @@ rather than printing a sample.
   idempotent installer now live in `deploy/`, so the remaining work is a `git pull` plus
   `./deploy/install-watchdog.sh` on that host; the installer's preflight checks the
   `.env` prerequisite rather than letting it fail silently.
-- Google Ads Transparency is wired up and **1,189 domains are checked, 527 advertising**,
-  but the pass is **incomplete**: it was rate-limited partway through and roughly 2,100
-  businesses still have no result. Re-running resumes where it stopped. Nothing scores on
-  `ads_confirmed_active` yet either — it is stored but not yet folded into `icp_score`,
-  which is the obvious next use for it.
+- Google Ads Transparency is **complete and scored**: 3,347 domains checked, 0
+  unchecked, 935 advertising, and `ads_confirmed_active` now contributes to `icp_score`
+  (see "Tier calibration" below). Re-running only picks up businesses discovered since.
+  The recency window is fixed at 30 days (`RECENT_DAYS`), chosen from a visible gap in
+  the observed data rather than measured against outcomes — worth revisiting once there
+  is campaign-response data to calibrate against.
 - Whether the local workstation timer should keep running is undecided. It duplicates
   the remote one into the same table; if the remote deployment is canonical, the local
   timer is arguably redundant and could be disabled to make the tick log single-writer.
