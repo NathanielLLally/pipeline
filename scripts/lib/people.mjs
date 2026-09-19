@@ -42,6 +42,37 @@ const NOT_A_NAME = new Set([
   "north", "south", "east", "west", "city", "county", "street", "avenue", "road",
   "facebook", "instagram", "google", "yelp", "youtube", "tiktok", "linkedin",
   "copyright", "rights", "reserved", "privacy", "policy", "terms", "site", "website",
+  // Added after a dry run over the real corpus produced these as "names". Each was a
+  // capitalized word sitting where a name was expected -- mostly nouns from marketing
+  // copy ("Founder & CEO Operations Manager", "Being Co", "Franchise Owner") and job
+  // words that precede a real name ("Officer David Shade").
+  "co", "founder", "cofounder", "owner", "ceo", "president", "director", "manager",
+  "officer", "operations", "franchise", "franchisee", "being", "involvement",
+  "moderate", "high", "low", "experience", "mission", "vision", "values", "story",
+  "history", "philosophy", "approach", "method", "methods", "results", "success",
+  "client", "clients", "customer", "customers", "family", "families", "friend",
+  "friends", "puppies", "obedience", "agility", "therapy", "rescue", "shelter",
+  "veteran", "veterans", "military", "police", "certified", "certification",
+  "graduate", "member", "association", "council", "institute", "academy", "university",
+  "college", "degree", "years", "year", "hours", "session", "sessions", "lesson",
+  "lessons", "daycare", "boarding", "grooming", "walking", "sitting", "sitter",
+  // Page-furniture words that lead a greedy capture: "Meet the Team Zephyr Dippel",
+  // "Zephyr Dippel's Bio Nia Stevens Owner".
+  // Marketing-copy nouns that pair up into fake two-word names: "Fresh Patch Pet
+  // Tested, Owner Approved", "Training ... that Inspires Trust Owner", "Hound Haven
+  // owner Peggy McCarty", "Frank Pugliese Master Trainer, Owner".
+  "master", "haven", "hound", "patch", "approved", "inspires", "trust", "fresh",
+  "bio", "biography", "profile", "team", "teams", "shop", "members", "message",
+  "send", "view", "quick", "plans", "ongoing", "first", "last", "background",
+  "check", "verified", "tested", "citizen", "evaluator", "senior", "vice", "asst",
+  "assistant", "deputy", "clinic", "veterinary", "camps", "camp", "kids", "pup",
+  // Business-name and marketing nouns that survived into captures in the corpus audit:
+  // "Sport Club", "Solutions Marcus", "Professionals Paula Weir", "States Mondioring".
+  "sport", "sports", "club", "clubs", "solution", "solutions", "professional",
+  "professionals", "specialist", "specialists", "expert", "experts", "consultant",
+  "consultants", "partner", "partners", "group", "center", "centre", "companion",
+  "companions", "harmony", "states", "united", "america", "american", "national",
+  "international", "society", "federation", "league", "network", "alliance",
 ]);
 
 // Honorifics that legitimately precede a name and should be kept out of the name itself.
@@ -75,13 +106,42 @@ export function cleanName(raw) {
   while (words.length && HONORIFIC.test(words[0])) words.shift();
   while (words.length && CREDENTIAL.test(words[words.length - 1])) words.pop();
 
+  // Trim trailing non-name words rather than rejecting the whole capture. A greedy
+  // pattern routinely runs one word past the name into the title or the next clause:
+  // "Jamie Miller Co-Founder", "Tucker Co-Owner", "Andrew Fraser Driven". Dropping the
+  // whole match would lose a real name; trimming keeps "Jamie Miller". Leading junk is
+  // trimmed too, for "Officer David Shade" and "Jen JENNIFER HIGGINS".
+  //
+  // Trimming must leave at least two words standing. Otherwise it manufactures names
+  // out of phrases: "Puppy Kindergarten" would trim to "Kindergarten", which passes
+  // every later check while being nothing of the sort. Reducing a capture to a single
+  // word means the capture was not a name, so the whole thing is rejected instead.
+  const junk = (w) =>
+    NOT_A_NAME.has(w.toLowerCase().replace(/^co-?/, "")) ||
+    NOT_A_NAME.has(w.toLowerCase()) ||
+    (w === w.toUpperCase() && w.length > 1);
+  while (words.length > 2 && junk(words[words.length - 1])) words.pop();
+  while (words.length > 2 && junk(words[0])) words.shift();
+  // Any junk word surviving in a two-word capture disqualifies it outright.
+  if (words.some(junk)) return null;
+
   if (words.length === 0 || words.length > 3) return null;
   for (const w of words) {
-    if (!/^[A-Z][a-zA-Z'’\-]*$/.test(w)) return null;
+    // A trailing hyphen or apostrophe is stripped markup, not part of the name: the
+    // corpus produced "Greg Winters-" from "Greg Winters- PDT Owner/Dog Behaviorist".
+    if (!/^[A-Z][a-zA-Z'’\-]*[a-zA-Z]$/.test(w)) return null;
     if (w.length < 2) return null;                      // stray initials like "J"
     if (NOT_A_NAME.has(w.toLowerCase())) return null;
     if (CREDENTIAL.test(w)) return null;
+    // Contractions and possessives are prose, not names: the corpus produced "I've"
+    // and "Officer David Shade's" as candidates. A possessive also means the name is
+    // being used attributively ("Shade's method"), which is not a title attribution.
+    if (/'(?:s|ve|ll|re|d|t|m)$/i.test(w)) return null;
   }
+  // The same word twice is a rendering artifact, not a name: the corpus produced
+  // "Maria Maria", "Barak Barak" and "Stefanie For Stefanie" from repeated markup.
+  const lowered = words.map((w) => w.toLowerCase());
+  if (new Set(lowered).size !== lowered.length) return null;
   // ALLCAPS runs are headings ("BOARD AND TRAIN"), not names.
   if (words.every((w) => w === w.toUpperCase() && w.length > 1)) return null;
   return words.join(" ");
@@ -99,7 +159,21 @@ function isBusinessOwnerSense(text, idx) {
 function titleAt(text, idx, matched) {
   const canonical = TITLES.find(([t]) => t === matched.toLowerCase());
   if (!canonical) return null;
+  // "Vice President" is not the decision maker, and TITLE_ALT matches its "President"
+  // tail -- which both records the wrong role and eats the name ("Jake Satterlee Vice"
+  // as the name, "President" as the title). "Karen Vinton ... Senior Vice President
+  // role" is worse still: a past corporate job in a bio, not this business at all.
+  if (canonical[1] === "President" && /\b(?:vice|asst\.?|assistant|deputy|senior|sr\.?)[-\s]*$/i.test(text.slice(Math.max(0, idx - 12), idx))) {
+    return null;
+  }
   if (canonical[1] === "Owner" && !isBusinessOwnerSense(text, idx)) return null;
+  // "Co-Owner" is a distinct, more junior claim than "Owner", and the TITLE_ALT
+  // alternation would otherwise match the "Owner" tail and record it as sole ownership.
+  // A staff block listing "Valerie Fry Owner / CEO" beside "Keisha Tucker Co-Owner /
+  // CFO" must not promote the CFO to Owner.
+  if (canonical[1] === "Owner" && /co-?\s*$/i.test(text.slice(Math.max(0, idx - 4), idx))) {
+    return "Co-owner";
+  }
   return canonical[1];
 }
 
@@ -110,7 +184,19 @@ function quoteAround(text, idx, len) {
   return text.slice(start, end).replace(/\s+/g, " ").trim();
 }
 
-const TITLE_ALT = TITLES.map(([t]) => t.replace(/[-\s]/g, "[-\\s]?")).join("|");
+/**
+ * Case-insensitive form of a literal, as explicit character classes.
+ *
+ * These patterns must NOT carry the /i flag. Capitalization is the only thing marking a
+ * name in running prose, and under /i the `[A-Z]` in NAME_WORD matches lowercase too --
+ * so "My name is Donald Hutcherson and I" captured "Donald Hutcherson and", and an email
+ * address ahead of a name contributed its "com". Every such capture was then thrown out
+ * by cleanName, making the patterns look dead when they were merely greedy. Titles still
+ * need to match any casing ("Owner", "OWNER", "owner"), hence this.
+ */
+const ci = (s) => s.replace(/[a-z]/gi, (c) => `[${c.toUpperCase()}${c.toLowerCase()}]`);
+
+const TITLE_ALT = TITLES.map(([t]) => ci(t).replace(/[-\s]/g, "[-\\s]?")).join("|");
 
 /**
  * The extraction patterns, ordered by how much they constrain the relationship between
@@ -122,28 +208,42 @@ const PATTERNS = [
     // "Stephanie Zablah-Kruger (Owner)" -- name and title bound by punctuation.
     key: "name_paren_title",
     confidence: "high",
-    re: new RegExp(`(${NAME_RE.source})\\s*[\\(\\[]\\s*(${TITLE_ALT})\\s*[\\)\\]]`, "gi"),
+    re: new RegExp(`(${NAME_RE.source})\\s*[\\(\\[]\\s*(${TITLE_ALT})\\s*[\\)\\]]`, "g"),
     name: 1, title: 2,
   },
   {
     // "Michael Sandman, Owner" / "Ian Dunbar - Founder & Head Trainer"
+    //
+    // The separator may also be a slash or nothing at all: staff blocks render as
+    // "Valerie Fry Owner / CEO" once the markup is stripped. Without the bare-space
+    // form, such a block yields only the junior colleague who happens to be written
+    // "Keisha Tucker Co-Owner / CFO" -- the senior person is silently skipped, which
+    // is worse than finding nobody. The separator is captured (group 2) because the
+    // bare-space form needs a stricter check downstream: see requireAdjacent below.
     key: "name_comma_title",
     confidence: "high",
-    re: new RegExp(`(${NAME_RE.source})\\s*(?:,|\\u2013|\\u2014|-|\\|)\\s*(?:the\\s+)?(${TITLE_ALT})\\b`, "gi"),
-    name: 1, title: 2,
+    re: new RegExp(`(${NAME_RE.source})(\\s*(?:,|\\u2013|\\u2014|-|\\||\\/)\\s*|\\s+)(?:the\\s+)?(${TITLE_ALT})\\b`, "g"),
+    name: 1, title: 3, sep: 2, requireAdjacent: true,
   },
   {
     // "Owner: Jane Smith" / "Founder & CEO Kelly Gorman Dunbar"
+    //
+    // Medium, not high, despite being an explicit pattern: it is the loosest of the
+    // three title-bound forms, because whatever capitalized words happen to follow a
+    // title get captured. In the corpus dry run it supplied most of the false
+    // positives ("Founder ... Operations", "Franchise Owner"). It reaches high only
+    // through corroboration in pickDecisionMaker -- a second pattern or a matching
+    // person-shaped email.
     key: "title_then_name",
-    confidence: "high",
-    re: new RegExp(`\\b(${TITLE_ALT})\\b(?:\\s*(?:and|&|\\/)\\s*[A-Za-z ]{0,20})?\\s*[:\\-\\u2013]?\\s+((?:Dr\\.?\\s+)?${NAME_RE.source})`, "gi"),
+    confidence: "medium",
+    re: new RegExp(`\\b(${TITLE_ALT})\\b(?:\\s*(?:and|&|\\/)\\s*[A-Za-z ]{0,20})?\\s*[:\\-\\u2013]?\\s+((?:Dr\\.?\\s+)?${NAME_RE.source})`, "g"),
     name: 2, title: 1,
   },
   {
     // "Jane Smith is the owner of" / "Michael founded" -- verb-linked, still explicit.
     key: "name_is_title",
     confidence: "medium",
-    re: new RegExp(`(${NAME_RE.source})\\s+(?:is|was)\\s+(?:the|a|our)\\s+(?:[a-z\\-]+\\s+){0,2}(${TITLE_ALT})\\b`, "gi"),
+    re: new RegExp(`(${NAME_RE.source})\\s+(?:is|was)\\s+(?:the|a|our)\\s+(?:[a-z\\-]+\\s+){0,2}(${TITLE_ALT})\\b`, "g"),
     name: 1, title: 2,
   },
   {
@@ -152,7 +252,7 @@ const PATTERNS = [
     // the caller must supply the title separately.
     key: "self_intro",
     confidence: "low",
-    re: new RegExp(`\\bMy name is\\s+((?:Dr\\.?\\s+)?${NAME_RE.source})`, "gi"),
+    re: new RegExp(`\\bMy name is\\s+((?:Dr\\.?\\s+)?${NAME_RE.source})`, "g"),
     name: 1, title: null,
   },
 ];
@@ -174,8 +274,48 @@ export function extractCandidates(text, { pageKind = null, pageUrl = null } = {}
     let m;
     while ((m = pat.re.exec(text)) !== null) {
       const rawName = m[pat.name];
+
       const name = cleanName(rawName);
       if (!name) continue;
+
+      // A name immediately preceded by a preposition or article is part of a
+      // surrounding phrase, not an attribution: "At Pet Harmony, we..." and "the United
+      // States Mondioring... President" both produced business words as names. A real
+      // attribution reads "..., Owner" or "Founder Jane Smith", never "at <Name>,".
+      //
+      // This is anchored to the CLEANED name rather than the raw capture. The greedy
+      // pattern routinely swallows a junk word ahead of the real name -- "Meet the Team
+      // Zephyr Dippel Owner" captures "Team Zephyr Dippel" -- and testing the raw
+      // capture put the article in front of "Team", discarding a perfectly good name.
+      // The article qualifies the junk word, not the person.
+      const rawStart = m.index + m[0].indexOf(rawName);
+      const kept = rawName.indexOf(name.split(" ")[0]);
+      const nameStart = rawStart + (kept >= 0 ? kept : 0);
+      const before = text.slice(Math.max(0, nameStart - 16), nameStart);
+      if (/\b(?:at|of|with|for|from|to|in|on|by|the|a|an|our|your|their)\s+$/i.test(before)) continue;
+
+      // Adjacency guard for the bare-space separator.
+      //
+      // cleanName TRIMS junk words rather than rejecting, which is right when the greed
+      // runs into a title ("Jamie Miller Co-Founder" -> "Jamie Miller"). But with a bare
+      // space as the separator, trimming can manufacture an attribution that the source
+      // never made: "As Featured In Client Steph Curry Meet the Founder" captured
+      // "Steph Curry Meet", trimmed "Meet", and recorded a client testimonial as the
+      // founder. Likewise "Zephyr Dippel's Bio Nia Stevens Owner" credited the wrong
+      // person entirely. Punctuation ("Jane Doe, Owner") binds the two explicitly and
+      // is trusted; a bare space only binds them if nothing was trimmed off the end --
+      // that is, the name really does sit immediately against the title.
+      if (pat.requireAdjacent && pat.sep && !/[,\u2013\u2014\-|\/]/.test(m[pat.sep])) {
+        const tail = name.split(" ").pop();
+        if (!new RegExp(`${tail.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`).test(rawName.trim())) continue;
+        // A bare space also has to carry the whole burden of proving these three words
+        // are one person's name. Over the 204-row audit, every three-word bare-space
+        // capture was wrong -- "Shop Jake Wright", "Members Tara Stermer", "Town
+        // Margaret Fraser", "Tong Heather Mozingo" -- because the preceding word is
+        // simply the end of the previous sentence. Punctuation earns three words;
+        // a space does not.
+        if (name.split(" ").length > 2) continue;
+      }
 
       let title = null;
       if (pat.title !== null) {
@@ -190,8 +330,12 @@ export function extractCandidates(text, { pageKind = null, pageUrl = null } = {}
         title = "Owner";
       }
 
-      // A single-word name is only trustworthy when the pattern bound it tightly.
-      if (!name.includes(" ") && pat.confidence !== "high") continue;
+      // A single-word name is never a usable decision-maker record: "Lisa, Owner" is
+      // real but not actionable for outreach, and a lone capitalized word is the shape
+      // most of this pattern's false positives take. Prompt 9 wants a name that can be
+      // verified and addressed, so first-name-only hits are dropped entirely rather
+      // than stored at reduced confidence.
+      if (!name.includes(" ")) continue;
 
       out.push({
         name,
@@ -209,9 +353,12 @@ export function extractCandidates(text, { pageKind = null, pageUrl = null } = {}
 
 // Pages whose named people are staff rather than principals. A name found only here is
 // not promoted; it needs corroboration from an about/home/contact page.
-const STAFF_PAGE = /\b(?:instructor|trainers?|our-?team|staff|employees)\b/i;
+// Note the trailing \w* rather than a word boundary: these appear in URL path segments
+// as "/instructors", "/our-team", "/meet-the-trainers", and a \b-anchored "instructor"
+// does not match "instructors".
+const STAFF_PAGE = /(?:instructor|trainer|our-?team|meet-the|staff|employee)\w*/i;
 
-const TITLE_RANK = { Founder: 6, "Co-founder": 5, Owner: 4, CEO: 4, President: 3, "General Manager": 2 };
+const TITLE_RANK = { Founder: 6, "Co-founder": 5, Owner: 4, CEO: 4, President: 3, "Co-owner": 2.5, "General Manager": 2 };
 const CONF_RANK = { high: 3, medium: 2, low: 1 };
 
 /**

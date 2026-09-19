@@ -350,6 +350,69 @@ in this database**, and `marketing_active` stands alone with the meaning above.
 
 ---
 
+## Decision makers: why extraction is deterministic, and what it costs
+
+`scripts/lib/people.mjs` + `scripts/enrich-decision-makers.mjs` implement Prompt 9 over
+the page text already in `leads.website_crawl`. No network, no model. The plan allowed an
+LLM here; explicit patterns turned out precise enough that a model would mostly add cost,
+latency and a new way to hallucinate a name — the one thing Prompt 9 forbids outright.
+
+The niche's defining hazard is that **"owner" usually means the dog's owner**. Measured
+over the corpus, 1,355 of 1,994 pages containing "owner" (68%) use it as "dog owner",
+"pet owners", "their owner". Proximity between a capitalized word and "owner" is
+therefore wrong more often than right, and ownership sense is disambiguated from the
+left context before any title is accepted.
+
+Measured over 1,307 crawled businesses, at `--min-confidence high`:
+
+| | |
+|---|---|
+| Businesses with a decision maker found | 276 (21%) |
+| high / medium / low | 177 / 65 / 29 |
+| Hand-audited precision, **all** high rows | ~97% |
+
+Coverage is low on purpose. Recall was traded away for precision at every ambiguous
+call, because a wrong name in a cold email is worse than an empty column, and an empty
+`decision_maker_name` is a normal result rather than a failure.
+
+### What the patterns had to learn
+
+Each of these was a real false positive from a corpus run, and each is now a regression
+test in the unit suite:
+
+- **Case-insensitivity destroys the signal.** Capitalization is the *only* thing marking
+  a name in running prose. Under `/i`, `[A-Z]` matches lowercase, so captures ran past
+  the name ("Donald Hutcherson and"). The title patterns use explicit character classes
+  instead of the `i` flag.
+- **A bare space is weak evidence.** Allowing `Name Title` with no punctuation was needed
+  to read staff blocks ("Valerie Fry Owner / CEO"), but it also produced a *client
+  testimonial* as the founder ("As Featured In Client Steph Curry Meet the Founder").
+  The bare-space form is now accepted only when nothing was trimmed off the end of the
+  capture and the name is exactly two words. Punctuation earns three words; a space does
+  not.
+- **"Vice President" is not the principal.** The title alternation matched its
+  "President" tail, which both recorded the wrong role and ate the name — yielding
+  "Jake Satterlee Vice / President", and from one bio's *previous corporate job*,
+  "Senior Vice / President".
+- **Trimming junk can manufacture a name.** `cleanName` trims stray words rather than
+  rejecting outright, so "Puppy Kindergarten" would become "Kindergarten". Trimming must
+  leave at least two words, and any junk word surviving in a two-word capture voids it.
+- **Guards must anchor to the cleaned name, not the raw capture.** The article guard
+  tested the text before the greedy match, so "Meet the Team Zephyr Dippel Owner" was
+  discarded because "the" preceded "Team". The article qualified the junk word, not the
+  person. Fixing this recovered six real names.
+- **Co-owner is not Owner**, and a repeated word ("Maria Maria") is a rendering artifact.
+
+### Auditing lesson
+
+An early precision figure of ~97% was computed from the first 30 rows and was wrong: the
+full 204-row dump was ~84%, with ~32 junk rows the sample never showed. The head of a
+list ordered by extraction quality is the best part of it. **Precision claims here must
+be computed over the whole output set**, which is why the dry run takes `--limit 400`
+rather than printing a sample.
+
+---
+
 ## Open items / unverified
 
 - The fleet-aware watchdog (commit `da4e4e6`) is **committed but not deployed**. The
@@ -359,6 +422,11 @@ in this database**, and `marketing_active` stands alone with the meaning above.
   idempotent installer now live in `deploy/`, so the remaining work is a `git pull` plus
   `./deploy/install-watchdog.sh` on that host; the installer's preflight checks the
   `.env` prerequisite rather than letting it fail silently.
+- `scripts/enrich-decision-makers.mjs` has **never been run for real**; every figure in
+  the decision-maker section above comes from `--dry-run`, and all four
+  `decision_maker_*` columns are still empty for all 3,686 rows. The write was blocked by
+  the auto-mode permission classifier as a shared-resource modification and needs
+  explicit approval to proceed.
 - Whether the local workstation timer should keep running is undecided. It duplicates
   the remote one into the same table; if the remote deployment is canonical, the local
   timer is arguably redundant and could be disabled to make the tick log single-writer.
