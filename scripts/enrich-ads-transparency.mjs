@@ -27,6 +27,16 @@
 //   node scripts/enrich-ads-transparency.mjs --tier "Tier 1,Tier 2"
 //   node scripts/enrich-ads-transparency.mjs --recheck          # ignore prior results
 //   node scripts/enrich-ads-transparency.mjs --stale-days 30    # refresh old rows only
+//
+// Transport: scrape.do (residential) is used automatically when SCRAPEDO_TOKEN is set,
+// because Google blocks the Webshare datacenter ASN on this endpoint. It BILLS 10
+// credits per request, so spend is capped:
+//   node scripts/enrich-ads-transparency.mjs --credit-budget 950 --tier "Tier 1"
+//   node scripts/enrich-ads-transparency.mjs --no-scrapedo   # back to the free pool
+//
+// DATAIMPULSE_PROXY, when set, wins over scrape.do and has NO credit cap: it bills per
+// gigabyte and one response is ~3KB, so the whole database costs a few megabytes.
+//   node scripts/enrich-ads-transparency.mjs --no-residential   # skip it for a test
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -43,8 +53,26 @@ const execFileAsync = promisify(execFile);
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
 const TIMEOUT_SEC = 30;
+const SCRAPEDO_TIMEOUT_SEC = 90;   // residential exits are much slower than datacenter
+
+// scrape.do budget. `super=true` is residential and bills 10 credits per request --
+// measured, not assumed, from the Scrape.do-Request-Cost header. The account in use
+// holds 1,000 credits total, i.e. ~100 requests, against ~2,099 unchecked domains, so
+// the budget is the binding constraint and the guard below is the point of this
+// transport rather than a nicety. The default is deliberately far below the balance:
+// spending the whole account in one unattended run is not something to do by accident.
+const DEFAULT_CREDIT_BUDGET = 300;
+
+// What one super=true request bills, used to decide whether the NEXT call fits inside
+// the budget. The actual charge always comes from the Scrape.do-Request-Cost header --
+// this is only the look-ahead, and it is deliberately the observed price rather than an
+// optimistic one so the cap cannot be overshot by a request that turns out dearer.
+const PER_REQUEST_ESTIMATE = 10;
 const MAX_BYTES = 8 << 20;   // a heavy advertiser's page of 40 creatives runs ~25KB
-const FLUSH_EVERY = 100;
+// Deliberately small. On the free pool a lost batch costs only time, but a scrape.do
+// request costs real credits, so results are checkpointed often enough that a crash
+// cannot throw away work that was paid for.
+const FLUSH_EVERY = 25;
 
 // A domain that certainly advertises, used to tell "no ads" apart from "broken request".
 const PROBE_DOMAIN = "nike.com";
@@ -75,18 +103,40 @@ function jsonLiteral(value) {
     .replace(/\$e\$/g, "");
 }
 
-/**
- * One POST through the next proxy in rotation.
- *
- * Credentials go in --proxy-user, never in the proxy URL: curl 8.20 rejects the
- * embedded form and echoes the whole URL back on failure, which has put live proxy
- * credentials into a transcript once already.
- */
-async function fetchOnce(domain, nextProxy) {
-  const p = nextProxy();
-  const args = [
+// Set from SCRAPEDO_TOKEN in main(); when present, every fetch goes through scrape.do's
+// residential network instead of the Webshare pool. Module-scoped so fetchOnce keeps the
+// same signature for both transports.
+let scrapedoToken = null;
+
+// Set from DATAIMPULSE_PROXY in main(). A residential SOCKS5 gateway billed per GIGABYTE
+// rather than per request, which is the right shape for this pass: a measured response is
+// ~2.9KB gzipped, so the whole remaining database is single-digit megabytes. Preferred
+// over scrape.do whenever it is configured, since scrape.do bills 10 credits for the same
+// ~3KB. Parsed once into {host, port, user, pass} so curl gets the credentials via
+// --proxy-user and they never enter a URL or argv-visible proxy string.
+let residentialProxy = null;
+
+/** Splits a socks5://user:pass@host:port URL into curl's pieces, or null if unset. */
+function parseResidential(raw) {
+  if (!raw) return null;
+  const u = new URL(String(raw).trim());
+  return {
+    host: u.hostname,
+    port: u.port || "1080",
+    // The username carries DataImpulse's targeting tag (e.g. `__cr.us` = US exits) and
+    // is percent-encoded in the URL form, so it must be decoded before curl sees it.
+    user: decodeURIComponent(u.username),
+    pass: decodeURIComponent(u.password),
+  };
+}
+
+/** curl argv for the DataImpulse residential gateway. */
+function residentialArgs(domain, p) {
+  return [
     "-sS", "-X", "POST", "--compressed",
-    "--max-time", String(TIMEOUT_SEC),
+    // Residential exits are slower than datacenter ones; the same 90s allowance the
+    // scrape.do path needed.
+    "--max-time", String(SCRAPEDO_TIMEOUT_SEC),
     "--max-filesize", String(MAX_BYTES),
     "--socks5-hostname", `${p.host}:${p.port}`,
     "--proxy-user", `${p.user}:${p.pass}`,
@@ -98,6 +148,100 @@ async function fetchOnce(domain, nextProxy) {
     "-w", "\n@@%{http_code}",
     ENDPOINT,
   ];
+}
+
+/** curl argv for the Webshare SOCKS5 pool (the original, free transport). */
+function poolArgs(domain, p) {
+  return [
+    "-sS", "-X", "POST", "--compressed",
+    "--max-time", String(TIMEOUT_SEC),
+    "--max-filesize", String(MAX_BYTES),
+    "--socks5-hostname", `${p.host}:${p.port}`,
+    // Credentials go in --proxy-user, never in the proxy URL: curl 8.20 rejects the
+    // embedded form and echoes the whole URL back on failure, which has put live proxy
+    // credentials into a transcript once already.
+    "--proxy-user", `${p.user}:${p.pass}`,
+    "-H", "content-type: application/x-www-form-urlencoded",
+    "-H", "x-same-domain: 1",
+    "-H", `user-agent: ${UA}`,
+    "-H", "referer: https://adstransparency.google.com/",
+    "--data-raw", requestBody(domain),
+    "-w", "\n@@%{http_code}",
+    ENDPOINT,
+  ];
+}
+
+/**
+ * curl argv for scrape.do's residential network.
+ *
+ * Used because Google blocks the Webshare datacenter ASN on this endpoint outright --
+ * measured at 12 of 12 proxies redirected to /sorry, persisting over two hours, while a
+ * direct request from the workstation returned 200. The block is by ASN, not by volume.
+ *
+ * `super=true` selects residential/mobile exits, which is the whole point (plain
+ * datacenter mode is the thing Google already refuses) and costs **10 credits per
+ * request** rather than 1. With `extraHeaders=true`, headers meant for the TARGET are
+ * prefixed `Sd-`; unprefixed ones would configure scrape.do itself and never reach
+ * Google.
+ *
+ * The token is a URL parameter, so it is a credential sitting in argv. It is read from
+ * SCRAPEDO_TOKEN and never logged: the error path below strips it before any message is
+ * stored or printed.
+ */
+function scrapedoArgs(domain) {
+  const target = encodeURIComponent(ENDPOINT);
+  const url = `https://api.scrape.do/?url=${target}&token=${scrapedoToken}` +
+              `&super=true&extraHeaders=true`;
+  return [
+    "-sS", "-X", "POST",
+    // Residential exits are slower than datacenter ones and this endpoint is doing real
+    // work behind the proxy; 30s was tight enough to lose otherwise-good requests.
+    "--max-time", String(SCRAPEDO_TIMEOUT_SEC),
+    "--max-filesize", String(MAX_BYTES),
+    "-H", "content-type: application/x-www-form-urlencoded",
+    "-H", "Sd-content-type: application/x-www-form-urlencoded",
+    "-H", "Sd-x-same-domain: 1",
+    "-H", `Sd-user-agent: ${UA}`,
+    "-H", "Sd-referer: https://adstransparency.google.com/",
+    "--data-raw", requestBody(domain),
+    // The cost header is the authoritative per-request price and is what the budget
+    // guard counts; -D - puts the headers in the same stream, ahead of the body.
+    "-D", "-",
+    "-w", "\n@@%{http_code}",
+    url,
+  ];
+}
+
+/** Human-readable name of the transport actually in use, for the run's log lines. */
+function transportName(useScrapedo) {
+  if (residentialProxy) return "dataimpulse (residential, per-GB)";
+  return useScrapedo ? "scrape.do (residential)" : "webshare pool";
+}
+
+/** Removes the scrape.do token from anything that might be printed or stored. */
+function scrub(text) {
+  if (!text) return text;
+  let out = String(text);
+  if (scrapedoToken) out = out.split(scrapedoToken).join("<token>");
+  // curl can echo the proxy host on failure. The password is kept out of argv by
+  // --proxy-user, but scrub it anyway: this string is written to fetch_error in the
+  // database, and a credential that reaches a stored column is hard to recall.
+  if (residentialProxy?.pass) out = out.split(residentialProxy.pass).join("<proxy-pass>");
+  return out;
+}
+
+/**
+ * One POST, through whichever transport is configured.
+ */
+async function fetchOnce(domain, nextProxy) {
+  // Preference order: residential-per-GB, then scrape.do-per-credit, then the free
+  // datacenter pool. The pool is last because Google blocks its ASN outright on this
+  // endpoint; it stays wired up only so --no-scrapedo remains usable if that changes.
+  const args = residentialProxy
+    ? residentialArgs(domain, residentialProxy)
+    : scrapedoToken
+      ? scrapedoArgs(domain)
+      : poolArgs(domain, nextProxy());
   try {
     const { stdout } = await execFileAsync("/usr/bin/curl", args, {
       encoding: "utf8", maxBuffer: MAX_BYTES + (1 << 20),
@@ -105,18 +249,42 @@ async function fetchOnce(domain, nextProxy) {
     const i = stdout.lastIndexOf("\n@@");
     if (i < 0) return { status: 0, body: "", error: "no status marker" };
     const status = Number(stdout.slice(i + 3)) || 0;
+    let body = stdout.slice(0, i);
+    let cost = 0;
+    let remaining = null;
+
+    if (scrapedoToken) {
+      // -D - prepended the response headers. Split them off, and read the authoritative
+      // cost and balance before handing the body on.
+      const sep = body.search(/\r?\n\r?\n/);
+      if (sep >= 0) {
+        const head = body.slice(0, sep);
+        body = body.replace(/^[\s\S]*?\r?\n\r?\n/, "");
+        const c = head.match(/scrape\.do-request-cost:\s*(\d+)/i);
+        const r = head.match(/scrape\.do-remaining-credits:\s*(\d+)/i);
+        if (c) cost = Number(c[1]);
+        if (r) remaining = Number(r[1]);
+        // scrape.do reports the TARGET's status separately; its own 200 only means the
+        // proxy call succeeded. Google's /sorry redirect arrives here.
+        const init = head.match(/scrape\.do-initial-status-code:\s*(\d+)/i);
+        if (init && Number(init[1]) === 302) {
+          return { status: 302, body: "", error: "rate-limited (/sorry)", throttled: true, cost, remaining };
+        }
+      }
+    }
+
     // A 302 here is Google's rate limiter: it redirects to /sorry/index rather than
     // returning 429. Flagged distinctly because it says nothing about the business --
-    // it means the POOL is throttled, and storing it as an ordinary error would record
-    // a permanent "no result" for a domain that was never actually asked about.
-    if (status === 302) return { status, body: "", error: "rate-limited (/sorry)", throttled: true };
-    return { status, body: stdout.slice(0, i), error: null };
+    // it means the TRANSPORT is throttled, and storing it as an ordinary error would
+    // record a permanent "no result" for a domain that was never actually asked about.
+    if (status === 302) return { status, body: "", error: "rate-limited (/sorry)", throttled: true, cost, remaining };
+    return { status, body, error: null, cost, remaining };
   } catch (err) {
-    // curl's stderr can name the proxy host; the password is not in it thanks to
-    // --proxy-user, but keep the note short rather than storing curl's whole complaint.
+    // curl's stderr can name the proxy host; the Webshare password is not in it thanks
+    // to --proxy-user, but the scrape.do token IS in the URL, so scrub before storing.
     const raw = (err.stderr || "").toString();
     const m = raw.match(/curl:\s*\(\d+\)\s*(.{0,90})/);
-    return { status: 0, body: "", error: m ? m[1].trim() : "fetch failed" };
+    return { status: 0, body: "", error: scrub(m ? m[1].trim() : "fetch failed"), cost: 0, remaining: null };
   }
 }
 
@@ -130,14 +298,20 @@ async function fetchOnce(domain, nextProxy) {
  */
 async function fetchWithRetry(domain, nextProxy, attempts = 3) {
   let last;
+  let spent = 0;
   for (let i = 0; i < attempts; i++) {
     last = await fetchOnce(domain, nextProxy);
+    spent += last.cost || 0;
+    // Retries are NOT free on scrape.do -- each attempt is billed, so a 3x retry on a
+    // paid transport silently triples the budget. One attempt only when paying.
+    // Per-GB and pool transports may retry freely; only scrape.do bills per attempt.
+    const maxAttempts = !residentialProxy && scrapedoToken ? 1 : attempts;
     const retryable = last.status === 0 || last.status === 302 || last.status === 403 ||
                       last.status === 429 || last.status >= 500;
-    if (!retryable) return last;
-    if (i < attempts - 1) await new Promise((r) => setTimeout(r, 500 * (i + 1)));
+    if (!retryable || i >= maxAttempts - 1) break;
+    await new Promise((r) => setTimeout(r, 500 * (i + 1)));
   }
-  return last;
+  return { ...last, cost: spent };
 }
 
 /** Fetches one domain and decodes it, keeping transport and parse failures distinct. */
@@ -148,6 +322,7 @@ async function checkDomain(domain, nextProxy) {
       ok: false, http_status: res.status,
       fetch_error: res.error || `http ${res.status}`,
       throttled: Boolean(res.throttled),
+      cost: res.cost || 0, remaining: res.remaining ?? null,
     };
   }
   let json;
@@ -156,9 +331,16 @@ async function checkDomain(domain, nextProxy) {
   } catch {
     // A 200 that is not JSON means the shape of the endpoint changed, which is worth
     // recording loudly rather than counting as "no ads".
-    return { ok: false, http_status: 200, fetch_error: "unparseable response" };
+    return {
+      ok: false, http_status: 200, fetch_error: "unparseable response",
+      cost: res.cost || 0, remaining: res.remaining ?? null,
+    };
   }
-  return { ok: true, http_status: 200, fetch_error: null, ...parseCreatives(json) };
+  return {
+    ok: true, http_status: 200, fetch_error: null,
+    ...parseCreatives(json),
+    cost: res.cost || 0, remaining: res.remaining ?? null,
+  };
 }
 
 /** Writes one batch: evidence rows, then the rolled-up columns on businesses. */
@@ -254,14 +436,43 @@ async function main() {
   const staleDays = args["stale-days"] ? Number(args["stale-days"]) : null;
 
   const env = loadEnv(ROOT);
-  const proxies = loadProxies(env, args["proxy-mode"] === "rotating" ? "rotating" : "direct");
-  const nextProxy = rotator(proxies);
+
+  // Transport, in preference order. Google blocks the Webshare datacenter ASN on this
+  // endpoint, so a residential exit is required; the only question is which one.
+  // DATAIMPULSE_PROXY bills per gigabyte and a response is ~3KB, so it is far cheaper
+  // than scrape.do's flat 10 credits for the same bytes and is preferred whenever set.
+  // --no-residential and --no-scrapedo step down the chain for testing.
+  residentialProxy = args["no-residential"] ? null : parseResidential(env.DATAIMPULSE_PROXY);
+  const useScrapedo = !residentialProxy && Boolean(env.SCRAPEDO_TOKEN) && !args["no-scrapedo"];
+  scrapedoToken = useScrapedo ? env.SCRAPEDO_TOKEN : null;
+
+  // The credit budget is a HARD cap on spend, enforced against the cost header rather
+  // than an assumed price per request, so a server-side price change cannot overrun it.
+  const creditBudget = args["credit-budget"] !== undefined
+    ? Number(args["credit-budget"])
+    : DEFAULT_CREDIT_BUDGET;
+  let creditsSpent = 0;
+  let creditsRemaining = null;
+
+  // The pool is only loaded when it will be used: loadProxies makes a network call, and
+  // on the paid transport it is pure waste.
+  let nextProxy = () => { throw new Error("proxy pool not loaded"); };
+  let transport = useScrapedo
+    ? `scrape.do residential, budget ${creditBudget} credits`
+    : "dataimpulse residential (per-GB)";
+  if (!useScrapedo && !residentialProxy) {
+    const proxies = loadProxies(env, args["proxy-mode"] === "rotating" ? "rotating" : "direct");
+    nextProxy = rotator(proxies);
+    transport = `${proxies.length} proxies`;
+  }
 
   // Endpoint check, always. `{}` from a small business is ambiguous; `{}` from a known
   // heavy advertiser means the request shape has broken and every result this run would
   // produce is a false negative. Cheap insurance against silently writing 1,200 wrong
   // answers.
   const probe = await checkDomain(PROBE_DOMAIN, nextProxy);
+  creditsSpent += probe.cost || 0;
+  if (probe.remaining !== null && probe.remaining !== undefined) creditsRemaining = probe.remaining;
   // Being throttled is a different diagnosis from the request shape having broken, and
   // sending someone to re-capture the payload with Playwright when the real answer is
   // "wait an hour" would waste exactly the kind of time this check exists to save.
@@ -282,7 +493,11 @@ async function main() {
     );
     process.exit(1);
   }
-  console.error(`[ads] endpoint check ok: ${PROBE_DOMAIN} -> ${probe.creative_count} creatives`);
+  console.error(
+    `[ads] endpoint check ok via ${transportName(useScrapedo)}: ` +
+    `${PROBE_DOMAIN} -> ${probe.creative_count} creatives` +
+    (useScrapedo ? `  [cost ${probe.cost}, ${creditsRemaining ?? "?"} credits left]` : "")
+  );
   if (args.probe) return;
 
   // Resumability. A prior row is skipped unless --recheck, or unless --stale-days says
@@ -331,7 +546,7 @@ async function main() {
   console.error(
     `[ads] ${rows.length} businesses -> ${domains.length} distinct domains` +
     (unparseable ? ` (${unparseable} unparseable website values skipped)` : "") +
-    `, ${proxies.length} proxies, concurrency ${concurrency}` +
+    `, ${transport}, concurrency ${concurrency}` +
     (dryRun ? "  (DRY RUN -- nothing written)" : "")
   );
 
@@ -351,6 +566,9 @@ async function main() {
   const THROTTLE_LIMIT = 12;
   let consecutiveThrottles = 0;
   let aborted = false;
+  // Set once when the credit cap is hit, so the message prints a single time rather
+  // than once per worker.
+  let budgetStopped = false;
 
   async function flush() {
     const batch = pending;
@@ -369,9 +587,27 @@ async function main() {
 
   async function worker() {
     while (queue.length && !aborted) {
+      // Budget check before the request, not after: the cap must never be exceeded, and
+      // the cost of the next call is known (10 credits on super). Checked inside the
+      // loop so every worker sees the shared running total.
+      if (useScrapedo && creditsSpent + PER_REQUEST_ESTIMATE > creditBudget) {
+        if (!budgetStopped) {
+          budgetStopped = true;
+          console.error(
+            `\n[ads] BUDGET REACHED: ${creditsSpent} of ${creditBudget} credits spent ` +
+            `(~${Math.round(creditsSpent / PER_REQUEST_ESTIMATE)} requests).\n` +
+            `[ads] Stopping cleanly; results so far are saved. Raise it with ` +
+            `--credit-budget N to continue.`
+          );
+        }
+        break;
+      }
+
       const domain = queue.shift();
       const bizList = byDomain.get(domain);
       const res = await checkDomain(domain, nextProxy);
+      creditsSpent += res.cost || 0;
+      if (res.remaining !== null && res.remaining !== undefined) creditsRemaining = res.remaining;
       stats.done++;
 
       // A throttled request asked Google nothing, so it is not evidence about this
@@ -419,7 +655,8 @@ async function main() {
         const rate = stats.done / ((Date.now() - started) / 1000);
         console.error(
           `[ads] ${stats.done}/${domains.length}  advertising=${stats.advertising} ` +
-          `none=${stats.none} err=${stats.errors}  stored=${stats.written}  ${rate.toFixed(1)}/s`
+          `none=${stats.none} err=${stats.errors}  stored=${stats.written}  ${rate.toFixed(1)}/s` +
+          (useScrapedo ? `  credits=${creditsSpent}/${creditBudget}` : "")
         );
       }
       if (!dryRun && pending.length >= FLUSH_EVERY) await flush();
@@ -463,6 +700,13 @@ async function main() {
     `\n[ads] stored ${stats.written} evidence rows` +
     (stats.failedBatches ? `  (${stats.failedBatches} batch(es) failed -- see above)` : "")
   );
+  if (useScrapedo) {
+    console.error(
+      `[ads] credits: ${creditsSpent} spent this run, ` +
+      `${creditsRemaining ?? "?"} remaining on the account` +
+      (budgetStopped ? `  (stopped at the --credit-budget cap of ${creditBudget})` : "")
+    );
+  }
   // Exit non-zero on a throttle abort so a scheduled or piped run cannot report success
   // while having checked only part of the database.
   if (aborted) process.exit(2);

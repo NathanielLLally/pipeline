@@ -90,8 +90,22 @@ eq("formats are distinct and sorted", nike.formats, ["1", "2"]);
 // taking the first row's values would misreport how long the advertiser has been live.
 eq("first_shown folds to the earliest", nike.first_shown, new Date(1690000000 * 1000).toISOString());
 eq("last_shown folds to the latest", nike.last_shown, new Date(1789900000 * 1000).toISOString());
-// Creative markup is large and nobody reads it; only the ids are kept as evidence.
-ok("creative markup is not stored", !JSON.stringify(nike.creatives).includes("img src"));
+// The creative content itself is stored, not just the ids: an image ad keeps the raw
+// markup plus the extracted src, so the evidence survives the signed preview URL expiring.
+eq(
+  "image markup is stored verbatim",
+  nike.creatives[0].markup,
+  '<img src="https://tpc.googlesyndication.com/archive/simgad/2815">'
+);
+eq(
+  "image src is extracted from the markup",
+  nike.creatives[0].image_url,
+  "https://tpc.googlesyndication.com/archive/simgad/2815"
+);
+// A content node of an unexpected shape must not throw or invent fields -- the union at
+// `3` has more variants than have been observed, and an unknown one is not an error.
+ok("unknown content shape yields no content fields", nike.creatives[1].markup === undefined);
+eq("unknown content shape still keeps the id", nike.creatives[1].creative_id, "CR1750404634047");
 eq("creative ids are kept", nike.creatives.map((c) => c.creative_id),
    ["CR04565460797249028097", "CR1750404634047"]);
 // Two creatives is well under the 40-row page size, so nothing was cut off.

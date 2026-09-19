@@ -74,6 +74,44 @@ export function toDomain(website) {
   return host;
 }
 
+/**
+ * Extracts the ad's actual content from the per-ad `3` node.
+ *
+ * Three shapes appear in real responses, and the node is a union rather than a record
+ * with optional fields, so each has to be probed for rather than read positionally:
+ *
+ *   {"3":{"2":"<img src=...>"},"5":true}   an image ad; the markup is one <img> tag
+ *   {"1":{"4":"https://displayads-formats.googleusercontent.com/ads/preview/..."}}
+ *                                          a rendered preview URL (text and rich ads)
+ *
+ * Both are kept: `image_url` is directly viewable, and `preview_url` renders the ad as
+ * Google shows it in the Transparency Center. The raw markup is kept too, since it is
+ * small (~160 bytes) and is the only fully faithful record -- a preview URL is signed
+ * and will eventually stop resolving, so evidence that outlives the link is worth the
+ * bytes. Across a 40-creative response the whole content set is ~6.5KB.
+ */
+function creativeContent(node) {
+  if (!node || typeof node !== "object") return {};
+  const out = {};
+
+  // Image ad: the markup sits at 3.2 and is a single <img> tag.
+  const markup = node["3"] && node["3"]["2"];
+  if (typeof markup === "string" && markup) {
+    out.markup = markup;
+    const m = markup.match(/src\s*=\s*"([^"]+)"/i);
+    if (m) out.image_url = m[1];
+    const w = markup.match(/width\s*=\s*"(\d+)"/i);
+    const h = markup.match(/height\s*=\s*"(\d+)"/i);
+    if (w && h) out.dimensions = `${w[1]}x${h[1]}`;
+  }
+
+  // Text/rich ad: a signed preview URL at 1.4 that renders the creative.
+  const preview = node["1"] && node["1"]["4"];
+  if (typeof preview === "string" && preview) out.preview_url = preview;
+
+  return out;
+}
+
 /** Epoch-seconds string -> ISO timestamp, or null when the field is missing. */
 function epochAt(node) {
   const secs = node && node["1"];
@@ -117,15 +155,12 @@ export function parseCreatives(json) {
     if (firstShown && (!first || firstShown < first)) first = firstShown;
     if (lastShown && (!last || lastShown > last)) last = lastShown;
 
-    // Deliberately NOT the creative markup: `3.3.2` is a full ad-server <img> tag, and
-    // forty of them per business is a lot of bytes for evidence nobody will read. The
-    // ids are enough to pull the creative back from the live site if a claim is ever
-    // challenged.
     creatives.push({
       creative_id: ad[F.CREATIVE_ID] ?? null,
       format: ad[F.FORMAT] ?? null,
       first_shown: firstShown,
       last_shown: lastShown,
+      ...creativeContent(ad[F.CONTENT]),
     });
   }
 
