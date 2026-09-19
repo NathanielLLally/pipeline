@@ -1,0 +1,24 @@
+[Unit]
+Description=Run lead-sourcing worker health watchdog every 60 seconds
+Documentation=https://github.com/NathanielLLally/pipeline
+Requires=leads-watchdog.service
+After=network-online.target
+Wants=network-online.target
+
+[Timer]
+OnBootSec=30s
+
+# Measured from the *completion* of the previous run, not its start, so the real period
+# is roughly 60s + tick duration + AccuracySec of jitter -- about 70s in practice. Any
+# hysteresis logic that counts consecutive ticks must tolerate that, and must also
+# tolerate a second writer: see the "Two schedulers write to one table" section of
+# docs/ARCHITECTURE.md.
+OnUnitActiveSec=60s
+AccuracySec=10s
+
+# Missed ticks are worthless after the fact -- the watchdog reports on current worker
+# state, so a catch-up burst after downtime would write stale verdicts.
+Persistent=false
+
+[Install]
+WantedBy=timers.target

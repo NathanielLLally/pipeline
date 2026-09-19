@@ -1,0 +1,42 @@
+[Unit]
+Description=Lead-sourcing worker health watchdog
+Documentation=https://github.com/NathanielLLally/pipeline
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+
+# @LEADS_ROOT@ is substituted by deploy/install-watchdog.sh. On the database host this
+# resolves to /home/nathaniel/leads, which is a symlink to the real checkout at
+# /home/nathaniel/src/git/pipeline -- systemd follows it, so the unit does not need to
+# know which of the two paths is canonical.
+WorkingDirectory=@LEADS_ROOT@
+ExecStart=@LEADS_ROOT@/scripts/worker-watchdog.sh
+
+# The watchdog sources .env itself, which holds DB and SSH credentials. It is
+# deliberately NOT loaded here via EnvironmentFile: systemd exposes unit environment in
+# `systemctl show`, which would print those secrets to anyone who can query the unit.
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+# One tick must never outlive its timer interval; a hung SSH probe would otherwise
+# stack ticks on top of each other.
+TimeoutStartSec=90
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=leads-watchdog
+
+# The watchdog restarts remote containers over SSH and writes to Postgres. It needs no
+# local privilege beyond its own files, so drop what it cannot use.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=@LEADS_ROOT@
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=default.target
