@@ -55,6 +55,15 @@ fi
 [[ -f "$TOP/.env" ]] \
   || fail ".env not found in $TOP -- the watchdog sources it for DB and SSH credentials"
 
+# Installing from a git worktree would bake that worktree's path into the unit. Worktrees
+# are temporary and get deleted, which would leave a timer pointing at a missing script
+# and failing every 60s. The watchdog must run from a durable checkout.
+if [[ "$TOP" == *"/.claude/worktrees/"* ]] || git -C "$TOP" rev-parse --git-dir 2>/dev/null | grep -q '/worktrees/'; then
+  fail "refusing to install from a git worktree ($TOP).
+       Worktrees are temporary; the unit would point at a path that later disappears.
+       Run this from the main checkout after merging, e.g. /home/nathaniel/leads."
+fi
+
 command -v psql >/dev/null || fail "psql not found in PATH"
 
 # systemd user units only survive logout if lingering is enabled. Without it the timer
@@ -70,9 +79,14 @@ fi
 # singular SCRAPER_SSH_HOST it falls back cleanly rather than failing -- which is worse
 # than failing, because the result is a watchdog that supervises one worker out of three
 # and reports HEALTHY while the other two are dead.
-if grep -qE '^[[:space:]]*SCRAPER_SSH_HOSTS=' "$TOP/.env"; then
+# Note the regex allows an optional `export` (the deployed .env uses it) and anchors so
+# that a commented-out line does not count as configuration -- the real .env carries
+# both an active and a commented variant of this array.
+env_has() { grep -qE "^[[:space:]]*(export[[:space:]]+)?$1=" "$TOP/.env"; }
+
+if env_has SCRAPER_SSH_HOSTS; then
   say "ok: SCRAPER_SSH_HOSTS is set -- fleet-aware probing enabled"
-elif grep -qE '^[[:space:]]*SCRAPER_SSH_HOST=' "$TOP/.env"; then
+elif env_has SCRAPER_SSH_HOST; then
   say "WARNING: .env has only the singular SCRAPER_SSH_HOST."
   say "         The watchdog will supervise ONE worker and cannot detect the others"
   say "         dying. Add the array form before relying on it, e.g.:"

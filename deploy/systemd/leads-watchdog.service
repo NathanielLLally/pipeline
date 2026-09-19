@@ -29,11 +29,15 @@ SyslogIdentifier=leads-watchdog
 
 # The watchdog restarts remote containers over SSH and writes to Postgres. It needs no
 # local privilege beyond its own files, so drop what it cannot use.
+#
+# ProtectHome is NOT set to read-only here even though the script writes nothing itself:
+# it SSHes with StrictHostKeyChecking=accept-new, and accepting a new host key writes to
+# ~/.ssh/known_hosts. A read-only home breaks the first connection to any rehosted or
+# rebuilt worker -- precisely when the watchdog is most needed.
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ProtectHome=read-only
-ReadWritePaths=@LEADS_ROOT@
+ReadWritePaths=@LEADS_ROOT@ %h/.ssh
 ProtectKernelTunables=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true

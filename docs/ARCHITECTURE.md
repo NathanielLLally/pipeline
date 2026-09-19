@@ -96,6 +96,46 @@ consequences follow:
 - Hysteresis logic that counts consecutive verdicts is counting the interleaving of both
   writers. Anything depending on consecutive-tick counts must tolerate that.
 
+### Installing the watchdog
+
+The unit files are checked in at `deploy/systemd/leads-watchdog.{service,timer}` with the
+installation path as a `@LEADS_ROOT@` placeholder, and `deploy/install-watchdog.sh`
+renders them into `~/.config/systemd/user/` and enables the timer. Previously the units
+existed only on the two hosts and in no repository, so a rebuild meant reconstructing
+them from memory.
+
+Run the installer **on** the host that should carry the watchdog, from the main checkout:
+
+```bash
+./deploy/install-watchdog.sh --dry-run    # show what would change
+./deploy/install-watchdog.sh              # install, enable, start
+./deploy/install-watchdog.sh --uninstall  # stop, disable, remove units
+```
+
+It is idempotent, so re-running it is also the normal way to deploy a change to the
+watchdog script. Its preflight checks each encode a way this deployment has gone wrong:
+
+- **Refuses to install from a git worktree.** A worktree path baked into `ExecStart`
+  breaks as soon as the worktree is removed, leaving a timer that fails every 60s.
+- **Requires `SCRAPER_SSH_HOSTS`** in `.env`, warning loudly if only the legacy singular
+  `SCRAPER_SSH_HOST` is present. The fallback is worse than a failure: it yields a
+  watchdog that supervises one worker of three and reports `HEALTHY` while the other two
+  are dead. Note the matcher must accept an `export` prefix and ignore commented lines —
+  the real `.env` contains both an active and a commented form of this array.
+- **Runs one `--dry-run` tick before installing**, so a broken `.env` or unreachable
+  database surfaces immediately instead of as a silent stream of failed ticks.
+- **Warns when lingering is disabled.** Without `loginctl enable-linger`, a user timer
+  stops at logout, which presents days later as "the watchdog silently stopped".
+
+Two details in the units themselves are deliberate. `.env` is **not** loaded via
+`EnvironmentFile`, because `systemctl show` would then print the database and SSH
+credentials to anyone able to query the unit; the script sources it itself. And
+`ProtectHome=read-only` must **not** be set: the watchdog SSHes with
+`StrictHostKeyChecking=accept-new`, and accepting a new host key writes to
+`~/.ssh/known_hosts`, so `ProtectSystem=strict` is paired with
+`ReadWritePaths=@LEADS_ROOT@ %h/.ssh` instead. A read-only home would break the first
+connection to any rebuilt worker — exactly when the watchdog matters most.
+
 ### Editing and deploying the watchdog
 
 Editing the file inside a git worktree changes nothing that is running. Both timers
@@ -315,7 +355,10 @@ in this database**, and `marketing_active` stands alone with the meaning above.
 - The fleet-aware watchdog (commit `da4e4e6`) is **committed but not deployed**. The
   live copy on the database host is still the stubbed version (no `SCRAPER_SSH_HOSTS`,
   no `worker_states`, `TODO` intact). Deploying it also requires adding the
-  `SCRAPER_SSH_HOSTS` array to that host's `.env` — see above.
+  `SCRAPER_SSH_HOSTS` array to that host's `.env` — see above. The unit files and an
+  idempotent installer now live in `deploy/`, so the remaining work is a `git pull` plus
+  `./deploy/install-watchdog.sh` on that host; the installer's preflight checks the
+  `.env` prerequisite rather than letting it fail silently.
 - Whether the local workstation timer should keep running is undecided. It duplicates
   the remote one into the same table; if the remote deployment is canonical, the local
   timer is arguably redundant and could be disabled to make the tick log single-writer.
