@@ -369,8 +369,56 @@ ASN, so a full pass over the database is viable from the existing infrastructure
 
 This is a **confirmed-current-spend** signal and is materially stronger than
 `marketing_active`: a returned creative is an ad Google is serving now, not a pixel left
-over from a campaign that ended two years ago. It is not yet wired into any script or
-column.
+over from a campaign that ended two years ago.
+
+### Wired up: `scripts/enrich-ads-transparency.mjs` (2026-09-19)
+
+`db/migrations/004_ads_transparency.sql` adds `leads.ads_transparency` — one row per
+(business, domain), raw creative ids and date ranges in `jsonb` — plus three rolled-up
+columns on `leads.businesses`: `ads_confirmed_active`, `ads_last_shown`,
+`ads_creative_count`. `scripts/lib/ads-transparency.mjs` holds the request shape and the
+response decoder, with 41 unit tests over captured fixtures.
+
+**It disagrees with `marketing_active` in both directions, which is the point.** Over
+1,189 checked domains, 527 are advertising. In a hand-checked sample of 28 top-tier
+prospects, 9 confirmed advertisers had **no pixel at all**, and 2 had a pixel but run no
+ads — including `timelessk9.com`, whose last creative ran 128 days ago. Neither column
+subsumes the other: the pixel proves configuration, the creative proves spend. Segment
+on `ads_confirmed_active` when the campaign copy claims the prospect is advertising.
+
+Field meanings are recorded in `scripts/lib/ads-transparency.mjs`; the ones that matter
+are per-ad `7.1` (last shown — the recency signal), `6.1` (first shown), `12`
+(advertiser name) and top-level `2` (pagination cursor, whose presence alongside a full
+40-row page means `creative_count` is a floor, not a total).
+
+### The rate limiter, which is not a 429
+
+A full-speed pass at ~7 domains/s tripped Google's limiter partway through and then
+collected **595 useless responses** before it was noticed. Three things about it are
+worth knowing before touching this script:
+
+- It arrives as **HTTP 302 to `https://www.google.com/sorry/index`**, not a 429 and not
+  a 403. Code that only retries the usual throttle statuses will treat it as a real
+  answer.
+- It applies **across the whole pool at once**, not per IP. 12 of 12 sampled proxies
+  were blocked simultaneously, so rotating proxies does not clear it — only waiting
+  does. This is the same lesson as the Webshare direct list: refreshing addresses is not
+  a throttle remedy.
+- A throttled attempt **must not be stored**. It asked Google nothing, so writing it as
+  an error row would make a never-checked domain look permanently checked and cause a
+  resumed run to skip it forever. The script drops them and a circuit breaker aborts
+  after 12 consecutive throttles, exiting non-zero so a piped or scheduled run cannot
+  report success on a partial database.
+
+Defaults are now 4 workers with a 250ms pause, roughly 3–4 domains/s. Throughput was
+never the constraint — even that rate covers the whole database in under ten minutes —
+so the slower setting costs nothing real and avoids the block.
+
+Every pass begins by probing `nike.com`, a domain certain to advertise. An empty
+response is indistinguishable from a malformed request, so without that check a broken
+payload would silently write "no ads" for the entire database. The probe distinguishes
+its two failure modes: a throttle exits 3 and says to wait, a genuinely empty result
+exits 1 and says to re-capture the request with Playwright.
 
 ---
 
@@ -446,9 +494,11 @@ rather than printing a sample.
   idempotent installer now live in `deploy/`, so the remaining work is a `git pull` plus
   `./deploy/install-watchdog.sh` on that host; the installer's preflight checks the
   `.env` prerequisite rather than letting it fail silently.
-- Google Ads Transparency is solved and verified through the proxy pool, but **nothing
-  consumes it yet** — there is no script, no column and no stored evidence. Wiring it up
-  would give the database its first confirmed-current-spend signal.
+- Google Ads Transparency is wired up and **1,189 domains are checked, 527 advertising**,
+  but the pass is **incomplete**: it was rate-limited partway through and roughly 2,100
+  businesses still have no result. Re-running resumes where it stopped. Nothing scores on
+  `ads_confirmed_active` yet either — it is stored but not yet folded into `icp_score`,
+  which is the obvious next use for it.
 - Whether the local workstation timer should keep running is undecided. It duplicates
   the remote one into the same table; if the remote deployment is canonical, the local
   timer is arguably redundant and could be disabled to make the tick log single-writer.
