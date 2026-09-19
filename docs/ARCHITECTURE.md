@@ -192,6 +192,60 @@ Enrichment phases:
 - **Phase C** (not yet built) — LLM extraction of decision makers via LiteLLM → Ollama,
   with verbatim-name guardrails.
 
+### Corroborating people: what this niche actually publishes
+
+Measured 2026-09-18 over two crawls through the SOCKS5 pool — 300 random non-social
+websites (252 reachable) and the top 150 Tier 1/2 `dog_training` rows (120 reachable).
+Only `href`/`src` targets were counted; bare string matching produces false positives
+(`facebook.com/2008/fbml` is an XML namespace, `bbb.org/inc/legacy.js` a script path).
+
+| Platform linked from homepage | Random sample | Top-tier trainers |
+|---|---|---|
+| Facebook | 58% | 71% |
+| Instagram | 56% | 69% |
+| Google Business (g.page / maps) | 25% | 42% |
+| YouTube | 15% | 50% |
+| Yelp | 17% | — |
+| TikTok | 10% | — |
+| **LinkedIn** | **5%** | — |
+| Nextdoor, YellowPages, Thumbtack, Rover | **0%** | 0% |
+
+**YellowPages and Nextdoor are dead ends here** — zero of 372 crawled sites link to
+either. They should not be built into the enrichment pipeline.
+
+**LinkedIn does not mark enterprise-scale entities in this niche.** Of 252 sites, 13
+linked to LinkedIn; their median review count (39) is *lower* than the sites that do not
+(52), and their Tier 1 share is lower too (8% vs 13%). Of those 13 links, 8 are
+`/company/` and 5 are `/in/`, and several `/company/` pages belong to two-review
+businesses — it reflects the owner's personal habit, not company size. What does track
+with size is **breadth**: sites linking 3+ platforms have roughly double the median
+reviews and 4–5× the Tier 1 rate of sites linking none. Breadth of social presence is
+the usable size proxy; LinkedIn presence is not.
+
+**Meta is not fetchable from this proxy pool.** Facebook returns HTTP 400 to the
+datacenter ASN on every profile URL tested (6/6). Instagram returns either a 200 login
+shell with the `og:` metadata stripped out, or 429. So a Facebook/Instagram URL is
+useful only as a *stored identifier* for a human to open later, never as a page to parse.
+
+**The two workable on-site person signals**, both from the prospect's own website:
+
+1. **Name + title on an about/team/bio page.** Among top-tier trainers, 82/120 had such
+   a page and deterministic regex extraction produced a name+title for 39 (33%), with
+   about 19% of the extracted strings malformed (a leading noun captured as a first
+   name: `Maryland Dog (Owner)`, `Results Cost (Owner)`). Yield is far worse on the
+   random sample (7%) because it is grooming-heavy — grooming sites mostly have no
+   about page at all. Decision-maker extraction is worth running on trainers, not on
+   the whole database.
+2. **A person-shaped email local part.** 42% of reachable sites expose one
+   (`michael@atlantacanine.com`, `sarah@synergydogco.com`) versus 26% generic role
+   addresses. This is an independent second source, but it rarely corroborates the
+   scraped name directly — only 13–30% of sites having both had them agree, because the
+   email often belongs to a different staff member.
+
+Combined, **63% of top-tier trainer sites carry at least one person signal.** Treat the
+two as separate evidence rather than requiring agreement; requiring both would discard
+most of the yield.
+
 ### Known data caveat: capped review samples
 
 The scraper caps `user_reviews` at 8 entries, and 2,165 rows sit exactly at that cap.
