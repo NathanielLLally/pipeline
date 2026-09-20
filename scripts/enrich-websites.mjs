@@ -120,6 +120,46 @@ export function toText(html) {
     .trim();
 }
 
+// Markers of a block, challenge or error page. Matched against the *extracted text*,
+// where such a page says what it is, rather than against markup.
+//
+// "Page not found" is included even though a 404 body can be long: a themed 404 carries
+// the site's whole navigation chrome, which is bulk, not content. Such a page may still
+// hold a header mailto: address, but it is not evidence the URL is live, and recording
+// it as a successful crawl would stop the real page ever being fetched.
+const BLOCK_MARKERS =
+  /(?:\b40[0-9]\b[\s-]*(?:forbidden|unauthorized|bad request|not found|page)|\bpage not found\b|\bnot found\b|\b404 page\b|dns resolution error|please enable cookies|error 10\d\d\b|ray id:|forbidden|unauthorized|access (?:to this page )?is (?:forbidden|denied)|access denied|attention required|checking your browser|just a moment|ddos protection|request blocked|are you a robot|captcha|security check|verify you are human|not acceptable|service unavailable|site can'?t be reached|account suspended|website firewall|not configured|domain (?:for sale|is parked)|under construction)/i;
+
+// A real business homepage has prose. An error page, however elaborately styled, does
+// not -- the observed nginx/WordPress 403 stubs render to about 87 characters once tags
+// are stripped, while a genuine salvaged page runs to thousands.
+const MIN_SALVAGE_TEXT = 400;
+
+/**
+ * Whether a response carries usable page content.
+ *
+ * Status alone is the wrong test: some sites -- WordPress behind a caching proxy --
+ * answer GET with 403 while returning their complete homepage, title, contact details
+ * and all. But the opposite is far more common, and the two are indistinguishable by
+ * status or by body size, because a styled error page carries plenty of markup.
+ *
+ * So the test for a non-2xx/3xx response is made on the *extracted text*: substantial
+ * prose, and no error/challenge phrasing in its opening. Checking raw body length
+ * instead let 230 nginx 403 stubs through in one run -- each over 500 bytes of markup
+ * and 87 characters of text -- and recorded them as successfully crawled pages.
+ *
+ * The status is still stored verbatim, so a later pass can distinguish a clean 200
+ * from a salvaged 403.
+ */
+export function usableBody(res, text = null) {
+  if (!res.body || res.body.length <= 500) return false;
+  if (res.status >= 200 && res.status < 400) return true;
+
+  const t = text ?? toText(res.body);
+  if (t.length < MIN_SALVAGE_TEXT) return false;
+  return !BLOCK_MARKERS.test(t.slice(0, 600));
+}
+
 /**
  * Fetch with retries through *different* proxies.
  *
@@ -290,7 +330,10 @@ async function crawlBusiness(biz, nextProxy, alreadyCrawled) {
   if (alreadyCrawled.has(home)) return { biz, crawls: [], skipped: "already crawled" };
 
   const res = await fetchWithRetry(home, nextProxy);
-  const ok = res.status >= 200 && res.status < 400 && res.body.length > 500;
+  // Extract once and hand it to usableBody, so the salvage decision is made on exactly
+  // the text that will be stored.
+  const homeText = res.body ? toText(res.body).slice(0, EXCERPT_CHARS) : null;
+  const ok = usableBody(res, homeText);
   crawls.push({
     business_id: biz.id,
     url: home,
@@ -300,7 +343,7 @@ async function crawlBusiness(biz, nextProxy, alreadyCrawled) {
     fetch_error: res.error,
     content_bytes: Buffer.byteLength(res.body),
     signals: ok ? detectPage(res.body, res.finalUrl) : {},
-    text_excerpt: ok ? toText(res.body).slice(0, EXCERPT_CHARS) : null,
+    text_excerpt: ok ? homeText : null,
   });
   if (!ok) return { biz, crawls, pages: [] };
   pages.push(crawls[0].signals);
@@ -314,7 +357,8 @@ async function crawlBusiness(biz, nextProxy, alreadyCrawled) {
     if (alreadyCrawled.has(sub.url) || requested.has(sub.url)) continue;
     requested.add(sub.url);
     const r = await fetchWithRetry(sub.url, nextProxy);
-    const sok = r.status >= 200 && r.status < 400 && r.body.length > 500;
+    const subText = r.body ? toText(r.body).slice(0, EXCERPT_CHARS) : null;
+    const sok = usableBody(r, subText);
     crawls.push({
       business_id: biz.id,
       url: sub.url,
@@ -324,7 +368,7 @@ async function crawlBusiness(biz, nextProxy, alreadyCrawled) {
       fetch_error: r.error,
       content_bytes: Buffer.byteLength(r.body),
       signals: sok ? detectPage(r.body, r.finalUrl) : {},
-      text_excerpt: sok ? toText(r.body).slice(0, EXCERPT_CHARS) : null,
+      text_excerpt: sok ? subText : null,
     });
     if (sok) pages.push(crawls[crawls.length - 1].signals);
   }
@@ -377,13 +421,17 @@ async function main() {
     return;
   }
 
-  // Resumability: one query for every URL already on record, so a re-run costs nothing
-  // for the pages it has. --refetch skips this and re-fetches everything.
+  // Resumability: one query for every URL whose CONTENT is already on record, so a
+  // re-run costs nothing for the pages it has. Keyed on text_excerpt rather than on
+  // status: a salvaged 403 has content and should be skipped, while a 403 stored back
+  // when the status gate discarded its body has none and must be fetched again.
+  // --refetch skips this and re-fetches everything.
   const crawled = new Map();
   if (!refetch) {
     const prior = JSON.parse(q(`
       SELECT coalesce(json_agg(t), '[]')
-      FROM (SELECT business_id, url FROM leads.website_crawl WHERE http_status BETWEEN 200 AND 399) t;
+      FROM (SELECT business_id, url FROM leads.website_crawl
+            WHERE text_excerpt IS NOT NULL) t;
     `, { env, args: ["-tA"] }).trim());
     for (const p of prior) {
       if (!crawled.has(p.business_id)) crawled.set(p.business_id, new Set());

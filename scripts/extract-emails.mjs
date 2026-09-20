@@ -56,6 +56,10 @@ function main() {
 
   // Pull the crawled text. Joining to businesses here so the site's own domain is
   // available for the same-domain check without a second query.
+  // No http_status filter: the crawler only writes text_excerpt/signals when it judged
+  // the body usable, so content presence is the gate. Some sites serve their real
+  // homepage under a 403, and those pages carry contact addresses like any other.
+  //
   // signal_emails is the mailto: channel. detectPage() in site-signals.mjs runs its
   // extractor over raw HTML, so it sees <a href="mailto:...">; toText() historically
   // stripped those tags before text_excerpt was written, so an address linked but never
@@ -73,8 +77,7 @@ function main() {
     )), '[]'::jsonb)
     FROM leads.website_crawl w
     JOIN leads.businesses b ON b.id = w.business_id
-    WHERE w.http_status = 200
-      AND (w.text_excerpt IS NOT NULL
+    WHERE (w.text_excerpt IS NOT NULL
            OR w.signals ? 'person_emails' OR w.signals ? 'role_emails')
     ${limit ? `LIMIT ${limit}` : ""}
   `, { args: ["-tA"], env }));
