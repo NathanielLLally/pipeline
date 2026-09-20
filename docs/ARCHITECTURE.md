@@ -661,6 +661,103 @@ stored). Coverage will not approach 100% by crawling harder.
 
 ---
 
+## The RDAP channel: asking the registry instead of the site
+
+The crawl can only find an address a business chose to publish. RDAP asks a different
+question of a different party — *who registered this domain?* — so it reaches businesses
+whose sites carry no address at all. `scripts/enrich-rdap.mjs` runs it;
+`leads.domain_rdap` records the answers, including the misses.
+
+It is a deliberately small channel, and the measurements that sized it are worth keeping
+because they explain every design choice in the pass:
+
+**The registries carry nothing.** Over 142 sampled domains, the registry's own RDAP
+answer contained a contact entity *zero* times. `.com` and `.net` are thin registries by
+design — Verisign holds nameservers and a registrar pointer, nothing else — and `.org`
+redacts. All yield comes from a second hop to the registrar's own RDAP server, named in
+the registry response's `links`. This is why a failed registrar hop is treated as *not
+yet asked* rather than as a miss: recording the registry's contact-free document as
+`redacted` would fabricate an answer, and the resume logic would then never re-ask.
+
+**Yield is concentrated in registrars that don't bundle privacy.** Measured per
+registrar, the domains that yielded an address came from web.com, Network Solutions,
+Amazon Registrar and NameSilo. The large consumer registrars yielded nothing at all:
+
+| Registrar | found | privacy | redacted |
+|---|---|---|---|
+| GoDaddy | 0 | 38 | 0 |
+| Namecheap | 0 | 7 | 0 |
+| Squarespace | 0 | 0 | 8 |
+| Wix | — | — | refused every request |
+
+The full pass bears this out: 1,102 domains probed in 601s, of which **713 were skipped
+at no-yield registrars** — nearly two thirds of the corpus sits behind four companies
+that publish nothing.
+
+That is structural, not unlucky: GoDaddy ships Domains By Proxy free with every domain,
+so the registrant field is *unavailable*, not merely often missing. Those registrars are
+also the ones that rate-limit hardest (GoDaddy answers 429 with a ~15s sliding window),
+so they cost the most and return the least. `NO_YIELD_REGISTRAR` skips them, and the
+skip is counted separately and never written to `domain_rdap` — if a registrar changes
+policy, `--ask-all-registrars` re-measures without a code change.
+
+**The registrars are the rate limit, not the registries.** Verisign answered 12
+consecutive requests without complaint. So `HostGate` paces per registrar *host* rather
+than globally: each host has its own minimum gap and its own 429 penalty box, and the
+pass fans out across registrars rather than across domains.
+
+### Why these addresses are marked `source='rdap'`
+
+`005_business_email.sql` requires that an address obtained by a method other than
+observation stay distinguishable, and this is the first channel to exercise that rule. An
+RDAP registrant address is genuinely weaker evidence than one printed on a contact page:
+it may be the web developer who registered the domain, or a mailbox nobody has read since
+the domain was bought. Confidence is capped at 60 — below any crawl-sourced address — and
+the rollup onto `businesses.contact_email` is guarded on `contact_email IS NULL`, so an
+observed address is never overwritten by a registry one.
+
+### What the full pass produced
+
+1,102 domains probed: 45 usable addresses, 127 privacy-proxied, 67 redacted, 10
+non-existent, 713 skipped at no-yield registrars, 127 throttled and left for a re-run.
+That moved overall coverage 59.0% → 60.2% and Tier 1 64.6% → 65.5%. Small, as the
+sampling predicted, and the channel is now closed: re-running only picks up the 127
+throttled domains and anything newly discovered.
+
+### Two filters the crawl channel does not need
+
+**Third-party vendor domains.** Web developers, hosting resellers and IT shops register
+domains for clients and leave *their own* address in the registrant field. The first live
+run wrote `purchasing@milesit.com` (an IT vendor), `domains1@imatrix.com` (a marketing
+agency) and `questions@weebly.com` into `business_email` before the rule existed. The
+crawl channel never produces these, because an agency's address is not printed on the
+client's contact page. The rule: reject an address that is on neither the business's own
+domain nor a consumer mailbox provider.
+
+That rule is too blunt on its own, and the exception matters. "Dog Trainer Rob — Canine
+Nutritionist" lists `robert@rawk9food.com` under registrant `Rodriguez, robert`: a
+third-party domain by the mechanical test, but plainly the owner's own address and his
+own second business. `localMatchesRegistrant()` rescues these by checking the local part
+against the registrant name, which `domains1@imatrix.com` under `Chuck Hoover` fails.
+Five of the 50 first-run addresses were purged; the rescued one was kept.
+
+### The privacy filter is the load-bearing part
+
+The failure mode here is not a missing address, it is a *deliverable wrong one*. Privacy
+services issue per-domain forwarding aliases that pass every ordinary validity check
+while reaching the vendor rather than the prospect. Three independent tests are needed
+because the vendors defeat each other's: the entity may name the service
+(`Domains By Proxy, LLC`), the address may name it (`x@whoisguard.com`), or neither may
+while the local part is plainly machine-issued
+(`pwp-b52a8e864f035ff4484cfe31202b07f0@privacyguardian.org`,
+`myportfolio.com-registrant@anonymised.email`, `info@domain-contact.org`). Each of those
+examples was caught only after leaking through an earlier version of the filter in a live
+dry run, and each is now a test case in `scripts/lib/rdap.test.mjs`. Every recovered
+address additionally goes through the same `rejectReason`/`classify` filter as the crawl
+channel — a different channel is not a lower standard of evidence.
+
+---
+
 ## Open items / unverified
 
 - The fleet-aware watchdog (commit `da4e4e6`) is **committed but not deployed**. The
@@ -676,10 +773,13 @@ stored). Coverage will not approach 100% by crawling harder.
   The recency window is fixed at 30 days (`RECENT_DAYS`), chosen from a visible gap in
   the observed data rather than measured against outcomes — worth revisiting once there
   is campaign-response data to calibrate against.
-- **Contact email coverage is 47.4% and is the pipeline's binding constraint.** Two
-  recoverable groups: 90 Tier 1 businesses whose every page fetch failed (worth a
-  re-crawl with different transport/UA), and businesses that publish a contact *form*
-  rather than an address. The latter is the larger group and crawling will not solve it.
+- **Contact email coverage is 60.2% overall (65.5% Tier 1) and remains the pipeline's
+  binding constraint.** The crawl and RDAP channels are both now worked out. What is
+  left: ~230 businesses that publish a contact *form* and no address — the largest
+  remaining group, and one that needs an outreach-mechanics decision rather than a
+  `business_email` row, since a form submission is not an address; the businesses whose
+  every page fetch failed, worth a re-crawl on different transport; and the 127 domains
+  RDAP left throttled, which a re-run picks up for free.
 - Whether the local workstation timer should keep running is undecided. It duplicates
   the remote one into the same table; if the remote deployment is canonical, the local
   timer is arguably redundant and could be disabled to make the tick log single-writer.
