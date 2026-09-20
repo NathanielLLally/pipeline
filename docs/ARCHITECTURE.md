@@ -774,12 +774,29 @@ channel — a different channel is not a lower standard of evidence.
   the observed data rather than measured against outcomes — worth revisiting once there
   is campaign-response data to calibrate against.
 - **Contact email coverage is 60.2% overall (65.5% Tier 1) and remains the pipeline's
-  binding constraint.** The crawl and RDAP channels are both now worked out. What is
-  left: ~230 businesses that publish a contact *form* and no address — the largest
-  remaining group, and one that needs an outreach-mechanics decision rather than a
-  `business_email` row, since a form submission is not an address; the businesses whose
-  every page fetch failed, worth a re-crawl on different transport; and the 127 domains
-  RDAP left throttled, which a re-run picks up for free.
+  binding constraint.** 2,190 of 3,638 live businesses carry an address; 3,063
+  (business, address) rows over 2,573 distinct addresses. The crawl and RDAP channels
+  are both worked out. The 1,448 still uncovered break down as:
+
+  | Bucket | Businesses | Tier 1 | Route |
+  |---|---|---|---|
+  | Site read, no address and no form | 497 | 67 | phone, or nothing |
+  | Site never fetched successfully | 426 | 83 | re-crawl on different transport |
+  | No website at all | 283 | 0 | phone only |
+  | **Contact form, no address** | **242** | **64** | **submit the form** |
+
+- **TODO — fill out the contact forms (242 businesses, 457 form pages).** These
+  businesses route contact through a form *instead of* publishing an address, so the
+  form is the address. The work is a submission pass, not an extraction pass: parse the
+  form on the page already stored in `leads.website_crawl`, fill it with our own
+  sender identity and message, POST it, and record the attempt and the response so a
+  re-run neither re-sends nor loses track. Form kinds observed: 142 native
+  `<form>` with an email/phone input, 84 generic form builders (Formstack/Wufoo/Gravity/
+  Formidable), 9 Jotform, 4 Typeform, 3 HubSpot. The native and HubSpot ones are
+  ordinary POSTs; Typeform and Jotform are JS-rendered and need their own handling or a
+  browser. Note this is outbound contact to real businesses, so the live send waits on
+  the owner's go-ahead even though the pass itself should be built and dry-run first.
+- The 127 domains RDAP left throttled, which a re-run picks up for free.
 - Whether the local workstation timer should keep running is undecided. It duplicates
   the remote one into the same table; if the remote deployment is canonical, the local
   timer is arguably redundant and could be disabled to make the tick log single-writer.
