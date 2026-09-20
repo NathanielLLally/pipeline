@@ -583,6 +583,84 @@ rather than printing a sample.
 
 ---
 
+## Contact emails: the deliverable
+
+Everything else in this pipeline — discovery, dedup, scoring, ads, decision makers —
+exists to decide *who* to email. `leads.business_email` is *how* to email them, and it is
+the only table whose emptiness makes the rest worthless. It was also, for most of this
+project's life, the one thing nothing wrote to; that is worth remembering when the next
+enrichment idea competes for time against contact coverage.
+
+**Schema** (`db/migrations/005_business_email.sql`): one row per `(business_id, email)`,
+each carrying the `source_url` and `page_kind` it was observed on. A separate table
+rather than a column because a business commonly has several addresses and the choice
+between `info@` and the owner's personal address should be made from evidence at export
+time, not guessed at extraction time. Three cache columns on `businesses`
+(`contact_email`, `contact_email_count`, `contact_email_is_role`) hold the rolled-up best
+pick so exports need no join; the evidence table stays authoritative.
+
+**`source` is load-bearing.** `source = 'crawl'` means the address appeared *verbatim* in
+text fetched from that business's own site. Nothing here is inferred. If pattern-guessing
+(`firstname@domain`) is ever added it must take a distinct `source` value and be
+excludable from sends — a guessed address that bounces costs sender reputation across the
+whole list, not just that one prospect.
+
+### Extraction
+
+`scripts/lib/emails.mjs` (pure, unit-tested) + `scripts/extract-emails.mjs` (the pass).
+Zero network: it reads `website_crawl.text_excerpt` that earlier crawls already paid for,
+so it is free, idempotent, and **should be re-run after every crawl**. `ON CONFLICT` makes
+a re-run update in place, which is why re-extracting also re-examines businesses that
+previously yielded nothing.
+
+Precision over recall throughout, for the same asymmetry as above: a junk address costs
+reputation, a missed one costs a single prospect the next crawl may recover. Rejections
+are counted and reported *by reason* rather than dropped silently — silent filtering is
+how a bad rule survives unnoticed.
+
+Two rules that came from real corpus data, not speculation:
+
+- **The TLD must be alphabetic.** A permissive pattern pulls `logo@2x.png` and version
+  debris out of minified CSS and calls them contacts.
+- **`filler@godaddy.com` is the single most common false positive** — GoDaddy's
+  placeholder, present on every unconfigured parked domain. It was 86 of 88 junk matches
+  in the first measured pass, and 172 of 199 in the full one.
+
+Confidence (0–100) combines domain match, role-vs-personal, free-mail, and where on the
+site the address appeared. The ordering is what matters, not the absolute numbers: a named
+person on the business's own domain, found on the contact page, must outrank everything
+else. `contact` and `about` pages yield the highest-confidence addresses (avg 82 and 86)
+and `home` the lowest (73) — the ranking the weights were designed to produce, confirmed
+against output rather than assumed.
+
+### Coverage, as measured
+
+8,776 pages crawled across 3,349 businesses (8,225 HTTP 200). From that text:
+**2,083 addresses across 1,723 businesses** — 1,294 personal, 1,251 on the business's own
+domain, 646 free-mail.
+
+| Tier | Businesses | With email | % | Personal |
+|---|---|---|---|---|
+| Tier 1 | 621 | 285 | 45.9% | 151 |
+| Tier 2 | 796 | 420 | 52.8% | 232 |
+| Tier 3 | 1,621 | 828 | 51.1% | 519 |
+| Tier 4 | 600 | 190 | 31.7% | 131 |
+| **All** | **3,638** | **1,723** | **47.4%** | **1,033** |
+
+Tier 4's lower rate is an artifact of websites, not of crawling: only 391 of its 600 rows
+have a site at all. Measured against businesses that *have* a website, every tier lands
+near 50%.
+
+**Tier 1 is the one number that looks wrong and is worth understanding.** All 621 have
+websites and all 621 have been crawled, yet 336 have no address. The split: 246 were
+fetched successfully and simply publish no email — premium trainers increasingly funnel
+contact through a booking widget or form, which is itself the ICP signal that scored them
+Tier 1 — and 90 had every fetch fail. The second group is recoverable by re-crawling; the
+first is not, and needs a different channel (the form, or the phone number already
+stored). Coverage will not approach 100% by crawling harder.
+
+---
+
 ## Open items / unverified
 
 - The fleet-aware watchdog (commit `da4e4e6`) is **committed but not deployed**. The
@@ -598,6 +676,10 @@ rather than printing a sample.
   The recency window is fixed at 30 days (`RECENT_DAYS`), chosen from a visible gap in
   the observed data rather than measured against outcomes — worth revisiting once there
   is campaign-response data to calibrate against.
+- **Contact email coverage is 47.4% and is the pipeline's binding constraint.** Two
+  recoverable groups: 90 Tier 1 businesses whose every page fetch failed (worth a
+  re-crawl with different transport/UA), and businesses that publish a contact *form*
+  rather than an address. The latter is the larger group and crawling will not solve it.
 - Whether the local workstation timer should keep running is undecided. It duplicates
   the remote one into the same table; if the remote deployment is canonical, the local
   timer is arguably redundant and could be disabled to make the tick log single-writer.
