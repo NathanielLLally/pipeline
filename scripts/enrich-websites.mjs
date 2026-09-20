@@ -32,7 +32,7 @@
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
 import { q } from "./lib/q.mjs";
 import { loadEnv } from "./lib/env.mjs";
@@ -81,9 +81,28 @@ function jsonLiteral(value) {
     .replace(/\$e\$/g, "");
 }
 
-/** Strips tags and script/style bodies. Feeds text_excerpt, which Phase C reads. */
-function toText(html) {
-  return html
+/**
+ * Strips tags and script/style bodies. Feeds text_excerpt, which Phase C reads.
+ *
+ * mailto: addresses are lifted out and prefixed onto the text first. An address that
+ * appears ONLY as <a href="mailto:erin@x.com">Email us</a> -- the normal shape of a
+ * contact page -- is otherwise destroyed by the tag strip below, and invisible to
+ * extract-emails.mjs, which reads this text and not the HTML. That cost 496 businesses
+ * their contact address on the first full crawl.
+ *
+ * Prefixed rather than appended because the caller truncates at EXCERPT_CHARS, and a
+ * suffix on a long page would be cut off.
+ */
+export function toText(html) {
+  const mailtos = new Set();
+  for (const m of html.matchAll(/mailto:\s*([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,24})/gi)) {
+    mailtos.add(m[1].toLowerCase());
+  }
+  // Capped: a staff-directory page can carry dozens, and the excerpt budget belongs to
+  // the prose that Phase C reads for names.
+  const prefix = mailtos.size ? `${[...mailtos].slice(0, 10).join(" ")} ` : "";
+
+  return prefix + html
     // NUL and the other C0 controls first. Postgres text cannot store \u0000 at all --
     // it rejects the value with "unsupported Unicode escape sequence" and takes the
     // whole transaction with it, which silently discarded a completed 1,542-site crawl.
@@ -494,7 +513,11 @@ async function main() {
   );
 }
 
-main().catch((err) => {
-  console.error(`[enrich-websites] ${err.message}`);
-  process.exit(1);
-});
+// Only crawl when run as a script. toText is exported for its regression test, and
+// importing this module must not launch a crawl as a side effect.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((err) => {
+    console.error(`[enrich-websites] ${err.message}`);
+    process.exit(1);
+  });
+}

@@ -56,17 +56,26 @@ function main() {
 
   // Pull the crawled text. Joining to businesses here so the site's own domain is
   // available for the same-domain check without a second query.
+  // signal_emails is the mailto: channel. detectPage() in site-signals.mjs runs its
+  // extractor over raw HTML, so it sees <a href="mailto:...">; toText() historically
+  // stripped those tags before text_excerpt was written, so an address linked but never
+  // printed existed in signals and nowhere else. Older crawl rows still look like that,
+  // and reading both sources here recovers them without re-fetching anything.
   const rows = JSON.parse(q(`
     SELECT COALESCE(jsonb_agg(jsonb_build_object(
       'business_id', w.business_id,
       'url', COALESCE(w.final_url, w.url),
       'page_kind', w.page_kind,
       'website', b.website,
-      'text', w.text_excerpt
+      'text', w.text_excerpt,
+      'signal_emails', COALESCE(w.signals->'person_emails', '[]'::jsonb)
+                       || COALESCE(w.signals->'role_emails', '[]'::jsonb)
     )), '[]'::jsonb)
     FROM leads.website_crawl w
     JOIN leads.businesses b ON b.id = w.business_id
-    WHERE w.text_excerpt IS NOT NULL AND w.http_status = 200
+    WHERE w.http_status = 200
+      AND (w.text_excerpt IS NOT NULL
+           OR w.signals ? 'person_emails' OR w.signals ? 'role_emails')
     ${limit ? `LIMIT ${limit}` : ""}
   `, { args: ["-tA"], env }));
 
@@ -77,14 +86,24 @@ function main() {
   const byBusiness = new Map();
   const rejected = new Map();
   let rawMatches = 0;
+  let fromSignals = 0;
 
   for (const row of rows) {
-    const found = extractFromText(row.text, row.website);
+    // The stored signal addresses go through the identical filter and classifier as
+    // page text -- a mailto: is a different *channel*, not a lower standard of
+    // evidence, and filler@godaddy.com is just as worthless behind an href.
+    const text = [
+      (row.signal_emails || []).join(" "),
+      row.text || "",
+    ].join(" ");
+
+    const found = extractFromText(text, row.website);
     rawMatches += found.length;
+    if (row.signal_emails?.length) fromSignals++;
 
     // Count rejections separately so the filter rules stay observable. Re-scanning the
     // raw matches is cheap next to the crawl that produced them.
-    for (const raw of row.text.match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g) || []) {
+    for (const raw of text.match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g) || []) {
       const reason = rejectReason(raw.toLowerCase().replace(/[.,;:)\]}>'"]+$/, ""));
       if (reason) rejected.set(reason, (rejected.get(reason) || 0) + 1);
     }
@@ -135,6 +154,7 @@ function main() {
     `\n[email] ${payload.length} addresses across ${byBusiness.size} businesses ` +
     `(${rawMatches} raw matches kept)`
   );
+  console.error(`[email] ${fromSignals} pages contributed a mailto: address from signals`);
   console.error(
     `[email] personal=${payload.length - roleCount}  role=${roleCount}  ` +
     `own-domain=${ownDomain}  free-mail=${freeCount}`
