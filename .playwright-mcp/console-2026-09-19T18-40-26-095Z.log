@@ -1,0 +1,9 @@
+[    3281ms] [INFO] Slow network is detected. See https://www.chromestatus.com/feature/5636954674692096 for more details. Fallback font will be used while loading: https://fonts.gstatic.com/s/productsans/v20/pxiDypQkot1TnFhsFMOfGShVF9eO.woff2 @ https://adstransparency.google.com/?region=US&domain=offleashk9training.com:213
+[    3281ms] [INFO] Slow network is detected. See https://www.chromestatus.com/feature/5636954674692096 for more details. Fallback font will be used while loading: https://fonts.gstatic.com/s/googlesanstext/v29/5aUp9-KzpRiLCAt4Unrc-xIKmCU5oLlVnmhjtg.woff2 @ https://adstransparency.google.com/?region=US&domain=offleashk9training.com:213
+[    3288ms] [INFO] Slow network is detected. See https://www.chromestatus.com/feature/5636954674692096 for more details. Fallback font will be used while loading: https://fonts.gstatic.com/s/googlesanstext/v29/5aUu9-KzpRiLCAt4Unrc-xIKmCU5qEp2iw.woff2 @ https://adstransparency.google.com/?region=US&domain=offleashk9training.com:213
+[    5571ms] [ERROR] Product widget set failed: Error: X
+    at Ci (https://adstransparency.google.com/?region=US&domain=offleashk9training.com:215:337)
+    at new X (https://adstransparency.google.com/?region=US&domain=offleashk9training.com:224:500)
+    at https://adstransparency.google.com/?region=US&domain=offleashk9training.com:231:218
+    at https://adstransparency.google.com/?region=US&domain=offleashk9training.com:243:3 @ https://adstransparency.google.com/?region=US&domain=offleashk9training.com:3185
+[   36952ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_CLOSED @ https://adstransparency.google.com/_/logging?authuser=:0

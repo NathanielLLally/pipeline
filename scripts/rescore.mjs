@@ -72,7 +72,9 @@ function main() {
       'website', website,
       'price_range', price_range,
       'booking_present', booking_present,
-      'growth_score', growth_score
+      'growth_score', growth_score,
+      'ads_confirmed_active', ads_confirmed_active,
+      'ads_creative_count', ads_creative_count
     )), '[]'::jsonb)
     FROM (SELECT * FROM leads.businesses ORDER BY id ${limit ? `LIMIT ${limit}` : ""}) b
   `, ["-t", "-A"]));
@@ -98,6 +100,11 @@ function main() {
       priceRange: r.price_range,
       bookingPresent: r.booking_present,
       growthScore: r.growth_score,
+      // Null for a business the Ads Transparency pass has not reached; the scorer
+      // treats that as "unknown", not "does not advertise", so an unchecked row is
+      // never penalised for missing evidence.
+      adsConfirmedActive: r.ads_confirmed_active,
+      adsCreativeCount: r.ads_creative_count,
     });
 
     after.push({ tier: res.tier, qc: res.qcStatus, cat: res.serviceCategory || r.service_category });
