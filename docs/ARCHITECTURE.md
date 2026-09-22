@@ -461,20 +461,36 @@ Concurrency is `Parallel::ForkManager` (default 30 workers). Each child builds *
 ```
 ./scripts/mxCheck.pl --email owner@example.com
 ./scripts/mxCheck.pl --file addresses.txt --threads 30
-./scripts/mxCheck.pl --file addresses.txt --debug     # trace to STDERR
+./scripts/mxCheck.pl --file addresses.txt --debug              # trace to STDERR
+./scripts/mxCheck.pl --file addresses.txt --rate-limit 5        # cap starts/sec
+./scripts/mxCheck.pl --file addresses.txt --socks5-proxy host:port
 ```
 
 Output is a JSON array on STDOUT: `{email, verified, mx_server, error}` per address. `--debug` writes an execution trace to STDERR only, so it is safe to use while piping results. Every DNS and SMTP call is announced by a `NET>` line **before** the call is made, paired with a `NET<` line carrying the outcome and elapsed milliseconds; each line is stamped with elapsed time and pid, which is what makes an interleaved 30-worker trace readable. The `NET>`-before-the-call ordering is deliberate: a trace must be able to answer "what was it about to talk to when it hung."
 
-CPAN dependencies (all installed on the workstation): `Net::DNS`, `Net::SMTP`, `Parallel::ForkManager`, `Try::Tiny`, `JSON::PP`.
+**`--rate-limit N`** caps checks *started* to N per second, summed across all workers, enforced in the parent's dispatch loop (there is no cheap way to share a budget across already-forked children). `--threads` still bounds concurrency; `--rate-limit` bounds how fast new connections begin. A burst of RCPT TOs from one IP looks like directory harvesting to a receiving mail server and is what gets a sending IP blocklisted — this exists to avoid that on a bulk run.
+
+**`--socks5-proxy host:port`** routes the SMTP TCP connection (never the DNS MX lookup, which always resolves directly) through a SOCKS5 proxy. Credentials come from `MXCHECK_SOCKS5_USER` / `MXCHECK_SOCKS5_PASS` in the environment, never from a CLI flag — a password on the command line is visible to every local process via `ps aux` and lands in shell history, the same class of leak that put a live Postgres password in a public repo earlier in this project. `--socks5-user`/`--socks5-pass` exist only for local testing and print a loud warning when used.
+
+The proxied path doesn't use `Net::SMTP->new()`, because `Net::SMTP` has no hook for handing it an already-open socket. Instead the tunnel is opened directly with `IO::Socket::Socks`, then the connected handle is re-blessed into `Net::SMTP` and its connection bookkeeping (`net_smtp_arg`, `net_smtp_host`, the banner read, `HELO`) is redone by hand — mirroring exactly what `Net::SMTP::new()` does after its own TCP connect succeeds. `IO::Socket::Socks::Wrapper`, the usual way to make `Net::SMTP` proxy-transparent, was tried and rejected first: 3 of its own 57 test-suite assertions fail on this workstation, and it produced "Bad file descriptor" against a re-blessed `Net::SMTP` object in testing rather than a working connection.
+
+**Proxy reality check, measured 2026-09-21** — worth knowing before pointing this at anything:
+- The project's Webshare pool (`PROXY_LIST_URL` in `.env`) refuses the CONNECT for ports 25, 465 and 587 outright ("Not allowed" — a proxy-side ACL, not a network failure). It works fine for 80/443/8080. **It cannot be used for SMTP verification as currently configured.**
+- All three scraper hosts (`worker`/`worker2`/`worker3.accurateleadinfo.com`) also cannot reach port 25 outbound at all, proxy or no proxy — standard hosting-provider anti-spam policy, confirmed directly with `/dev/tcp/smtp.google.com/25` from each host. An `ssh -D` tunnel to any of them inherits that block.
+- Only this workstation's own IP has been confirmed to reach port 25 today.
+- `--socks5-proxy` itself was verified working end-to-end (full SMTP session, catch-all probe, real-address RCPT) through an `ssh -D` loopback tunnel on this workstation — the mechanism is solid — but not against anything already in this project's proxy inventory. A working target (a VPS configured to permit outbound 25, or a commercial proxy that doesn't filter mail ports) is still needed before this flag does anything useful in production.
+
+CPAN dependencies (all installed on the workstation): `Net::DNS`, `Net::SMTP`, `Parallel::ForkManager`, `Try::Tiny`, `JSON::PP`, `IO::Socket::Socks`.
 
 ```
-cpanm Net::DNS Net::SMTP Parallel::ForkManager Try::Tiny JSON::PP
+cpanm Net::DNS Net::SMTP Parallel::ForkManager Try::Tiny JSON::PP IO::Socket::Socks
 ```
 
 Three further modules — `Net::DNS::Async`, `URI::Encode`, `Coro::AnyEvent` — were specified for this script but are **deliberately not loaded**, because the current implementation has no use for them: resolution is synchronous inside forked children and there are no URLs to escape. They become real dependencies only if concurrency moves from process forking to an event loop. Of the three, `Coro::AnyEvent` is the one not currently installed here, and `Coro` is the usual source of build trouble on a recent perl — worth knowing before attempting that refactor.
 
-**Not yet run at scale.** Verified end to end against single addresses and a 3-address concurrent batch; it has not been run across the 3,063 addresses in `leads.business_email`, and there is no column or table wired up to store its verdicts yet. Note that a bulk run makes ~3,000 outbound SMTP connections from this host's IP, which some providers rate-limit or blocklist — worth pacing.
+Verdicts are stored in `leads.email_verification` (`db/migrations/008_email_verification.sql`, applied), one row per `business_email_id`, with a rolled-up `email_verified_count`/`email_unverifiable_count`/`email_rejected_count` cached on `leads.businesses` following the same evidence-table-plus-cache pattern as `business_email`.
+
+**Not yet run at scale.** Every code path (direct SMTP, catch-all probe, `--rate-limit` pacing, `--socks5-proxy` tunneling, connect failures) is verified working individually; it has not been run across the 3,063 addresses in `leads.business_email`, and no script yet reads `business_email`, shells out to `mxCheck.pl`, and upserts the JSON output into `leads.email_verification` — that loader still needs to be written. A bulk run makes ~3,000 outbound SMTP connections from one IP, which some providers rate-limit or blocklist — pace it with `--rate-limit`.
 
 ### Current Email Coverage
 

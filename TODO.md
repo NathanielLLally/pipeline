@@ -17,12 +17,24 @@
 - ✓ Decision maker extraction → 425 names (complementary, not email)
 
 ### Address Verification (`scripts/mxCheck.pl`)
-- **Status:** In repo, instrumented with `--debug` execution trace, verified working
-- **Not yet done:** bulk run across the 3,063 addresses in `leads.business_email`
-- **Blocker:** no schema to store verdicts — needs a `verified`/`verified_at`/`mx_server`
-  addition to `leads.business_email` before a bulk run is worth doing
+- **Status:** In repo, instrumented with `--debug`, `--rate-limit`, `--socks5-proxy`.
+  Schema landed (`db/migrations/008_email_verification.sql`, applied). All paths
+  verified working end-to-end (direct SMTP, catch-all probe, rate-limited dispatch,
+  SOCKS5-tunneled SMTP against smtp.google.com).
+- **Not yet done:** bulk run across the 3,063 addresses in `leads.business_email`,
+  and no script writes `mxCheck.pl`'s JSON output into `leads.email_verification` yet
+  — that loader (read business_email, shell out to mxCheck.pl, upsert results) still
+  needs to be written.
+- **Proxy reality check (measured 2026-09-21):** the project's Webshare pool
+  (`PROXY_LIST_URL`) refuses CONNECT to ports 25/465/587 outright — cannot be used
+  for SMTP verification as configured. All three scraper hosts also cannot reach
+  port 25 outbound at all (provider-level anti-spam policy), so an `ssh -D` tunnel to
+  any of them doesn't help either. Only this workstation's own IP is confirmed to
+  reach port 25 today. `--socks5-proxy` was validated against a local `ssh -D`
+  loopback tunnel, not against anything already in this project's inventory — a bulk
+  run today would go out this workstation's IP unproxied, or `--rate-limit` alone.
 - **Caution:** a full pass makes ~3,000 outbound SMTP connections from one IP; pace it
-  or run it from a worker host, or risk being rate-limited/blocklisted
+  with `--rate-limit`, or risk being rate-limited/blocklisted.
 - **Expected effect:** catch-all domains report as unverifiable, not valid, so the
   verified count will be conservative — treat "not verified" as unknown, not as dead
 
