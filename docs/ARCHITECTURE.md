@@ -9,7 +9,7 @@ deployment, record it here in the same session. Mark anything you did not person
 verify as unverified rather than stating it as settled — the value of this file depends
 on being trustworthy without re-checking.
 
-Last verified: 2026-09-18.
+Last verified: 2026-09-21.
 
 ---
 
@@ -413,6 +413,56 @@ rather than printing a sample.
 
 ---
 
+## Contact Email Extraction
+
+The deliverable of the pipeline is **contact email addresses** — a scored prospect database with no contactable recipients is incomplete. Emails are extracted from four channels and stored in `leads.business_email` (one row per unique address per business), with a rolled-up best address per business cached on `leads.businesses.contact_email` for fast export.
+
+### Channel 1: Website Crawl Text + Mailto: Links
+**Status:** Verified complete (2026-09-21)
+
+`scripts/extract-emails.mjs` reads `leads.website_crawl.text_excerpt` (stripped page text) and `signals->person_emails` / `signals->role_emails` (extracted from raw HTML by detectPage() in site-signals.mjs). The mailto: channel recovers addresses that appeared only as `<a href="mailto:erin@x.com">Email us</a>` — toText() strips tags before text_excerpt is written, so those addresses would be lost without reading signals.
+
+**Results (verified 2026-09-21):**
+- **8,269 crawled pages** scanned across 3,349 businesses
+- **3,018 addresses** extracted and verified
+- **2,145 businesses** with ≥1 address
+- **5,870 pages** contributed a mailto: link from signals
+- Distribution: 1,971 personal emails (michael@), 1,047 role emails (info@), 1,622 on own domain, 928 free-mail (gmail)
+- **1,799 rejected** as placeholder local parts (filler@godaddy.com, etc.), **132 as infrastructure domains** (registrar nameservers)
+
+Precision is prioritized over recall throughout; a junk address in a send list costs sender reputation while a missed address may be recovered on the next crawl.
+
+### Channel 2: RDAP Domain Registrant
+**Status:** Verified, low yield
+
+`leads.domain_rdap` stores one-time RDAP (WHOIS replacement) lookups per domain. Post-GDPR redaction is common (~62% of answers carry no contact info). Of 92 responses in a measured sample, 7 carried a usable contact address (3–4% yield).
+
+**Results (verified 2026-09-18, from architecture doc):**
+- **45 addresses** extracted from domain registrants
+- Used as secondary signal, distinct from website-published addresses
+
+### Channel 3: Form Submission
+**Status:** On hold (2026-09-21)
+
+242 businesses publish a contact form and no email address. Submitting forms is risky without proper bot detection and CAPTCHA handling — honeypot and CAPTCHA triggers are unacceptable using owner credentials and business name.
+
+**Plan:** Refactor `scripts/form-submission.mjs` using Playwright for proper browser automation. Alternative: evaluate scrapemate/Go extractor that can utilize current infrastructure. Decision pending.
+
+### Current Email Coverage
+
+| Metric | Value |
+|---|---|
+| Businesses with ≥1 email | 2,190 of 3,888 (56%) |
+| Total addresses in business_email | 3,063 |
+| Avg addresses per business | 1.4 |
+| Source breakdown | 3,018 crawl, 45 RDAP |
+| Tier 1+2 with email | 790 of 1,417 (56%) |
+| Tier 1+2 with email + decision maker | 180 (13%) |
+
+The email table is authoritative; `businesses.contact_email` is a cache of the best address per business, rewritten by extraction scripts and never edited directly.
+
+---
+
 ## Open items / unverified
 
 - The fleet-aware watchdog (commit `da4e4e6`) is **committed but not deployed**. The
@@ -422,11 +472,11 @@ rather than printing a sample.
   idempotent installer now live in `deploy/`, so the remaining work is a `git pull` plus
   `./deploy/install-watchdog.sh` on that host; the installer's preflight checks the
   `.env` prerequisite rather than letting it fail silently.
-- `scripts/enrich-decision-makers.mjs` has **never been run for real**; every figure in
-  the decision-maker section above comes from `--dry-run`, and all four
-  `decision_maker_*` columns are still empty for all 3,686 rows. The write was blocked by
-  the auto-mode permission classifier as a shared-resource modification and needs
-  explicit approval to proceed.
+- `scripts/enrich-decision-makers.mjs` **executed successfully** (2026-09-21). Extracted
+  425 decision makers (medium+ confidence) across 2,901 crawled businesses in 9.5s. All
+  four `decision_maker_*` columns updated. Precision measured at ~97% on high-confidence
+  rows (315 of 425). Coverage: 16% yield across all service categories, 30% on Tier 1
+  dog_training trainers.
 - Whether the local workstation timer should keep running is undecided. It duplicates
   the remote one into the same table; if the remote deployment is canonical, the local
   timer is arguably redundant and could be disabled to make the tick log single-writer.
