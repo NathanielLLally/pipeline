@@ -3,7 +3,7 @@
 ## Email Extraction Channels
 
 ### Form Submission (HOLD)
-- **Status:** Code exists (`scripts/form-submission.mjs`), schema in place (`leads.form_submission`)
+- **Status:** Code exists (`scripts/submit-forms.mjs` + `scripts/lib/forms.mjs`), schema in place (`leads.form_submission`)
 - **Issue:** Risky without proper bot detection handling — high honeypot/CAPTCHA trigger risk using owner credentials
 - **Plan:** Refactor using Playwright for proper browser automation + bot handling
 - **Alternative:** Evaluate scrapemate/Go extractor that can utilize current infrastructure
@@ -15,6 +15,16 @@
 - ✓ Website crawl + mailto: links → 3,018 emails (2,145 businesses)
 - ✓ RDAP domain registrant → 45 emails
 - ✓ Decision maker extraction → 425 names (complementary, not email)
+
+### Address Verification (`scripts/mxCheck.pl`)
+- **Status:** In repo, instrumented with `--debug` execution trace, verified working
+- **Not yet done:** bulk run across the 3,063 addresses in `leads.business_email`
+- **Blocker:** no schema to store verdicts — needs a `verified`/`verified_at`/`mx_server`
+  addition to `leads.business_email` before a bulk run is worth doing
+- **Caution:** a full pass makes ~3,000 outbound SMTP connections from one IP; pace it
+  or run it from a worker host, or risk being rate-limited/blocklisted
+- **Expected effect:** catch-all domains report as unverifiable, not valid, so the
+  verified count will be conservative — treat "not verified" as unknown, not as dead
 
 ---
 

@@ -446,7 +446,35 @@ Precision is prioritized over recall throughout; a junk address in a send list c
 
 242 businesses publish a contact form and no email address. Submitting forms is risky without proper bot detection and CAPTCHA handling — honeypot and CAPTCHA triggers are unacceptable using owner credentials and business name.
 
-**Plan:** Refactor `scripts/form-submission.mjs` using Playwright for proper browser automation. Alternative: evaluate scrapemate/Go extractor that can utilize current infrastructure. Decision pending.
+**Plan:** Refactor `scripts/submit-forms.mjs` (with `scripts/lib/forms.mjs`) using Playwright for proper browser automation. Alternative: evaluate scrapemate/Go extractor that can utilize current infrastructure. Decision pending.
+
+### Address Verification: `scripts/mxCheck.pl`
+
+Extraction finds addresses; it does not establish that they still receive mail. `scripts/mxCheck.pl` closes that gap by asking each address's own mail server whether the mailbox exists, without sending anything.
+
+Per address it resolves the domain's MX record, opens an SMTP session to the lowest-preference host, issues `MAIL FROM` / `RCPT TO`, and disconnects at `QUIT`. **`DATA` is never sent**, so no message is delivered and the mailbox owner observes only a connection.
+
+The critical part is the **catch-all guard**. Many mail hosts accept `RCPT TO` for every local part at their domain, which would make a naive probe report every address as valid. Before testing the real address the script offers a random local part at the same domain; if that is accepted, the host is a catch-all and the result is recorded as a failed check (`false positive check failed for mx ...`) rather than as a verification. This is why verified counts from this tool are trustworthy but conservative — catch-all domains are reported as unknown, not as valid.
+
+Concurrency is `Parallel::ForkManager` (default 30 workers). Each child builds **its own** `Net::DNS::Resolver`; a resolver constructed before the fork would share one UDP socket across all children and misattribute replies between domains.
+
+```
+./scripts/mxCheck.pl --email owner@example.com
+./scripts/mxCheck.pl --file addresses.txt --threads 30
+./scripts/mxCheck.pl --file addresses.txt --debug     # trace to STDERR
+```
+
+Output is a JSON array on STDOUT: `{email, verified, mx_server, error}` per address. `--debug` writes an execution trace to STDERR only, so it is safe to use while piping results. Every DNS and SMTP call is announced by a `NET>` line **before** the call is made, paired with a `NET<` line carrying the outcome and elapsed milliseconds; each line is stamped with elapsed time and pid, which is what makes an interleaved 30-worker trace readable. The `NET>`-before-the-call ordering is deliberate: a trace must be able to answer "what was it about to talk to when it hung."
+
+CPAN dependencies (all installed on the workstation): `Net::DNS`, `Net::SMTP`, `Parallel::ForkManager`, `Try::Tiny`, `JSON::PP`.
+
+```
+cpanm Net::DNS Net::SMTP Parallel::ForkManager Try::Tiny JSON::PP
+```
+
+Three further modules — `Net::DNS::Async`, `URI::Encode`, `Coro::AnyEvent` — were specified for this script but are **deliberately not loaded**, because the current implementation has no use for them: resolution is synchronous inside forked children and there are no URLs to escape. They become real dependencies only if concurrency moves from process forking to an event loop. Of the three, `Coro::AnyEvent` is the one not currently installed here, and `Coro` is the usual source of build trouble on a recent perl — worth knowing before attempting that refactor.
+
+**Not yet run at scale.** Verified end to end against single addresses and a 3-address concurrent batch; it has not been run across the 3,063 addresses in `leads.business_email`, and there is no column or table wired up to store its verdicts yet. Note that a bulk run makes ~3,000 outbound SMTP connections from this host's IP, which some providers rate-limit or blocklist — worth pacing.
 
 ### Current Email Coverage
 
