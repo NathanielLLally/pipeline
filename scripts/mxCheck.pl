@@ -108,6 +108,7 @@ use JSON::PP;
 use JSON::PP qw(encode_json decode_json);
 use Net::SMTP;
 use Net::DNS;
+use Net::DNS::Packet;
 use Net::Cmd ();
 use Parallel::ForkManager;
 use Try::Tiny;
@@ -115,6 +116,7 @@ use Sys::Hostname;
 use File::Temp qw(tempfile);
 use Time::HiRes qw(time sleep);
 use IO::Socket::Socks ();
+use Socket qw(inet_aton inet_ntoa sockaddr_in unpack_sockaddr_in);
 
 # --- Configuration & Defaults ---
 my $threads = 30;
@@ -285,6 +287,51 @@ sub get_mx_records {
     return @mx_hosts;
 }
 
+# Get the local outgoing IP address from a socket handle. Returns the IP as a
+# dotted quad string, or undef on error.
+sub get_socket_local_ip {
+    my ($sock) = @_;
+    try {
+        my $sockaddr = $sock->sockname();
+        return undef unless $sockaddr;
+        my ($port, $addr) = unpack_sockaddr_in($sockaddr);
+        return inet_ntoa($addr);
+    } catch {
+        dbg("  could not get socket local ip: %s", $_);
+        return undef;
+    };
+}
+
+# Do a reverse DNS lookup on an IP address. Returns the hostname if found,
+# or the IP address itself if the lookup fails or returns no result.
+sub reverse_dns_lookup {
+    my ($ip, $dns) = @_;
+    return $ip unless $ip;
+
+    # Convert IP to reverse DNS query format: a.b.c.d -> d.c.b.a.in-addr.arpa
+    my @octets = split(/\./, $ip);
+    return $ip if @octets != 4;
+    my $reverse_host = join(".", reverse(@octets), "in-addr", "arpa");
+
+    my $started = net_start("DNS PTR", $reverse_host, "reverse lookup for $ip");
+    my $query = $dns->query($reverse_host, 'PTR');
+    net_done("DNS PTR", $reverse_host, $started,
+        $query ? "answer" : "no answer (" . $dns->errorstring . ")");
+
+    if ($query) {
+        foreach my $rr ($query->answer) {
+            if ($rr->type eq 'PTR') {
+                my $hostname = $rr->ptrdname;
+                $hostname =~ s/\.$//;  # Remove trailing dot if present
+                dbg("  reverse dns %s -> %s", $ip, $hostname);
+                return $hostname;
+            }
+        }
+    }
+    dbg("  reverse dns %s: no PTR record found, falling back to %s", $ip, $ip);
+    return $ip;
+}
+
 # Opens an SMTP session, either directly or (when --socks5-proxy is set)
 # tunneled through a SOCKS5 proxy. Returns a connected, blessed Net::SMTP
 # object on success, or undef.
@@ -299,13 +346,40 @@ sub get_mx_records {
 # immediately after its own SUPER::new() TCP connect succeeds. Everything
 # after that (mail/to/reset/quit) is unmodified Net::SMTP and works
 # identically on both paths.
+#
+# The hostname used in the HELO parameter is determined by a reverse DNS
+# lookup on the outgoing IP address, not by Sys::Hostname. This ensures the
+# HELO hostname matches the reverse DNS of the IP address the mail server
+# sees, which improves deliverability and reduces spam filter issues.
 sub smtp_connect {
-    my ($svr) = @_;
+    my ($svr, $dns) = @_;
+    my $helo_host = hostname;  # Fallback to system hostname
 
     if (!$socks5_proxy) {
-        return Net::SMTP->new($svr, Timeout => 30, Hello => hostname);
+        # For direct connections, open the socket, get local IP, reverse DNS lookup
+        my $sock = Net::SMTP->new($svr, Timeout => 30, Hello => $helo_host);
+        if ($sock && $dns) {
+            my $local_ip = get_socket_local_ip($sock);
+            if ($local_ip) {
+                my $rev_host = reverse_dns_lookup($local_ip, $dns);
+                if ($rev_host && $rev_host ne $helo_host) {
+                    dbg("  reverse dns resolved %s to %s, updating HELO", $local_ip, $rev_host);
+                    # Reconnect with the correct HELO hostname
+                    $sock->quit;
+                    $sock = Net::SMTP->new($svr, Timeout => 30, Hello => $rev_host);
+                    if (!$sock) {
+                        dbg("  reconnect with HELO %s failed, falling back", $rev_host);
+                        $sock = Net::SMTP->new($svr, Timeout => 30, Hello => $helo_host);
+                    } else {
+                        $helo_host = $rev_host;
+                    }
+                }
+            }
+        }
+        return $sock;
     }
 
+    # SOCKS5 path: open tunnel, get local IP, reverse DNS, then HELO
     my %sockopt = (
         ProxyAddr   => $socks5_host,
         ProxyPort   => $socks5_port,
@@ -327,6 +401,14 @@ sub smtp_connect {
         return undef;
     }
 
+    # Get local IP from the SOCKS tunnel and do reverse DNS lookup
+    if ($dns) {
+        my $local_ip = get_socket_local_ip($sock);
+        if ($local_ip) {
+            $helo_host = reverse_dns_lookup($local_ip, $dns);
+        }
+    }
+
     bless $sock, 'Net::SMTP';
     ${*$sock}{net_smtp_arg}  = { Timeout => 30 };
     ${*$sock}{net_smtp_host} = $svr;
@@ -342,11 +424,12 @@ sub smtp_connect {
     (${*$sock}{net_smtp_banner}) = $sock->message;
     (${*$sock}{net_smtp_domain}) = $sock->message =~ /\A\s*(\S+)/;
 
-    unless ($sock->hello(hostname)) {
-        dbg("  HELO failed after socks5 connect to %s: %s", $svr, $sock->message);
+    unless ($sock->hello($helo_host)) {
+        dbg("  HELO %s failed after socks5 connect to %s: %s", $helo_host, $svr, $sock->message);
         $sock->close;
         return undef;
     }
+    dbg("  HELO sent as %s (reverse dns from outgoing ip)", $helo_host);
 
     return $sock;
 }
@@ -420,9 +503,9 @@ foreach my $email (@emails_to_check) {
                 $result->{mx_server} = $svr;
 
                 my $started = net_start("SMTP connect", "$svr:25",
-                    sprintf("HELO %s timeout 30s%s", hostname,
+                    sprintf("reverse-dns HELO timeout 30s%s",
                         $socks5_proxy ? "  via socks5 $socks5_proxy" : ""));
-                my $smtp = smtp_connect($svr);
+                my $smtp = smtp_connect($svr, $dns);
                 net_done("SMTP connect", "$svr:25", $started,
                     $smtp ? "banner: " . ($smtp->banner // "(none)") : "connect failed");
 
