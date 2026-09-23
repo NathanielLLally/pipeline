@@ -99,13 +99,15 @@ export function deriveServiceCategory(primaryCategory, categories) {
  *
  * `keyword` is accepted but deliberately contributes at most 5 points, and only as a
  * tiebreaker when the business's own text already corroborates it. Enrichment fields
- * (bookingPresent, growthScore) are optional -- passing them lets Phase A signals
- * raise a score without a second scoring implementation.
+ * (bookingPresent, growthScore, yellowPagesPresent) are optional -- passing them lets
+ * Phase A signals and external-source signals raise a score without a second scoring
+ * implementation. yellowPagesPresent indicates the business is listed in Yellow Pages,
+ * a paid commercial directory, which signals marketing spend/investment.
  */
 export function scoreIcp({
   name, keyword, primaryCategory, categories, description, about,
   rating, reviewCount, website, priceRange,
-  bookingPresent = null, growthScore = null,
+  bookingPresent = null, growthScore = null, yellowPagesPresent = null,
 }) {
   const serviceCategory = deriveServiceCategory(primaryCategory, categories);
 
@@ -166,6 +168,8 @@ export function scoreIcp({
   if (priceRange) score += 5;
   if (bookingPresent) score += 8;
   if (growthScore != null && growthScore >= 60) score += 8;
+  // Yellow Pages presence signals paid commercial listing / marketing investment.
+  if (yellowPagesPresent) score += 7;
 
   // Thin listing: no reviews and no website means nothing to sell to and nothing to
   // verify against.
