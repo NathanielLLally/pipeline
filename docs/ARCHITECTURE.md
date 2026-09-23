@@ -318,7 +318,7 @@ was wrong — it came from a 20-row dry run drawn from the *top* of the database
 score, which is the most heavily marketed tail of the distribution. Any future rate
 claim should name the population it was computed over.
 
-### Google Ads Transparency: SOLVED (2026-09-19)
+### Google Ads Transparency: attempted, not working (2026-09-18)
 
 Upgrading a subset of businesses from "infrastructure present" to *confirmed current
 spend* needs a second source. Google's Ads Transparency Center is the plausible one —
@@ -341,182 +341,12 @@ The attempt did not succeed and is recorded here so it is not blindly repeated:
   including a bare request that should have failed if the query field were required.
   Every accepted shape returned `{}`.
 
-**That conclusion was wrong, and the way it was wrong is worth recording.** Driving
-Playwright to the page and reading the real request off the network tab took minutes and
-showed the payload is a **JSON object with numeric string keys**, not the positional
-array that roughly 25 probes had assumed:
-
-```
-f.req={"2":40,"3":{"8":[2840],"12":{"1":"<domain>","2":true}},"7":{"1":1,"2":0,"3":2840}}
-```
-
-POSTed form-encoded to `/anji/_/rpc/SearchService/SearchCreatives?authuser=` with
-`content-type: application/x-www-form-urlencoded`, `x-same-domain: 1`, a browser
-user-agent and a referer. **No cookies, no XSRF token, no API key** — the browser's own
-request carries an empty `x-framework-xsrf-token` header.
-
-The diagnostic trap: a JSON array is structurally valid protobuf-JSON, so the server
-accepted every malformed probe and answered `{}` rather than erroring. `{}` was read as
-"authenticated but empty" when it actually means **"this advertiser runs no ads"** — the
-same answer the real page gets for a small dog trainer. The lesson is that an empty
-success is not evidence of an auth wall, and that capturing one real request is worth
-more than any number of black-box probes.
-
-Verified: `nike.com` returns ~15KB of creatives, `booking.com` ~22KB,
-`offleashk9training.com` `{}` (genuinely not advertising). Also verified through the
-Webshare datacenter pool, 5 proxies out of 5 — unlike Meta, Google does not refuse this
-ASN, so a full pass over the database is viable from the existing infrastructure.
-
-This is a **confirmed-current-spend** signal and is materially stronger than
-`marketing_active`: a returned creative is an ad Google is serving now, not a pixel left
-over from a campaign that ended two years ago.
-
-### Wired up: `scripts/enrich-ads-transparency.mjs` (2026-09-19)
-
-`db/migrations/004_ads_transparency.sql` adds `leads.ads_transparency` — one row per
-(business, domain), raw creative ids and date ranges in `jsonb` — plus three rolled-up
-columns on `leads.businesses`: `ads_confirmed_active`, `ads_last_shown`,
-`ads_creative_count`. `scripts/lib/ads-transparency.mjs` holds the request shape and the
-response decoder, with 41 unit tests over captured fixtures.
-
-**The pass is complete: 3,347 domains checked, zero unchecked, zero errors.** 935 are
-advertising (28%), 761 of them within the last 30 days, and 14,212 creatives are stored.
-
-**It disagrees with `marketing_active` in both directions, which is the point.** In the
-final 1,949-domain run alone, **302 confirmed advertisers had no pixel at all** and 35
-carried a pixel while running no ads — `timelessk9.com` among them, last creative 128
-days old. Neither column subsumes the other: the pixel proves configuration, the
-creative proves spend. Segment on `ads_confirmed_active` when the campaign copy claims
-the prospect is advertising.
-
-Confirmed spend rises monotonically with ICP tier, which is a useful independent check
-that the tiers mean something: Tier 1 48% advertising, Tier 2 19%, Tier 3 13%, Tier 4 7%
-(measured before the 2026-09-19 rescore, against the tiers as they then stood).
-
-Field meanings are recorded in `scripts/lib/ads-transparency.mjs`; the ones that matter
-are per-ad `7.1` (last shown — the recency signal), `6.1` (first shown), `12`
-(advertiser name) and top-level `2` (pagination cursor, whose presence alongside a full
-40-row page means `creative_count` is a floor, not a total).
-
-### The rate limiter, which is not a 429
-
-A full-speed pass at ~7 domains/s tripped Google's limiter partway through and then
-collected **595 useless responses** before it was noticed. Three things about it are
-worth knowing before touching this script:
-
-- It arrives as **HTTP 302 to `https://www.google.com/sorry/index`**, not a 429 and not
-  a 403. Code that only retries the usual throttle statuses will treat it as a real
-  answer.
-- It applies **across the whole pool at once**, not per IP. 12 of 12 sampled proxies
-  were blocked simultaneously, so rotating proxies does not clear it — only waiting
-  does. This is the same lesson as the Webshare direct list: refreshing addresses is not
-  a throttle remedy.
-- A throttled attempt **must not be stored**. It asked Google nothing, so writing it as
-  an error row would make a never-checked domain look permanently checked and cause a
-  resumed run to skip it forever. The script drops them and a circuit breaker aborts
-  after 12 consecutive throttles, exiting non-zero so a piped or scheduled run cannot
-  report success on a partial database.
-
-Defaults are now 4 workers with a 250ms pause, roughly 3–4 domains/s. Throughput was
-never the constraint — even that rate covers the whole database in under ten minutes —
-so the slower setting costs nothing real and avoids the block.
-
-Every pass begins by probing `nike.com`, a domain certain to advertise. An empty
-response is indistinguishable from a malformed request, so without that check a broken
-payload would silently write "no ads" for the entire database. The probe distinguishes
-its two failure modes: a throttle exits 3 and says to wait, a genuinely empty result
-exits 1 and says to re-capture the request with Playwright.
-
-### Transports, and what each one costs
-
-Google blocks the **Webshare datacenter ASN outright** on this endpoint, so a
-residential exit is not an optimisation here — it is the only thing that works. The
-script tries three transports in preference order, selected automatically from `.env`:
-
-| Transport | Env var | Billing | Verdict |
-|---|---|---|---|
-| DataImpulse residential | `DATAIMPULSE_PROXY` | per **gigabyte** | **Use this.** |
-| scrape.do `super=true` | `SCRAPEDO_TOKEN` | 10 credits/request | Works; far too dear. |
-| Webshare SOCKS5 pool | `PROXY_LIST_URL` | free | Blocked by Google. |
-
-`--no-residential` and `--no-scrapedo` step down the chain for testing.
-
-**The cost difference is not marginal.** A response is ~2.9KB gzipped (55.7% of domains
-return `{}`, mean 7.5 creatives), so the entire 2,000-domain remainder is about 6MB.
-scrape.do billed 10 credits for each of those ~3KB responses: a 1,000-credit account
-bought **95 domains** before running dry. DataImpulse did the remaining 1,949 domains in
-801 seconds at a steady 2.4/s with **zero throttling and zero errors** — the /sorry
-redirect never appeared once. Measure bytes before buying per-request pricing for an
-endpoint whose responses are this small.
-
-Credentials for both are in `.env` (gitignored) and never in committed code. The
-scrape.do token sits in a URL, so `scrub()` strips it from anything printed or written
-to `fetch_error`; the residential password is passed via curl's `--proxy-user` rather
-than an inline URL, and is scrubbed from stored errors for the same reason.
-
----
-
-## Scoring: tier calibration and the enrichment bonuses
-
-`scripts/lib/score.mjs` is the single definition of ICP fit, shared by
-`transform-and-score.mjs` (ingest) and `rescore.mjs` (backfill). Enrichment fields —
-`bookingPresent`, `growthScore`, `adsConfirmedActive`, `adsCreativeCount` — are optional
-and default to `null`, because ingest scores a business the moment it is discovered,
-before any enrichment has run. **`null` means "not checked", not "does not have it"**, so
-an unenriched row is never penalised for missing evidence it was never asked for.
-
-Confirmed ad spend is weighted at **+12**, above booking (+8) and growth (+8), with a
-further +4 for 10 or more concurrent creatives. The reasoning: a business currently
-paying Google to acquire customers has already decided that buying customers is worth
-money, which is precisely the decision a lead buyer must have made. Booking and growth
-are evidence of a well-run business; ad spend is evidence of budget. A business that
-advertised at some point but has nothing live in 30 days gets +4 ("lapsed ad spend"),
-not the full bonus, because the campaign is off and may have been stopped for cost.
-
-The scorer deliberately does **not** key this off `marketing_active` — see the section
-above on why a pixel and a live creative are different claims.
-
-### Tier calibration, and why it had to move (2026-09-19)
-
-Thresholds are **83 / 70 / 50**, not the original 70/50/30.
-
-The original cutoffs were set when the scorer saw only the Google Maps record. Once
-booking, growth and ad spend began contributing there were up to 32 further points in
-play, and at a cutoff of 70 the top tier drifted to **36% of the database** — 1,417
-rows, which is not a priority list. `CLAUDE.md` is explicit that the highest-priority
-segment must not be diluted, so the cutoffs were re-derived from the actual score
-distribution to hold Tier 1 near 15%.
-
-A caution worth recording, because it nearly caused a wrong diagnosis: when the first
-post-enrichment rescore showed Tier 1 tripling, the obvious culprit was the new ads
-bonus. Decomposing the shift signal by signal showed otherwise —
-
-| Scenario | Tier 1 |
-|---|---|
-| stored in DB (pre-rescore) | 540 (13.9%) |
-| scorer with no enrichment | 526 (13.5%) |
-| + booking | 921 (23.7%) |
-| + booking + growth | 1,137 (29.2%) |
-| + ads as well | 1,417 (36.4%) |
-
-— most of the movement was `booking_present` and `growth_score`, whose bonuses had been
-**coded but never applied**, because no rescore had been run since Phase A enrichment
-populated them. Ads contributed 280 rows of the 891. The lesson generalises: after an
-enrichment pass writes new columns, the stored scores are stale until `rescore.mjs`
-runs, and a tier histogram read before that reflects the old inputs.
-
-Resulting distribution over 3,888 businesses: Tier 1 621 (16.0%), Tier 2 796 (20.5%),
-Tier 3 1,621 (41.7%), Tier 4 850 (21.9%). Of the 621 in Tier 1, **473 have confirmed ad
-spend**, 449 have booking, exactly one has no enrichment evidence at all, and zero are
-veterinarians, pet-supply stores or dog parks.
-
-`qc_status = LOW_PRIORITY` is still keyed to an absolute score below 30 rather than to a
-tier. That is deliberate: it answers "is this row worth keeping at all", which is a
-different question from where a row ranks, and it should not move when tiers are
-recalibrated.
-
-**Re-measure before moving these cutoffs again.** Picking a round number rather than
-reading the distribution is what inflated Tier 1 the first time.
+The conclusion is that the call needs session state the page carries and a bare POST does
+not — most likely cookies or a per-session token beyond the API key. Cracking that would
+mean either driving a real browser (Playwright is available) and reading the request off
+the network tab, or reverse-engineering the obfuscated bundle. Neither was judged worth
+the budget at the time. Until it is solved, **there is no confirmed-current-spend signal
+in this database**, and `marketing_active` stands alone with the meaning above.
 
 ---
 
@@ -583,178 +413,99 @@ rather than printing a sample.
 
 ---
 
-## Contact emails: the deliverable
+## Contact Email Extraction
 
-Everything else in this pipeline — discovery, dedup, scoring, ads, decision makers —
-exists to decide *who* to email. `leads.business_email` is *how* to email them, and it is
-the only table whose emptiness makes the rest worthless. It was also, for most of this
-project's life, the one thing nothing wrote to; that is worth remembering when the next
-enrichment idea competes for time against contact coverage.
+The deliverable of the pipeline is **contact email addresses** — a scored prospect database with no contactable recipients is incomplete. Emails are extracted from four channels and stored in `leads.business_email` (one row per unique address per business), with a rolled-up best address per business cached on `leads.businesses.contact_email` for fast export.
 
-**Schema** (`db/migrations/005_business_email.sql`): one row per `(business_id, email)`,
-each carrying the `source_url` and `page_kind` it was observed on. A separate table
-rather than a column because a business commonly has several addresses and the choice
-between `info@` and the owner's personal address should be made from evidence at export
-time, not guessed at extraction time. Three cache columns on `businesses`
-(`contact_email`, `contact_email_count`, `contact_email_is_role`) hold the rolled-up best
-pick so exports need no join; the evidence table stays authoritative.
+### Channel 1: Website Crawl Text + Mailto: Links
+**Status:** Verified complete (2026-09-21)
 
-**`source` is load-bearing.** `source = 'crawl'` means the address appeared *verbatim* in
-text fetched from that business's own site. Nothing here is inferred. If pattern-guessing
-(`firstname@domain`) is ever added it must take a distinct `source` value and be
-excludable from sends — a guessed address that bounces costs sender reputation across the
-whole list, not just that one prospect.
+`scripts/extract-emails.mjs` reads `leads.website_crawl.text_excerpt` (stripped page text) and `signals->person_emails` / `signals->role_emails` (extracted from raw HTML by detectPage() in site-signals.mjs). The mailto: channel recovers addresses that appeared only as `<a href="mailto:erin@x.com">Email us</a>` — toText() strips tags before text_excerpt is written, so those addresses would be lost without reading signals.
 
-### Extraction
+**Results (verified 2026-09-21):**
+- **8,269 crawled pages** scanned across 3,349 businesses
+- **3,018 addresses** extracted and verified
+- **2,145 businesses** with ≥1 address
+- **5,870 pages** contributed a mailto: link from signals
+- Distribution: 1,971 personal emails (michael@), 1,047 role emails (info@), 1,622 on own domain, 928 free-mail (gmail)
+- **1,799 rejected** as placeholder local parts (filler@godaddy.com, etc.), **132 as infrastructure domains** (registrar nameservers)
 
-`scripts/lib/emails.mjs` (pure, unit-tested) + `scripts/extract-emails.mjs` (the pass).
-Zero network: it reads `website_crawl.text_excerpt` that earlier crawls already paid for,
-so it is free, idempotent, and **should be re-run after every crawl**. `ON CONFLICT` makes
-a re-run update in place, which is why re-extracting also re-examines businesses that
-previously yielded nothing.
+Precision is prioritized over recall throughout; a junk address in a send list costs sender reputation while a missed address may be recovered on the next crawl.
 
-Precision over recall throughout, for the same asymmetry as above: a junk address costs
-reputation, a missed one costs a single prospect the next crawl may recover. Rejections
-are counted and reported *by reason* rather than dropped silently — silent filtering is
-how a bad rule survives unnoticed.
+### Channel 2: RDAP Domain Registrant
+**Status:** Verified, low yield
 
-Two rules that came from real corpus data, not speculation:
+`leads.domain_rdap` stores one-time RDAP (WHOIS replacement) lookups per domain. Post-GDPR redaction is common (~62% of answers carry no contact info). Of 92 responses in a measured sample, 7 carried a usable contact address (3–4% yield).
 
-- **The TLD must be alphabetic.** A permissive pattern pulls `logo@2x.png` and version
-  debris out of minified CSS and calls them contacts.
-- **`filler@godaddy.com` is the single most common false positive** — GoDaddy's
-  placeholder, present on every unconfigured parked domain. It was 86 of 88 junk matches
-  in the first measured pass, and 172 of 199 in the full one.
+**Results (verified 2026-09-18, from architecture doc):**
+- **45 addresses** extracted from domain registrants
+- Used as secondary signal, distinct from website-published addresses
 
-Confidence (0–100) combines domain match, role-vs-personal, free-mail, and where on the
-site the address appeared. The ordering is what matters, not the absolute numbers: a named
-person on the business's own domain, found on the contact page, must outrank everything
-else. `contact` and `about` pages yield the highest-confidence addresses (avg 82 and 86)
-and `home` the lowest (73) — the ranking the weights were designed to produce, confirmed
-against output rather than assumed.
+### Channel 3: Form Submission
+**Status:** On hold (2026-09-21)
 
-### Coverage, as measured
+242 businesses publish a contact form and no email address. Submitting forms is risky without proper bot detection and CAPTCHA handling — honeypot and CAPTCHA triggers are unacceptable using owner credentials and business name.
 
-8,776 pages crawled across 3,349 businesses (8,225 HTTP 200). From that text:
-**2,083 addresses across 1,723 businesses** — 1,294 personal, 1,251 on the business's own
-domain, 646 free-mail.
+**Plan:** Refactor `scripts/submit-forms.mjs` (with `scripts/lib/forms.mjs`) using Playwright for proper browser automation. Alternative: evaluate scrapemate/Go extractor that can utilize current infrastructure. Decision pending.
 
-| Tier | Businesses | With email | % | Personal |
-|---|---|---|---|---|
-| Tier 1 | 621 | 285 | 45.9% | 151 |
-| Tier 2 | 796 | 420 | 52.8% | 232 |
-| Tier 3 | 1,621 | 828 | 51.1% | 519 |
-| Tier 4 | 600 | 190 | 31.7% | 131 |
-| **All** | **3,638** | **1,723** | **47.4%** | **1,033** |
+### Address Verification: `scripts/mxCheck.pl`
 
-Tier 4's lower rate is an artifact of websites, not of crawling: only 391 of its 600 rows
-have a site at all. Measured against businesses that *have* a website, every tier lands
-near 50%.
+Extraction finds addresses; it does not establish that they still receive mail. `scripts/mxCheck.pl` closes that gap by asking each address's own mail server whether the mailbox exists, without sending anything.
 
-**Tier 1 is the one number that looks wrong and is worth understanding.** All 621 have
-websites and all 621 have been crawled, yet 336 have no address. The split: 246 were
-fetched successfully and simply publish no email — premium trainers increasingly funnel
-contact through a booking widget or form, which is itself the ICP signal that scored them
-Tier 1 — and 90 had every fetch fail. The second group is recoverable by re-crawling; the
-first is not, and needs a different channel (the form, or the phone number already
-stored). Coverage will not approach 100% by crawling harder.
+Per address it resolves the domain's MX record, opens an SMTP session to the lowest-preference host, issues `MAIL FROM` / `RCPT TO`, and disconnects at `QUIT`. **`DATA` is never sent**, so no message is delivered and the mailbox owner observes only a connection.
 
----
+The critical part is the **catch-all guard**. Many mail hosts accept `RCPT TO` for every local part at their domain, which would make a naive probe report every address as valid. Before testing the real address the script offers a random local part at the same domain; if that is accepted, the host is a catch-all and the result is recorded as a failed check (`false positive check failed for mx ...`) rather than as a verification. This is why verified counts from this tool are trustworthy but conservative — catch-all domains are reported as unknown, not as valid.
 
-## The RDAP channel: asking the registry instead of the site
+Concurrency is `Parallel::ForkManager` (default 30 workers). Each child builds **its own** `Net::DNS::Resolver`; a resolver constructed before the fork would share one UDP socket across all children and misattribute replies between domains.
 
-The crawl can only find an address a business chose to publish. RDAP asks a different
-question of a different party — *who registered this domain?* — so it reaches businesses
-whose sites carry no address at all. `scripts/enrich-rdap.mjs` runs it;
-`leads.domain_rdap` records the answers, including the misses.
+```
+./scripts/mxCheck.pl --email owner@example.com
+./scripts/mxCheck.pl --file addresses.txt --threads 30
+./scripts/mxCheck.pl --file addresses.txt --debug              # trace to STDERR
+./scripts/mxCheck.pl --file addresses.txt --rate-limit 5        # cap starts/sec
+./scripts/mxCheck.pl --file addresses.txt --socks5-proxy host:port
+```
 
-It is a deliberately small channel, and the measurements that sized it are worth keeping
-because they explain every design choice in the pass:
+Output is a JSON array on STDOUT: `{email, verified, mx_server, error}` per address. `--debug` writes an execution trace to STDERR only, so it is safe to use while piping results. Every DNS and SMTP call is announced by a `NET>` line **before** the call is made, paired with a `NET<` line carrying the outcome and elapsed milliseconds; each line is stamped with elapsed time and pid, which is what makes an interleaved 30-worker trace readable. The `NET>`-before-the-call ordering is deliberate: a trace must be able to answer "what was it about to talk to when it hung."
 
-**The registries carry nothing.** Over 142 sampled domains, the registry's own RDAP
-answer contained a contact entity *zero* times. `.com` and `.net` are thin registries by
-design — Verisign holds nameservers and a registrar pointer, nothing else — and `.org`
-redacts. All yield comes from a second hop to the registrar's own RDAP server, named in
-the registry response's `links`. This is why a failed registrar hop is treated as *not
-yet asked* rather than as a miss: recording the registry's contact-free document as
-`redacted` would fabricate an answer, and the resume logic would then never re-ask.
+**`--rate-limit N`** caps checks *started* to N per second, summed across all workers, enforced in the parent's dispatch loop (there is no cheap way to share a budget across already-forked children). `--threads` still bounds concurrency; `--rate-limit` bounds how fast new connections begin. A burst of RCPT TOs from one IP looks like directory harvesting to a receiving mail server and is what gets a sending IP blocklisted — this exists to avoid that on a bulk run.
 
-**Yield is concentrated in registrars that don't bundle privacy.** Measured per
-registrar, the domains that yielded an address came from web.com, Network Solutions,
-Amazon Registrar and NameSilo. The large consumer registrars yielded nothing at all:
+**`--socks5-proxy host:port`** routes the SMTP TCP connection (never the DNS MX lookup, which always resolves directly) through a SOCKS5 proxy. Credentials come from `MXCHECK_SOCKS5_USER` / `MXCHECK_SOCKS5_PASS` in the environment, never from a CLI flag — a password on the command line is visible to every local process via `ps aux` and lands in shell history, the same class of leak that put a live Postgres password in a public repo earlier in this project. `--socks5-user`/`--socks5-pass` exist only for local testing and print a loud warning when used.
 
-| Registrar | found | privacy | redacted |
-|---|---|---|---|
-| GoDaddy | 0 | 38 | 0 |
-| Namecheap | 0 | 7 | 0 |
-| Squarespace | 0 | 0 | 8 |
-| Wix | — | — | refused every request |
+The proxied path doesn't use `Net::SMTP->new()`, because `Net::SMTP` has no hook for handing it an already-open socket. Instead the tunnel is opened directly with `IO::Socket::Socks`, then the connected handle is re-blessed into `Net::SMTP` and its connection bookkeeping (`net_smtp_arg`, `net_smtp_host`, the banner read, `HELO`) is redone by hand — mirroring exactly what `Net::SMTP::new()` does after its own TCP connect succeeds. `IO::Socket::Socks::Wrapper`, the usual way to make `Net::SMTP` proxy-transparent, was tried and rejected first: 3 of its own 57 test-suite assertions fail on this workstation, and it produced "Bad file descriptor" against a re-blessed `Net::SMTP` object in testing rather than a working connection.
 
-The full pass bears this out: 1,102 domains probed in 601s, of which **713 were skipped
-at no-yield registrars** — nearly two thirds of the corpus sits behind four companies
-that publish nothing.
+**Reverse DNS lookup for HELO hostname** — the `HELO` parameter sent to the mail server is set via a reverse DNS lookup on the outgoing IP address, not `Sys::Hostname`. This ensures the hostname presented to the receiving mail server matches its own reverse-DNS view of the connecting IP, which improves authentication signals and reduces spam filter false positives. The lookup is best-effort — if PTR resolution fails, the script falls back to the system hostname. For direct SMTP connections, if the reverse DNS differs from the initial HELO, the connection is dropped and re-established with the correct hostname; for SOCKS5 tunneled connections, the correct HELO is determined before the `HELLO` handshake. Debug mode (`--debug`) emits a `NET>` line before the PTR query and a `NET<` line with the result.
 
-That is structural, not unlucky: GoDaddy ships Domains By Proxy free with every domain,
-so the registrant field is *unavailable*, not merely often missing. Those registrars are
-also the ones that rate-limit hardest (GoDaddy answers 429 with a ~15s sliding window),
-so they cost the most and return the least. `NO_YIELD_REGISTRAR` skips them, and the
-skip is counted separately and never written to `domain_rdap` — if a registrar changes
-policy, `--ask-all-registrars` re-measures without a code change.
+**Proxy reality check, measured 2026-09-21** — worth knowing before pointing this at anything:
+- The project's Webshare pool (`PROXY_LIST_URL` in `.env`) refuses the CONNECT for ports 25, 465 and 587 outright ("Not allowed" — a proxy-side ACL, not a network failure). It works fine for 80/443/8080. **It cannot be used for SMTP verification as currently configured.**
+- All three scraper hosts (`worker`/`worker2`/`worker3.accurateleadinfo.com`) also cannot reach port 25 outbound at all, proxy or no proxy — standard hosting-provider anti-spam policy, confirmed directly with `/dev/tcp/smtp.google.com/25` from each host. An `ssh -D` tunnel to any of them inherits that block.
+- Only this workstation's own IP has been confirmed to reach port 25 today.
+- `--socks5-proxy` itself was verified working end-to-end (full SMTP session, catch-all probe, real-address RCPT) through an `ssh -D` loopback tunnel on this workstation — the mechanism is solid — but not against anything already in this project's proxy inventory. A working target (a VPS configured to permit outbound 25, or a commercial proxy that doesn't filter mail ports) is still needed before this flag does anything useful in production.
 
-**The registrars are the rate limit, not the registries.** Verisign answered 12
-consecutive requests without complaint. So `HostGate` paces per registrar *host* rather
-than globally: each host has its own minimum gap and its own 429 penalty box, and the
-pass fans out across registrars rather than across domains.
+CPAN dependencies (all installed on the workstation): `Net::DNS`, `Net::SMTP`, `Parallel::ForkManager`, `Try::Tiny`, `JSON::PP`, `IO::Socket::Socks`.
 
-### Why these addresses are marked `source='rdap'`
+```
+cpanm Net::DNS Net::SMTP Parallel::ForkManager Try::Tiny JSON::PP IO::Socket::Socks
+```
 
-`005_business_email.sql` requires that an address obtained by a method other than
-observation stay distinguishable, and this is the first channel to exercise that rule. An
-RDAP registrant address is genuinely weaker evidence than one printed on a contact page:
-it may be the web developer who registered the domain, or a mailbox nobody has read since
-the domain was bought. Confidence is capped at 60 — below any crawl-sourced address — and
-the rollup onto `businesses.contact_email` is guarded on `contact_email IS NULL`, so an
-observed address is never overwritten by a registry one.
+Three further modules — `Net::DNS::Async`, `URI::Encode`, `Coro::AnyEvent` — were specified for this script but are **deliberately not loaded**, because the current implementation has no use for them: resolution is synchronous inside forked children and there are no URLs to escape. They become real dependencies only if concurrency moves from process forking to an event loop. Of the three, `Coro::AnyEvent` is the one not currently installed here, and `Coro` is the usual source of build trouble on a recent perl — worth knowing before attempting that refactor.
 
-### What the full pass produced
+Verdicts are stored in `leads.email_verification` (`db/migrations/008_email_verification.sql`, applied), one row per `business_email_id`, with a rolled-up `email_verified_count`/`email_unverifiable_count`/`email_rejected_count` cached on `leads.businesses` following the same evidence-table-plus-cache pattern as `business_email`.
 
-1,102 domains probed: 45 usable addresses, 127 privacy-proxied, 67 redacted, 10
-non-existent, 713 skipped at no-yield registrars, 127 throttled and left for a re-run.
-That moved overall coverage 59.0% → 60.2% and Tier 1 64.6% → 65.5%. Small, as the
-sampling predicted, and the channel is now closed: re-running only picks up the 127
-throttled domains and anything newly discovered.
+**Not yet run at scale.** Every code path (direct SMTP, catch-all probe, `--rate-limit` pacing, `--socks5-proxy` tunneling, connect failures) is verified working individually; it has not been run across the 3,063 addresses in `leads.business_email`, and no script yet reads `business_email`, shells out to `mxCheck.pl`, and upserts the JSON output into `leads.email_verification` — that loader still needs to be written. A bulk run makes ~3,000 outbound SMTP connections from one IP, which some providers rate-limit or blocklist — pace it with `--rate-limit`.
 
-### Two filters the crawl channel does not need
+### Current Email Coverage
 
-**Third-party vendor domains.** Web developers, hosting resellers and IT shops register
-domains for clients and leave *their own* address in the registrant field. The first live
-run wrote `purchasing@milesit.com` (an IT vendor), `domains1@imatrix.com` (a marketing
-agency) and `questions@weebly.com` into `business_email` before the rule existed. The
-crawl channel never produces these, because an agency's address is not printed on the
-client's contact page. The rule: reject an address that is on neither the business's own
-domain nor a consumer mailbox provider.
+| Metric | Value |
+|---|---|
+| Businesses with ≥1 email | 2,190 of 3,888 (56%) |
+| Total addresses in business_email | 3,063 |
+| Avg addresses per business | 1.4 |
+| Source breakdown | 3,018 crawl, 45 RDAP |
+| Tier 1+2 with email | 790 of 1,417 (56%) |
+| Tier 1+2 with email + decision maker | 180 (13%) |
 
-That rule is too blunt on its own, and the exception matters. "Dog Trainer Rob — Canine
-Nutritionist" lists `robert@rawk9food.com` under registrant `Rodriguez, robert`: a
-third-party domain by the mechanical test, but plainly the owner's own address and his
-own second business. `localMatchesRegistrant()` rescues these by checking the local part
-against the registrant name, which `domains1@imatrix.com` under `Chuck Hoover` fails.
-Five of the 50 first-run addresses were purged; the rescued one was kept.
-
-### The privacy filter is the load-bearing part
-
-The failure mode here is not a missing address, it is a *deliverable wrong one*. Privacy
-services issue per-domain forwarding aliases that pass every ordinary validity check
-while reaching the vendor rather than the prospect. Three independent tests are needed
-because the vendors defeat each other's: the entity may name the service
-(`Domains By Proxy, LLC`), the address may name it (`x@whoisguard.com`), or neither may
-while the local part is plainly machine-issued
-(`pwp-b52a8e864f035ff4484cfe31202b07f0@privacyguardian.org`,
-`myportfolio.com-registrant@anonymised.email`, `info@domain-contact.org`). Each of those
-examples was caught only after leaking through an earlier version of the filter in a live
-dry run, and each is now a test case in `scripts/lib/rdap.test.mjs`. Every recovered
-address additionally goes through the same `rejectReason`/`classify` filter as the crawl
-channel — a different channel is not a lower standard of evidence.
+The email table is authoritative; `businesses.contact_email` is a cache of the best address per business, rewritten by extraction scripts and never edited directly.
 
 ---
 
@@ -767,36 +518,11 @@ channel — a different channel is not a lower standard of evidence.
   idempotent installer now live in `deploy/`, so the remaining work is a `git pull` plus
   `./deploy/install-watchdog.sh` on that host; the installer's preflight checks the
   `.env` prerequisite rather than letting it fail silently.
-- Google Ads Transparency is **complete and scored**: 3,347 domains checked, 0
-  unchecked, 935 advertising, and `ads_confirmed_active` now contributes to `icp_score`
-  (see "Tier calibration" below). Re-running only picks up businesses discovered since.
-  The recency window is fixed at 30 days (`RECENT_DAYS`), chosen from a visible gap in
-  the observed data rather than measured against outcomes — worth revisiting once there
-  is campaign-response data to calibrate against.
-- **Contact email coverage is 60.2% overall (65.5% Tier 1) and remains the pipeline's
-  binding constraint.** 2,190 of 3,638 live businesses carry an address; 3,063
-  (business, address) rows over 2,573 distinct addresses. The crawl and RDAP channels
-  are both worked out. The 1,448 still uncovered break down as:
-
-  | Bucket | Businesses | Tier 1 | Route |
-  |---|---|---|---|
-  | Site read, no address and no form | 497 | 67 | phone, or nothing |
-  | Site never fetched successfully | 426 | 83 | re-crawl on different transport |
-  | No website at all | 283 | 0 | phone only |
-  | **Contact form, no address** | **242** | **64** | **submit the form** |
-
-- **TODO — fill out the contact forms (242 businesses, 457 form pages).** These
-  businesses route contact through a form *instead of* publishing an address, so the
-  form is the address. The work is a submission pass, not an extraction pass: parse the
-  form on the page already stored in `leads.website_crawl`, fill it with our own
-  sender identity and message, POST it, and record the attempt and the response so a
-  re-run neither re-sends nor loses track. Form kinds observed: 142 native
-  `<form>` with an email/phone input, 84 generic form builders (Formstack/Wufoo/Gravity/
-  Formidable), 9 Jotform, 4 Typeform, 3 HubSpot. The native and HubSpot ones are
-  ordinary POSTs; Typeform and Jotform are JS-rendered and need their own handling or a
-  browser. Note this is outbound contact to real businesses, so the live send waits on
-  the owner's go-ahead even though the pass itself should be built and dry-run first.
-- The 127 domains RDAP left throttled, which a re-run picks up for free.
+- `scripts/enrich-decision-makers.mjs` **executed successfully** (2026-09-21). Extracted
+  425 decision makers (medium+ confidence) across 2,901 crawled businesses in 9.5s. All
+  four `decision_maker_*` columns updated. Precision measured at ~97% on high-confidence
+  rows (315 of 425). Coverage: 16% yield across all service categories, 30% on Tier 1
+  dog_training trainers.
 - Whether the local workstation timer should keep running is undecided. It duplicates
   the remote one into the same table; if the remote deployment is canonical, the local
   timer is arguably redundant and could be disabled to make the tick log single-writer.

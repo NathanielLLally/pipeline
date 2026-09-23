@@ -99,15 +99,17 @@ export function deriveServiceCategory(primaryCategory, categories) {
  *
  * `keyword` is accepted but deliberately contributes at most 5 points, and only as a
  * tiebreaker when the business's own text already corroborates it. Enrichment fields
- * (bookingPresent, growthScore, ads*) are optional and default to null -- passing them
- * lets later phases raise a score without a second scoring implementation. Ingest does
- * not have them, since a newly discovered business has not been enriched yet; they
- * arrive when rescore.mjs runs after an enrichment pass.
+ * (bookingPresent, growthScore, yellowPagesPresent, adsConfirmedActive, adsCreativeCount)
+ * are optional and default to null -- passing them lets Phase A signals and external-source
+ * signals raise a score without a second scoring implementation. Ingest does not have them,
+ * since a newly discovered business has not been enriched yet; they arrive when rescore.mjs
+ * runs after an enrichment pass. yellowPagesPresent indicates Yellow Pages listing (paid
+ * directory, marketing spend signal). adsConfirmedActive indicates active ads detected.
  */
 export function scoreIcp({
   name, keyword, primaryCategory, categories, description, about,
   rating, reviewCount, website, priceRange,
-  bookingPresent = null, growthScore = null,
+  bookingPresent = null, growthScore = null, yellowPagesPresent = null,
   adsConfirmedActive = null, adsCreativeCount = null,
 }) {
   const serviceCategory = deriveServiceCategory(primaryCategory, categories);
