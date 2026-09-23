@@ -302,34 +302,107 @@ sub get_socket_local_ip {
     };
 }
 
-# Do a reverse DNS lookup on an IP address. Returns the hostname if found,
-# or the IP address itself if the lookup fails or returns no result.
+# Do a reverse DNS lookup on an IP address using Google nameservers (8.8.8.8, 8.8.4.4).
+# Supports both IPv4 and IPv6. Returns the hostname if found, or the IP address itself if
+# the lookup fails or returns no result. Reports which nameserver and IP version was used.
 sub reverse_dns_lookup {
-    my ($ip, $dns) = @_;
+    my ($ip, $dns_unused) = @_;
     return $ip unless $ip;
 
-    # Convert IP to reverse DNS query format: a.b.c.d -> d.c.b.a.in-addr.arpa
-    my @octets = split(/\./, $ip);
-    return $ip if @octets != 4;
-    my $reverse_host = join(".", reverse(@octets), "in-addr", "arpa");
+    my $ip_version;
+    my $reverse_host;
 
-    my $started = net_start("DNS PTR", $reverse_host, "reverse lookup for $ip");
-    my $query = $dns->query($reverse_host, 'PTR');
+    # Detect IPv4 (a.b.c.d)
+    if ($ip =~ /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/) {
+        my @octets = ($1, $2, $3, $4);
+        return $ip if grep { $_ > 255 } @octets;  # Invalid octets
+        $reverse_host = join(".", reverse(@octets), "in-addr", "arpa");
+        $ip_version = "IPv4";
+    }
+    # Detect IPv6 (hex with colons)
+    elsif ($ip =~ /:[0-9a-fA-F]/ || $ip =~ /::/) {
+        # Expand and normalize IPv6
+        my $normalized_ip = normalize_ipv6($ip);
+        if (!$normalized_ip) {
+            dbg("  reverse dns %s: invalid IPv6 format, falling back to %s", $ip, $ip);
+            return $ip;
+        }
+        # Convert to reverse DNS: remove colons and reverse nibbles
+        my @nibbles = split(//, $normalized_ip);
+        @nibbles = reverse @nibbles;
+        $reverse_host = join(".", @nibbles, "ip6", "arpa");
+        $ip_version = "IPv6";
+    }
+    else {
+        dbg("  reverse dns %s: unrecognized format, falling back to %s", $ip, $ip);
+        return $ip;
+    }
+
+    # Create a new resolver pointing to Google nameservers
+    my $google_dns = Net::DNS::Resolver->new;
+    $google_dns->nameservers('8.8.8.8', '8.8.4.4');
+
+    my $started = net_start("DNS PTR", $reverse_host,
+        sprintf("reverse lookup for %s (%s) via 8.8.8.8, 8.8.4.4", $ip, $ip_version));
+    my $query = $google_dns->query($reverse_host, 'PTR');
     net_done("DNS PTR", $reverse_host, $started,
-        $query ? "answer" : "no answer (" . $dns->errorstring . ")");
+        $query ? "answer" : "no answer (" . $google_dns->errorstring . ")");
 
     if ($query) {
         foreach my $rr ($query->answer) {
             if ($rr->type eq 'PTR') {
                 my $hostname = $rr->ptrdname;
                 $hostname =~ s/\.$//;  # Remove trailing dot if present
-                dbg("  reverse dns %s -> %s", $ip, $hostname);
+                dbg("  reverse dns %s -> %s (%s, via Google DNS)", $ip, $hostname, $ip_version);
                 return $hostname;
             }
         }
     }
-    dbg("  reverse dns %s: no PTR record found, falling back to %s", $ip, $ip);
+    dbg("  reverse dns %s: no PTR record found (%s), falling back to %s", $ip, $ip_version, $ip);
     return $ip;
+}
+
+# Normalize IPv6 address to full hex notation (32 hex characters, no colons).
+# Takes a compact IPv6 like "2001:db8::1" and returns "20010db8000000000000000000000001".
+# Returns undef if the input is not a valid IPv6.
+sub normalize_ipv6 {
+    my ($ip) = @_;
+
+    # Handle IPv6 with ::
+    if ($ip =~ /::/) {
+        my ($left, $right) = split(/::/, $ip);
+        my @left_parts = $left ? split(/:/, $left) : ();
+        my @right_parts = $right ? split(/:/, $right) : ();
+
+        # The total must be <= 8 groups
+        if (scalar(@left_parts) + scalar(@right_parts) >= 8) {
+            return undef;  # Invalid
+        }
+
+        my $gap = 8 - scalar(@left_parts) - scalar(@right_parts);
+        my @parts = (@left_parts, ("0000") x $gap, @right_parts);
+
+        my $result = '';
+        foreach my $part (@parts) {
+            my $hex = sprintf("%04x", hex($part));
+            return undef unless $hex =~ /^[0-9a-f]{4}$/;
+            $result .= $hex;
+        }
+        return $result;
+    }
+    else {
+        # No ::, just split and pad each group
+        my @parts = split(/:/, $ip);
+        return undef unless @parts == 8;
+
+        my $result = '';
+        foreach my $part (@parts) {
+            my $hex = sprintf("%04x", hex($part));
+            return undef unless $hex =~ /^[0-9a-f]{4}$/;
+            $result .= $hex;
+        }
+        return $result;
+    }
 }
 
 # Opens an SMTP session, either directly or (when --socks5-proxy is set)
