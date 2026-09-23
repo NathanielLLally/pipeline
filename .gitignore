@@ -1,5 +1,6 @@
 .env
 bin/**
 map-outputs/**
+*.log
 .claude
 phase2-logs

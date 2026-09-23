@@ -1,0 +1,96 @@
+- generic [active] [ref=e1]:
+  - banner [ref=e3]:
+    - generic [ref=e4]:
+      - link "Go to Ads Transparency Center home page." [ref=e8] [cursor=pointer]:
+        - /url: https://adstransparency.google.com/
+        - generic [ref=e10]: Ads Transparency Center
+      - generic [ref=e12]:
+        - button "Google apps" [ref=e16] [cursor=pointer]
+        - link "Sign in" [ref=e20] [cursor=pointer]:
+          - /url: https://accounts.google.com/ServiceLogin?passive=1209600&continue=https://adstransparency.google.com/?region%3DUS%26domain%3Doffleashk9training.com&followup=https://adstransparency.google.com/?region%3DUS%26domain%3Doffleashk9training.com&ec=GAZAsQQ
+  - generic [ref=e24]:
+    - button "FAQ" [ref=e27] [cursor=pointer]
+    - search [ref=e31]:
+      - generic [ref=e32]:
+        - toolbar "Topic toggle button" [ref=e33]:
+          - button "All topics" [pressed] [ref=e34] [cursor=pointer]
+          - button "Political ads" [ref=e37] [cursor=pointer]
+        - generic [ref=e42]:
+          - img [aria-hidden] [ref=e44]: search
+          - generic [ref=e48]:
+            - generic: Find the ads you've seen by searching by advertiser name or website
+            - textbox "Find the ads you've seen by searching by advertiser name or website" [ref=e49]
+        - button "Region selection filter button" [ref=e52] [cursor=pointer]:
+          - generic "Region selection filter button" [ref=e53]:
+            - img [aria-hidden] [ref=e55]: check
+            - generic [ref=e56]: Ads In United States
+            - img [aria-hidden] [ref=e58]: arrow_drop_down
+    - generic [ref=e60]:
+      - generic [ref=e61]:
+        - generic [ref=e62]: offleashk9training.com
+        - generic [ref=e64]: This domain includes results for multiple advertiser accounts with ads pointing to this domain. You can filter by individual advertiser below.
+      - generic [ref=e66]:
+        - generic [ref=e67]: 0 ads
+        - generic [ref=e73]:
+          - button "Date range filter button" [ref=e76] [cursor=pointer]:
+            - generic "Date range filter button" [ref=e77]:
+              - img [aria-hidden] [ref=e79]: calendar_today
+              - generic [ref=e80]: Any time
+              - img [aria-hidden] [ref=e82]: arrow_drop_down
+          - 'button "Platform filter button: selected All platforms" [ref=e85] [cursor=pointer]':
+            - generic "Platform Filter" [ref=e86]:
+              - generic [ref=e87]: All platforms
+              - img [aria-hidden] [ref=e89]: arrow_drop_down
+          - 'button "Ad format filter button: selected All formats" [ref=e92] [cursor=pointer]':
+            - generic "Ad Format Filter" [ref=e93]:
+              - generic [ref=e94]: All formats
+              - img [aria-hidden] [ref=e96]: arrow_drop_down
+      - generic [ref=e97]:
+        - generic [ref=e98]: No ads found
+        - generic [ref=e99]: Sorry, we couldn't find anything for your search. Try changing your filters or search for another advertiser or website.
+    - generic [ref=e101]: Discover more on related sites
+    - generic [ref=e102]:
+      - generic [ref=e103]:
+        - generic [ref=e104]: Analyze political ad campaigns on Google
+        - generic [ref=e105]: See extra transparency about election ads from around the world, including who paid for them and who they were aiming to reach.
+        - link "Explore political advertising on Google" [ref=e106] [cursor=pointer]:
+          - /url: https://adstransparency.google.com/political?topic=political
+      - generic [ref=e107]:
+        - generic [ref=e108]: Assess how brands use paid content on Youtube
+        - generic [ref=e109]: Find paid product placements, sponsorships and endorsements shown on YouTube.
+        - generic [ref=e110]:
+          - link "Explore paid promotions on YouTube" [ref=e111] [cursor=pointer]:
+            - /url: https://www.youtube.com/results?sv=1
+          - img [aria-hidden] [ref=e113]: arrow_outward
+      - generic [ref=e114]:
+        - generic [ref=e115]: Make your ads more useful to you
+        - generic [ref=e116]: Easily customize the ads you see on Google Search, YouTube, and Discover - and control the info used to personalize them.
+        - generic [ref=e117]:
+          - link "Go to My Ad Center" [ref=e118] [cursor=pointer]:
+            - /url: https://myadcenter.google.com/
+          - img [aria-hidden] [ref=e120]: arrow_outward
+    - generic [ref=e122]:
+      - generic [ref=e123]: See how Google helps keep users safe online
+      - generic [ref=e124]: Learn about our commitments to responsible advertising and find out more about our approach to keeping the internet open, private, and safe.
+      - generic [ref=e125]:
+        - link "Visit the Safety Center to learn more" [ref=e126] [cursor=pointer]:
+          - /url: https://safety.google/security-privacy/
+        - img [aria-hidden] [ref=e128]: arrow_outward
+    - contentinfo [ref=e129]:
+      - generic [ref=e130]:
+        - button "Privacy" [ref=e132] [cursor=pointer]
+        - generic [ref=e133]:
+          - text: •
+          - button "Terms" [ref=e134] [cursor=pointer]
+        - generic [ref=e135]:
+          - text: •
+          - button "Ads Policies" [ref=e136] [cursor=pointer]
+        - generic [ref=e137]:
+          - text: •
+          - link "FAQ" [ref=e138] [cursor=pointer]:
+            - /url: /faq
+      - generic [ref=e139]:
+        - button "Principles" [ref=e141] [cursor=pointer]
+        - generic [ref=e142]:
+          - text: •
+          - button "Ads Blog" [ref=e143] [cursor=pointer]

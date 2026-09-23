@@ -99,15 +99,18 @@ export function deriveServiceCategory(primaryCategory, categories) {
  *
  * `keyword` is accepted but deliberately contributes at most 5 points, and only as a
  * tiebreaker when the business's own text already corroborates it. Enrichment fields
- * (bookingPresent, growthScore, yellowPagesPresent) are optional -- passing them lets
- * Phase A signals and external-source signals raise a score without a second scoring
- * implementation. yellowPagesPresent indicates the business is listed in Yellow Pages,
- * a paid commercial directory, which signals marketing spend/investment.
+ * (bookingPresent, growthScore, yellowPagesPresent, adsConfirmedActive, adsCreativeCount)
+ * are optional and default to null -- passing them lets Phase A signals and external-source
+ * signals raise a score without a second scoring implementation. Ingest does not have them,
+ * since a newly discovered business has not been enriched yet; they arrive when rescore.mjs
+ * runs after an enrichment pass. yellowPagesPresent indicates Yellow Pages listing (paid
+ * directory, marketing spend signal). adsConfirmedActive indicates active ads detected.
  */
 export function scoreIcp({
   name, keyword, primaryCategory, categories, description, about,
   rating, reviewCount, website, priceRange,
   bookingPresent = null, growthScore = null, yellowPagesPresent = null,
+  adsConfirmedActive = null, adsCreativeCount = null,
 }) {
   const serviceCategory = deriveServiceCategory(primaryCategory, categories);
 
@@ -171,13 +174,54 @@ export function scoreIcp({
   // Yellow Pages presence signals paid commercial listing / marketing investment.
   if (yellowPagesPresent) score += 7;
 
+  // Confirmed ad spend, from leads.ads_transparency. This is the strongest single
+  // commercial signal available, and it is weighted above booking or growth for a
+  // specific reason: a business currently paying Google to acquire customers has
+  // already decided that buying customers is worth money, which is exactly the
+  // decision a lead buyer has to have made. The others are evidence of a business
+  // being well-run; this is evidence of budget.
+  //
+  // It is deliberately NOT scored off `marketing_active`, which only proves a pixel is
+  // installed. Measured across 3,347 checked domains, the two disagree in both
+  // directions: 302 confirmed advertisers had no pixel at all, and 35 carried a pixel
+  // while running no ads. A pixel outlives the campaign that installed it.
+  if (adsConfirmedActive) {
+    score += 12;
+    signals.push("confirmed ad spend (last 30d)");
+    // Scale of spend, as a floor: 40 is the API's page size, so a business at the cap
+    // is running at least that many creatives. Treated as a modest bonus rather than a
+    // linear term, since creative count measures production volume, not dollars.
+    if (adsCreativeCount != null && adsCreativeCount >= 10) {
+      score += 4;
+      signals.push("multiple concurrent creatives");
+    }
+  } else if (adsCreativeCount != null && adsCreativeCount > 0) {
+    // Advertised at some point but nothing live in the last 30 days. Worth something --
+    // the business has bought ads before and knows what they cost -- but not the full
+    // bonus, because the campaign is off and may have been turned off for budget.
+    score += 4;
+    signals.push("lapsed ad spend");
+  }
+
   // Thin listing: no reviews and no website means nothing to sell to and nothing to
   // verify against.
   if ((rc == null || rc < 3) && !website) score -= 20;
 
   score = Math.max(0, Math.min(100, score));
 
-  const tier = score >= 70 ? "Tier 1" : score >= 50 ? "Tier 2" : score >= 30 ? "Tier 3" : "Tier 4";
+  // Tier cutoffs, recalibrated once enrichment began contributing (2026-09-19).
+  //
+  // The original 70/50/30 was set when the scorer saw only the Google Maps record. With
+  // booking, growth and confirmed ad spend in play there are up to 32 further points
+  // available, and at 70 the top tier drifted to 36% of the database -- 1,417 rows,
+  // which is not a priority list. These are set from the actual score distribution so
+  // Tier 1 holds ~15%: the point of the enrichment signals is to decide WHO is in the
+  // top tier, not to grow it.
+  //
+  // Cumulative share measured over 3,888 scored rows: >=83 is 15.0%, >=70 is 36.4%,
+  // >=50 is 78.1%. Re-measure before moving these again; a cutoff chosen as a round
+  // number rather than from the distribution is what inflated Tier 1 the first time.
+  const tier = score >= 83 ? "Tier 1" : score >= 70 ? "Tier 2" : score >= 50 ? "Tier 3" : "Tier 4";
 
   let qcStatus;
   if (!website && (rc == null || rc === 0)) qcStatus = "NEEDS_ENRICHMENT";

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Phase 2 Pipeline: Dog Training Phase 2 + Daycare/Boarding Phase 1 across all metros
+# Phase 2 Pipeline: Dog Training Phase 2 + Daycare/Boarding/Grooming/Walking Phase 1 across all metros
 #
 # Dynamically reads metros from queries/metros.json
 # Checks database to skip already-completed batches
-# Executes both tracks in parallel
+# Executes all tracks in parallel
 #
 # Usage:
 #   ./scripts/phase2-all-metros.sh [--sequential] [--force-all] [--workers N]
@@ -15,23 +15,45 @@ cd "$TOP"
 
 # Load env
 set -a
-source .env
+source $TOP/.env
 set +a
 
 # Config
 SEQUENTIAL=0
 FORCE_ALL=0
 WORKERS=3
+TARGET_SERVICE=""
 
 while (($# > 0)); do
   case "$1" in
     --sequential)  SEQUENTIAL=1; shift ;;
     --parallel)    SEQUENTIAL=0; shift ;;
     --force-all)   FORCE_ALL=1; shift ;;
-    --workers)     WORKERS=$2; shift 2 ;;
+    --workers)     
+      WORKERS="${2:-3}"
+      shift 
+      (($# > 0)) && shift
+      ;;
+    --service)
+      TARGET_SERVICE="${2:-}"
+      shift
+      (($# > 0)) && shift
+      ;;
     *)             echo "Unknown flag: $1" >&2; exit 2 ;;
   esac
 done
+
+  if jq -e ".[\"$TARGET_SERVICE\"]" queries/service_terms.json >/dev/null 2>&1; then
+    echo "service: [$TARGET_SERVICE]"
+    # Valid service, set mode to sequential and only run this service
+    SEQUENTIAL=1
+    :
+  else
+    echo "Invalid service: $TARGET_SERVICE"
+    echo "Available services in queries/service_terms.json:"
+    jq 'keys' queries/service_terms.json
+    exit 1
+  fi
 
 # Logging
 LOG_DIR="phase2-logs"
@@ -108,22 +130,44 @@ log_msg ""
 # Determine which ones are NOT completed
 PENDING_TRACK_A=()
 PENDING_TRACK_B=()
+PENDING_TRACK_C=()
+PENDING_TRACK_D=()
 
 log_msg "Checking database for completed batches..."
 for metro in "${METROS[@]}"; do
   # Track A: prompt2/dog_training
-  if ! is_completed "prompt2" "dog_training" "$metro"; then
-    PENDING_TRACK_A+=("$metro")
+  if [ -z "$TARGET_SERVICE" ] || [ "$TARGET_SERVICE" == "dog_training" ]; then
+    if ! is_completed "prompt2" "dog_training" "$metro"; then
+      PENDING_TRACK_A+=("$metro")
+    fi
   fi
 
   # Track B: prompt1/daycare_boarding
-  if ! is_completed "prompt1" "daycare_boarding" "$metro"; then
-    PENDING_TRACK_B+=("$metro")
+  if [ -z "$TARGET_SERVICE" ] || [ "$TARGET_SERVICE" == "daycare_boarding" ]; then
+    if ! is_completed "prompt1" "daycare_boarding" "$metro"; then
+      PENDING_TRACK_B+=("$metro")
+    fi
+  fi
+
+  # Track C: prompt1/grooming
+  if [ -z "$TARGET_SERVICE" ] || [ "$TARGET_SERVICE" == "grooming" ]; then
+    if ! is_completed "prompt1" "grooming" "$metro"; then
+      PENDING_TRACK_C+=("$metro")
+    fi
+  fi
+
+  # Track D: prompt1/dog_walking_petsitting
+  if [ -z "$TARGET_SERVICE" ] || [ "$TARGET_SERVICE" == "dog_walking_petsitting" ]; then
+    if ! is_completed "prompt1" "dog_walking_petsitting" "$metro"; then
+      PENDING_TRACK_D+=("$metro")
+    fi
   fi
 done
 
 log_msg "Track A pending: ${#PENDING_TRACK_A[@]} metros"
 log_msg "Track B pending: ${#PENDING_TRACK_B[@]} metros"
+log_msg "Track C pending: ${#PENDING_TRACK_C[@]} metros"
+log_msg "Track D pending: ${#PENDING_TRACK_D[@]} metros"
 log_msg ""
 log_msg "Mode: $([ $SEQUENTIAL -eq 1 ] && echo "SEQUENTIAL" || echo "PARALLEL")"
 log_msg "Workers per batch: $WORKERS"
@@ -142,6 +186,18 @@ if [ $SEQUENTIAL -eq 1 ]; then
     run_pipeline "prompt1" "daycare_boarding" "$metro" "$LOG_DIR/track-b-$(echo "$metro" | tr ' ,' '-').log"
   done
 
+  log_msg ""
+  log_msg "=== TRACK C: Grooming Phase 1 ==="
+  for metro in "${PENDING_TRACK_C[@]}"; do
+    run_pipeline "prompt1" "grooming" "$metro" "$LOG_DIR/track-c-$(echo "$metro" | tr ' ,' '-').log"
+  done
+
+  log_msg ""
+  log_msg "=== TRACK D: Dog Walking & Pet Sitting Phase 1 ==="
+  for metro in "${PENDING_TRACK_D[@]}"; do
+    run_pipeline "prompt1" "dog_walking_petsitting" "$metro" "$LOG_DIR/track-d-$(echo "$metro" | tr ' ,' '-').log"
+  done
+
 else
   # Parallel: interleave by metro
   log_msg "Parallel execution: interleaved by metro"
@@ -149,6 +205,8 @@ else
 
   max_metros=${#PENDING_TRACK_A[@]}
   [ ${#PENDING_TRACK_B[@]} -gt $max_metros ] && max_metros=${#PENDING_TRACK_B[@]}
+  [ ${#PENDING_TRACK_C[@]} -gt $max_metros ] && max_metros=${#PENDING_TRACK_C[@]}
+  [ ${#PENDING_TRACK_D[@]} -gt $max_metros ] && max_metros=${#PENDING_TRACK_D[@]}
 
   for ((i = 0; i < max_metros; i++)); do
     # Track A
@@ -162,6 +220,20 @@ else
     if [ $i -lt ${#PENDING_TRACK_B[@]} ]; then
       metro=${PENDING_TRACK_B[$i]}
       run_pipeline "prompt1" "daycare_boarding" "$metro" "$LOG_DIR/track-b-$(echo "$metro" | tr ' ,' '-').log" &
+      sleep 2  # Stagger submissions
+    fi
+
+    # Track C
+    if [ $i -lt ${#PENDING_TRACK_C[@]} ]; then
+      metro=${PENDING_TRACK_C[$i]}
+      run_pipeline "prompt1" "grooming" "$metro" "$LOG_DIR/track-c-$(echo "$metro" | tr ' ,' '-').log" &
+      sleep 2  # Stagger submissions
+    fi
+
+    # Track D
+    if [ $i -lt ${#PENDING_TRACK_D[@]} ]; then
+      metro=${PENDING_TRACK_D[$i]}
+      run_pipeline "prompt1" "dog_walking_petsitting" "$metro" "$LOG_DIR/track-d-$(echo "$metro" | tr ' ,' '-').log" &
       sleep 2  # Stagger submissions
     fi
   done

@@ -41,6 +41,7 @@ for i in "${!SCRAPER_SSH_HOSTS[@]}"; do
 
   # Send SSH command to window
   tmux send-keys -t "$TMUX_WINDOW" "ssh -p $SCRAPER_SSH_PORT $SCRAPER_SSH_USER@$host" "Enter"
+  ( sleep 1 && tmux send-keys -t "$TMUX_WINDOW" "docker logs -fn 10 gms-worker-worker-1" "Enter" ) &
 done
 
 # Only attach if we created a new session
