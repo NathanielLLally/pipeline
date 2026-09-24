@@ -59,7 +59,7 @@ function main() {
 
   if (!serviceCategory) {
     console.error(
-      "Usage: gen-queries.mjs --service-category <dog_training|daycare_boarding|grooming|dog_walking_petsitting>" +
+      "Usage: gen-queries.mjs --service-category <dog_training|daycare_boarding|grooming|dog_walking_petsitting|veterinary|pet_retail|pet_insurance>" +
       " [--metro \"City, ST\"] [--phase name] [--out path] [--max-geo N] [--force]"
     );
     process.exit(2);
