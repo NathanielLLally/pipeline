@@ -29,6 +29,8 @@
 //   node scripts/enrich-websites.mjs --limit 500 --concurrency 12
 //   node scripts/enrich-websites.mjs --refetch      # ignore what is already crawled
 //   node scripts/enrich-websites.mjs --proxy-mode rotating   # after a throttled run
+//   node scripts/enrich-websites.mjs --no-proxy     # fetch on this host's own IP,
+//                                                    # skipping the SOCKS5 pool entirely
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -172,6 +174,11 @@ export function usableBody(res, text = null) {
  *
  * Retries only on transport failure and on the status codes that indicate the proxy
  * rather than the page: 403/429 (blocked or throttled) and 5xx. A 404 is a real answer.
+ *
+ * When `nextProxy` is null (--no-proxy), every attempt goes out on this host's own IP.
+ * The retry logic still applies -- a 5xx or timeout can be transient -- but repeated
+ * attempts no longer diversify the source address, so persistent blocking reads as
+ * "unreachable from this host" rather than "unreachable, period".
  */
 async function fetchWithRetry(url, nextProxy, attempts = 3) {
   let last;
@@ -194,13 +201,14 @@ async function fetchWithRetry(url, nextProxy, attempts = 3) {
  * proxy credentials into a transcript once already.
  */
 async function fetchOnce(url, nextProxy) {
-  const p = nextProxy();
+  // nextProxy is null under --no-proxy: fetch directly on this host's own IP rather
+  // than through the SOCKS5 pool. See the --no-proxy usage note above for why.
+  const p = nextProxy ? nextProxy() : null;
   const args = [
     "-sS", "--compressed", "-L", "--max-redirs", "5",
     "--max-time", String(TIMEOUT_SEC),
     "--max-filesize", String(MAX_BYTES),
-    "--socks5-hostname", `${p.host}:${p.port}`,
-    "--proxy-user", `${p.user}:${p.pass}`,
+    ...(p ? ["--socks5-hostname", `${p.host}:${p.port}`, "--proxy-user", `${p.user}:${p.pass}`] : []),
     "-A", UA,
     "-w", "\n@@%{http_code}\t%{url_effective}",
     url,
@@ -442,12 +450,20 @@ async function main() {
   // "direct" is the fixed 100-IP list; "rotating" is the gateway that assigns a fresh
   // exit per connection. Refetching the direct list does not change its contents, so
   // rotating is the only refresh that actually moves to different addresses.
+  //
+  // --no-proxy bypasses the pool entirely and fetches on this host's own outbound IP.
+  // Worth it only when the host itself has a clean, unthrottled IP and the crawl target
+  // is plain business websites rather than something already rate-limiting datacenter
+  // ASNs -- see the DataImpulse/proxy-budget note in docs/ARCHITECTURE.md. nextProxy is
+  // null in this mode; fetchOnce() reads that as "no proxy" rather than "pick one".
+  const noProxy = Boolean(args["no-proxy"]);
   const proxyMode = args["proxy-mode"] === "rotating" ? "rotating" : "direct";
-  const proxies = loadProxies(env, proxyMode);
-  const nextProxy = rotator(proxies);
+  const proxies = noProxy ? [] : loadProxies(env, proxyMode);
+  const nextProxy = noProxy ? null : rotator(proxies);
   console.error(
-    `[enrich-websites] ${rows.length} businesses, ${proxies.length} ${proxyMode} proxies, ` +
-    `concurrency ${concurrency}${dryRun ? " (DRY RUN -- nothing written)" : ""}`
+    `[enrich-websites] ${rows.length} businesses, ` +
+    (noProxy ? "direct connection (no proxy)" : `${proxies.length} ${proxyMode} proxies`) +
+    `, concurrency ${concurrency}${dryRun ? " (DRY RUN -- nothing written)" : ""}`
   );
 
   const queue = [...rows];

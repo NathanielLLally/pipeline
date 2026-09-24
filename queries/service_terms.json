@@ -37,5 +37,29 @@
     "dog walking service",
     "pet sitter",
     "pet sitting service"
+  ],
+  "veterinary": [
+    "veterinarian",
+    "animal hospital",
+    "veterinary clinic",
+    "vet clinic",
+    "pet veterinarian",
+    "emergency vet",
+    "animal care clinic",
+    "pet hospital"
+  ],
+  "pet_retail": [
+    "pet store",
+    "pet supply store",
+    "pet supplies",
+    "dog supplies",
+    "pet shop",
+    "animal supplies"
+  ],
+  "pet_insurance": [
+    "pet insurance",
+    "dog insurance",
+    "pet health insurance",
+    "animal insurance"
   ]
 }
