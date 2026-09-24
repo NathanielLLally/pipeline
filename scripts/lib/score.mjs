@@ -203,8 +203,6 @@ export function scoreIcp({
   if (priceRange) score += 5;
   if (bookingPresent) score += 8;
   if (growthScore != null && growthScore >= 60) score += 8;
-  // Yellow Pages presence signals paid commercial listing / marketing investment.
-  if (yellowPagesPresent) score += 7;
 
   // Confirmed ad spend, from leads.ads_transparency. This is the strongest single
   // commercial signal available, and it is weighted above booking or growth for a

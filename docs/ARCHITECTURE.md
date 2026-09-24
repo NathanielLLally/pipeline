@@ -9,7 +9,7 @@ deployment, record it here in the same session. Mark anything you did not person
 verify as unverified rather than stating it as settled — the value of this file depends
 on being trustworthy without re-checking.
 
-Last verified: 2026-09-21.
+Last verified: 2026-09-18.
 
 ---
 
@@ -201,52 +201,6 @@ Such cases are flagged into `qc_review` for a human instead.
 - `execFileSync` embeds its full argv in thrown errors, which leaks the database
   password. `scripts/lib/q.mjs` exists to wrap `psql` and sanitize error output; prefer
   it over ad-hoc `psql` invocations in scripts.
-
-### Yellow Pages: a second database, mirrored into `leads`
-
-Yellow Pages scraping is a separate effort (run by a different agent/process) with its
-own source-of-truth database, credentials at `~/.yellow_pages.conf`
-(`dsn=dbi:Pg:dbname=yp;host=127.0.0.1;port=5432`, user/pass in the same file — note the
-key is lowercase `pass=`, not `PASS=`). That database is `yp` on `127.0.0.1:5432`, and it
-is **not** the same Postgres server as `leads`/`yellow_pages` on the mail host
-(`LEADS_DB_HOST` in `.env`) — the two only share a schema name, `yellow_pages`.
-
-As of 2026-09-22 the tables in `yellow_pages` on both servers are:
-
-| Table | Purpose |
-|---|---|
-| `pending_yp` | Work queue of YP category-listing URLs to crawl. `host` column is a claim tag (e.g. `browser`, `hawkeye`, `not_this_machine`) for whichever process is working a row; `resolved` timestamp marks it done. |
-| `yellow_pages_categories` | The ~292 distinct YP category slugs (e.g. `dog-training`, `pet-grooming`), with fetch status. |
-| `yellow_pages_citycat` | (city, category) URL pairs enumerated from `yellow_pages_categories` × the target city list. |
-| `yellow_pages_loading` | Raw scrape output: one row per (business, matched category), so the same business appears once per category it was tagged under. Not deduplicated. |
-| `business` (LEADS_DB only) | Deduplicated businesses, added in migration 009. See below. |
-
-The mail-host copy of these four source tables is a **periodic mirror**, not a live
-replica — it is refreshed by a manual `pg_dump --data-only` / `pg_restore` from `yp` on
-demand, not by any ongoing sync. Row counts will drift from the source between refreshes
-as the other process's crawl continues. Last full refresh: 2026-09-22 (292 / 146,001 /
-161,633 / 501,684 rows into `yellow_pages_categories` / `yellow_pages_citycat` /
-`pending_yp` / `yellow_pages_loading` respectively).
-
-`yellow_pages.business` (`db/migrations/009_yellow_pages_business_dedup.sql`, LEADS_DB
-only) collapses `yellow_pages_loading`'s one-row-per-category duplicates into one row per
-business. The natural key is `(name, address, city, state, zip)` under a unique index;
-`categories` is a `text[]` collecting every category the business was seen under (26,908
-of 85,701 businesses — about 31% — carry more than one, which is itself a signal: a
-business tagged both `dog-training` and `pet-boarding-kennels` is a stronger ICP fit than
-either tag alone suggests). `phone`/`website` take the first non-blank value in the
-group, ordered by source `id`; they disagree within a duplicate group in under 1% of
-cases, so this is a safe simplification, not a lossy one for the vast majority of rows.
-Key columns default to `''` rather than `NULL`, because ~9,565 source rows have a blank
-zip and Postgres unique indexes treat `NULL <> NULL`, which would silently let blank-zip
-duplicates through. This table is not yet wired into `leads.businesses` or scored against
-the ICP — it is raw deduplicated YP inventory, waiting on a decision about which of its
-14 dog/pet categories (`dog-training`, `dog-day-care`, `pet-boarding-kennels`, `kennels`,
-`mobile-pet-grooming`, `pet-grooming`, `dog-parks`, `animal-shelters`,
-`veterinary-clinics-hospitals`, `veterinarian-emergency-services`, `pet-insurance`,
-`pet-cemeteries-crematories`) should actually feed the prospect pipeline versus which are
-out of ICP scope (parks, shelters, vets, insurance, cemeteries are dog/pet-*adjacent* but
-not buyers of leads per `CLAUDE.md`'s ICP).
 
 ---
 
