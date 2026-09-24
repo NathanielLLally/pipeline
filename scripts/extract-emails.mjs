@@ -53,6 +53,7 @@ function main() {
   const dryRun = Boolean(args["dry-run"]);
   const limit = args.limit ? Number(args.limit) : null;
   const env = loadEnv(ROOT);
+  const batchSize = 2000;  // Fetch pages in 2K batches to avoid jsonb array size limits
 
   // Pull the crawled text. Joining to businesses here so the site's own domain is
   // available for the same-domain check without a second query.
@@ -65,22 +66,40 @@ function main() {
   // stripped those tags before text_excerpt was written, so an address linked but never
   // printed existed in signals and nowhere else. Older crawl rows still look like that,
   // and reading both sources here recovers them without re-fetching anything.
-  const rows = JSON.parse(q(`
-    SELECT COALESCE(jsonb_agg(jsonb_build_object(
-      'business_id', w.business_id,
-      'url', COALESCE(w.final_url, w.url),
-      'page_kind', w.page_kind,
-      'website', b.website,
-      'text', w.text_excerpt,
-      'signal_emails', COALESCE(w.signals->'person_emails', '[]'::jsonb)
-                       || COALESCE(w.signals->'role_emails', '[]'::jsonb)
-    )), '[]'::jsonb)
-    FROM leads.website_crawl w
-    JOIN leads.businesses b ON b.id = w.business_id
-    WHERE (w.text_excerpt IS NOT NULL
-           OR w.signals ? 'person_emails' OR w.signals ? 'role_emails')
-    ${limit ? `LIMIT ${limit}` : ""}
-  `, { args: ["-tA"], env }));
+  //
+  // Fetch in batches to avoid exceeding Postgres's 256MB jsonb array limit on large crawls.
+  let offset = 0;
+  let allRows = [];
+  while (true) {
+    const rows = JSON.parse(q(`
+      SELECT COALESCE(jsonb_agg(jsonb_build_object(
+        'business_id', w.business_id,
+        'url', COALESCE(w.final_url, w.url),
+        'page_kind', w.page_kind,
+        'website', b.website,
+        'text', w.text_excerpt,
+        'signal_emails', COALESCE(w.signals->'person_emails', '[]'::jsonb)
+                         || COALESCE(w.signals->'role_emails', '[]'::jsonb)
+      )), '[]'::jsonb)
+      FROM (
+        SELECT w.business_id, w.url, w.final_url, w.page_kind, w.text_excerpt, w.signals, b.website
+        FROM leads.website_crawl w
+        JOIN leads.businesses b ON b.id = w.business_id
+        WHERE (w.text_excerpt IS NOT NULL
+               OR w.signals ? 'person_emails' OR w.signals ? 'role_emails')
+        LIMIT ${batchSize} OFFSET ${offset}
+      ) w
+      JOIN leads.businesses b ON b.id = w.business_id
+    `, { args: ["-tA"], env }));
+    if (!rows.length) break;
+    allRows = allRows.concat(rows);
+    offset += batchSize;
+    if (limit && allRows.length >= limit) {
+      allRows = allRows.slice(0, limit);
+      break;
+    }
+  }
+  const rows = allRows;
 
   console.error(`[email] scanning ${rows.length} crawled pages`);
 

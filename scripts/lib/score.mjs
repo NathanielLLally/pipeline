@@ -9,9 +9,11 @@
 
 // Google's category taxonomy for the ICP. An allowlist, not a denylist: the junk tail
 // ("Train station", "Brewpub", "Museum" -- all real rows pulled in by "board and
-// train" / "dog training" queries) is unbounded, while genuine dog-service categories
-// are a short closed set.
+// train" / "dog training" queries) is unbounded, while genuine pet-service categories
+// are a short closed set. Supports multiple ICP profiles: dog/pet services, veterinary,
+// pet retail, and pet insurance.
 const CATEGORY_MAP = new Map([
+  // Dog/pet service businesses (Profile A)
   ["dog trainer", "dog_training"],
   ["pet trainer", "dog_training"],
   ["dog day care center", "daycare_boarding"],
@@ -23,20 +25,31 @@ const CATEGORY_MAP = new Map([
   ["dog walker", "dog_walking_petsitting"],
   ["pet sitter", "dog_walking_petsitting"],
   ["pet care service", "dog_walking_petsitting"],
+  // Veterinary practices (Profile B)
+  ["veterinarian", "veterinary"],
+  ["animal hospital", "veterinary"],
+  ["veterinary care", "veterinary"],
+  ["emergency veterinarian service", "veterinary"],
+  ["pet hospital", "veterinary"],
+  ["veterinary clinic", "veterinary"],
+  // Pet retail (Profile C)
+  ["pet supply store", "pet_retail"],
+  ["pet store", "pet_retail"],
+  // Pet insurance (Profile D)
+  ["pet insurance", "pet_insurance"],
+  ["pet health insurance", "pet_insurance"],
 ]);
 
 // Categories that disqualify a record when they are what the business primarily IS.
-// A veterinary practice with a boarding sideline is not a buyer of training leads and
-// a shelter is not a commercial prospect at all -- but a busy dog daycare that also
-// sells leashes is, so these only disqualify in the primary slot. Matching them
-// anywhere would reject prospects like Dogtopia, whose secondary categories include
-// "Pet supply store".
+// A shelter is not a commercial prospect at all, and dog breeders/parks are off-ICP,
+// but veterinary practices and pet retail are now on-ICP (multiple profiles).
+// Only disqualify in the primary slot: a busy dog daycare that also sells leashes is
+// a prospect, so matching DISQUALIFYING anywhere would wrongly reject prospects like
+// Dogtopia whose secondary categories include "Pet supply store".
 const DISQUALIFYING = new Set([
-  "veterinarian", "animal hospital", "veterinary care", "emergency veterinarian service",
   "animal shelter", "animal control service", "animal protection organization",
   "pet adoption service", "dog breeder", "non-profit organization",
   "dog park", "park", "state park", "public beach",
-  "pet supply store", "pet store",
 ]);
 
 // Gate for the secondary-category fallback: the business must read as a pet/dog
@@ -44,10 +57,17 @@ const DISQUALIFYING = new Set([
 const PET_PRIMARY_RE = /\b(dog|pet|puppy|canine|k-?9)\b/i;
 
 const BASE_BY_CATEGORY = {
+  // Dog/pet service businesses (Profile A: dog trainers, groomers, walkers, etc.)
   dog_training: 55,
   daycare_boarding: 45,
   grooming: 35,
   dog_walking_petsitting: 25,
+  // Veterinary practices (Profile B: established, recurring exams/vaccines, high LTV, $1K+/mo marketing budgets)
+  veterinary: 55,
+  // Pet retail (Profile C: recurring purchases, but lower transaction size)
+  pet_retail: 25,
+  // Pet insurance (Profile D: high-value recurring subscriptions, high LTV, niche market)
+  pet_insurance: 45,
 };
 
 // High-ticket / recurring service signals, weighted by commercial value per CLAUDE.md's
@@ -83,12 +103,24 @@ export function deriveServiceCategory(primaryCategory, categories) {
   // itself a pet business by its primary category -- otherwise a resort hotel that
   // boards dogs, or a park with a dog run, would qualify on a sideline. Categories
   // like "Training center" or "Pet care service" are the real reason this fallback
-  // exists.
-  if (!PET_PRIMARY_RE.test(lower(primaryCategory))) return null;
+  // exists. For veterinary/retail/insurance, the primary category check is not as
+  // strict, since a clinic or store listed under a generic parent category still
+  // counts as on-ICP if it has these as secondaries.
+  if (!PET_PRIMARY_RE.test(lower(primaryCategory))) {
+    // Allow vet, retail, insurance to override the pet-business check (they're standalone ICP)
+    const isStandaloneProfile = all.some((c) => {
+      const mapped = CATEGORY_MAP.get(c);
+      return mapped && ["veterinary", "pet_retail", "pet_insurance"].includes(mapped);
+    });
+    if (!isStandaloneProfile) return null;
+  }
 
-  // Highest-priority secondary wins, in the ICP priority order from CLAUDE.md
-  // (trainers > daycare/boarding > groomers > walkers).
-  for (const want of ["dog_training", "daycare_boarding", "grooming", "dog_walking_petsitting"]) {
+  // Highest-priority secondary wins, by ICP profile priority:
+  // dog_training > daycare/boarding > pet_insurance > veterinary > grooming > pet_retail > dog_walking_petsitting
+  for (const want of [
+    "dog_training", "daycare_boarding", "pet_insurance", "veterinary",
+    "grooming", "pet_retail", "dog_walking_petsitting"
+  ]) {
     if (all.some((c) => CATEGORY_MAP.get(c) === want)) return want;
   }
   return null;

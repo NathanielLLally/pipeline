@@ -39,7 +39,8 @@ SET name_city_state_key = lower(
 WHERE name_city_state_key IS NULL AND name IS NOT NULL AND name <> '';
 
 -- Step 2: Map YP categories to ICP service_category.
--- Priority: dog_training > daycare_boarding > grooming > dog_walking_petsitting > off-ICP.
+-- Priority: dog_training > daycare_boarding > pet_insurance > veterinary > grooming > pet_retail > dog_walking_petsitting > off-ICP.
+-- Supports multiple ICP profiles: dog/pet services, veterinary, pet retail, and pet insurance.
 -- Store the mapping in a temp view for later use.
 CREATE TEMPORARY TABLE yp_mapped_categories AS
 SELECT
@@ -47,12 +48,24 @@ SELECT
   name,
   categories,
   CASE
+    -- Profile A: Dog/pet services
     WHEN categories @> ARRAY['dog-training']::text[] THEN 'dog_training'
     WHEN categories @> ARRAY['dog-day-care']::text[] THEN 'daycare_boarding'
     WHEN categories @> ARRAY['pet-boarding-kennels']::text[] THEN 'daycare_boarding'
     WHEN categories @> ARRAY['kennels']::text[] THEN 'daycare_boarding'
     WHEN categories @> ARRAY['mobile-pet-grooming']::text[] THEN 'grooming'
     WHEN categories @> ARRAY['pet-grooming']::text[] THEN 'grooming'
+    -- Profile B: Veterinary (higher priority than grooming)
+    WHEN categories @> ARRAY['veterinary-clinics-hospitals']::text[] THEN 'veterinary'
+    WHEN categories @> ARRAY['veterinary-services']::text[] THEN 'veterinary'
+    WHEN categories @> ARRAY['animal-hospitals']::text[] THEN 'veterinary'
+    WHEN categories @> ARRAY['veterinarians']::text[] THEN 'veterinary'
+    -- Profile D: Pet insurance (high priority)
+    WHEN categories @> ARRAY['pet-insurance']::text[] THEN 'pet_insurance'
+    -- Profile C: Pet retail
+    WHEN categories @> ARRAY['pet-stores']::text[] THEN 'pet_retail'
+    WHEN categories @> ARRAY['pet-supply-stores']::text[] THEN 'pet_retail'
+    WHEN categories @> ARRAY['pet-supplies']::text[] THEN 'pet_retail'
     ELSE NULL
   END AS service_category
 FROM yellow_pages.business
@@ -123,6 +136,9 @@ SELECT
     WHEN yp.categories @> ARRAY['dog-training']::text[] THEN 'dog trainer'
     WHEN yp.categories @> ARRAY['dog-day-care','pet-boarding-kennels','kennels']::text[] THEN 'pet boarding service'
     WHEN yp.categories @> ARRAY['mobile-pet-grooming','pet-grooming']::text[] THEN 'pet groomer'
+    WHEN yp.categories @> ARRAY['veterinary-clinics-hospitals','veterinary-services','animal-hospitals','veterinarians']::text[] THEN 'veterinarian'
+    WHEN yp.categories @> ARRAY['pet-stores','pet-supply-stores','pet-supplies']::text[] THEN 'pet store'
+    WHEN yp.categories @> ARRAY['pet-insurance']::text[] THEN 'pet insurance'
     ELSE 'pet care service'
   END,
   yp.categories,
@@ -133,9 +149,12 @@ SELECT
     COALESCE(
       CASE m.service_category
         WHEN 'dog_training' THEN 55
+        WHEN 'veterinary' THEN 55
         WHEN 'daycare_boarding' THEN 45
+        WHEN 'pet_insurance' THEN 45
         WHEN 'grooming' THEN 35
         WHEN 'dog_walking_petsitting' THEN 25
+        WHEN 'pet_retail' THEN 25
         ELSE 0
       END,
       0
@@ -150,9 +169,12 @@ SELECT
       COALESCE(
         CASE m.service_category
           WHEN 'dog_training' THEN 55
+          WHEN 'veterinary' THEN 55
           WHEN 'daycare_boarding' THEN 45
+          WHEN 'pet_insurance' THEN 45
           WHEN 'grooming' THEN 35
           WHEN 'dog_walking_petsitting' THEN 25
+          WHEN 'pet_retail' THEN 25
           ELSE 0
         END,
         0
@@ -164,9 +186,12 @@ SELECT
       COALESCE(
         CASE m.service_category
           WHEN 'dog_training' THEN 55
+          WHEN 'veterinary' THEN 55
           WHEN 'daycare_boarding' THEN 45
+          WHEN 'pet_insurance' THEN 45
           WHEN 'grooming' THEN 35
           WHEN 'dog_walking_petsitting' THEN 25
+          WHEN 'pet_retail' THEN 25
           ELSE 0
         END,
         0
@@ -178,9 +203,12 @@ SELECT
       COALESCE(
         CASE m.service_category
           WHEN 'dog_training' THEN 55
+          WHEN 'veterinary' THEN 55
           WHEN 'daycare_boarding' THEN 45
+          WHEN 'pet_insurance' THEN 45
           WHEN 'grooming' THEN 35
           WHEN 'dog_walking_petsitting' THEN 25
+          WHEN 'pet_retail' THEN 25
           ELSE 0
         END,
         0
