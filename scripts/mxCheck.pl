@@ -116,9 +116,50 @@ use Sys::Hostname;
 use File::Temp qw(tempfile);
 use Time::HiRes qw(time sleep);
 use IO::Socket::Socks ();
-use Socket qw(inet_aton inet_ntoa sockaddr_in unpack_sockaddr_in);
+use Socket qw(inet_aton inet_ntoa sockaddr_in unpack_sockaddr_in inet_pton inet_ntop);
 
-# --- Configuration & Defaults ---
+# --- DNS Outgoing IP Validation Subclass ---
+#
+# This subclass of Net::DNS::Resolver provides a method to determine the local
+# interface IP address that the OS will use to route DNS queries. This is used
+# for pre-flight QC to ensure the script isn't running on a misconfigured host
+# (e.g. routing through localhost or the wrong public interface).
+package Net::DNS::Resolver::Outgoing;
+use base qw(Net::DNS::Resolver);
+use Socket;
+
+sub get_local_outgoing_ip {
+    my ($self) = @_;
+
+    # We MUST probe remote public IPs to force the OS to select the public WAN interface.
+    # Using system nameservers often returns a local loopback or gateway IP.
+    my @targets = ('8.8.8.8', '1.1.1.1', '9.9.9.9');
+    
+    foreach my $target (@targets) {
+        my $packed = inet_aton($target);
+        next unless $packed;
+        
+        socket(my $sock, AF_INET, SOCK_STREAM, 0) or next;
+        
+        eval {
+            connect($sock, sockaddr_in(53, $packed));
+        };
+        
+        my $sockaddr = getsockname($sock);
+        if ($sockaddr) {
+            my $raw_ip = (length($sockaddr) == 4) ? $sockaddr : substr($sockaddr, 4, 4);
+            my $ip = inet_ntoa($raw_ip);
+            close($sock);
+            return $ip if $ip && $ip ne '0.0.0.0';
+        }
+        close($sock);
+    }
+    
+    return undef;
+}
+
+package main;
+
 my $threads = 30;
 my $email_arg;
 my $file_arg;
@@ -294,8 +335,9 @@ sub get_socket_local_ip {
     try {
         my $sockaddr = $sock->sockname();
         return undef unless $sockaddr;
-        my ($port, $addr) = unpack_sockaddr_in($sockaddr);
-        return inet_ntoa($addr);
+        # Extract the 4-byte IP from the sockaddr_in structure (offset 4 on Linux)
+        my $raw_ip = (length($sockaddr) == 4) ? $sockaddr : substr($sockaddr, 4, 4);
+        return inet_ntoa($raw_ip);
     } catch {
         dbg("  could not get socket local ip: %s", $_);
         return undef;
@@ -560,7 +602,21 @@ foreach my $email (@emails_to_check) {
         mx_server => undef,
     };
 
+    # Pre-flight QC: Validate our own outgoing interface
+    my $out_dns = Net::DNS::Resolver::Outgoing->new;
+    my $outgoing_ip = $out_dns->get_local_outgoing_ip();
+
+    # match any reserved private network (class c,b, & a)
+    if (!$outgoing_ip || $outgoing_ip =~ /\b(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|127\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3})\b/) {
+        $result->{error} = "QC Failure: invalid local outgoing IP ($outgoing_ip)";
+        dbg("QC Failure for %s: routing through localhost or invalid interface [%s]", $email, $outgoing_ip);
+        $pm->finish;
+        return;
+    }
+    dbg("dns resolver gave us our public ip: %s",  $outgoing_ip);
+
     my $dns = Net::DNS::Resolver->new;
+
 
     try {
         if ($email =~ /\@(.*)$/) {
