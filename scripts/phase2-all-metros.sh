@@ -128,41 +128,47 @@ log_msg "Found ${#METROS[@]} metros from queries/metros.json"
 log_msg ""
 
 # Determine which ones are NOT completed
-PENDING_TRACK_A=()
-PENDING_TRACK_B=()
-PENDING_TRACK_C=()
-PENDING_TRACK_D=()
+# Now using coverage-check.sh to determine priority
+# We'll run coverage-check and use the output to populate the tracks
+# though for now, the prompt asked to populate TRACKs array sorted by completeness.
 
-log_msg "Checking database for completed batches..."
-for metro in "${METROS[@]}"; do
-  # Track A: prompt2/dog_training
-  if [ -z "$TARGET_SERVICE" ] || [ "$TARGET_SERVICE" == "dog_training" ]; then
-    if ! is_completed "prompt2" "dog_training" "$metro"; then
-      PENDING_TRACK_A+=("$metro")
-    fi
-  fi
+# To strictly follow the request:
+# 1. Run coverage-check.sh
+# 2. Parse output to find least covered services/metros
+# 3. Populate the arrays
 
-  # Track B: prompt1/daycare_boarding
-  if [ -z "$TARGET_SERVICE" ] || [ "$TARGET_SERVICE" == "daycare_boarding" ]; then
-    if ! is_completed "prompt1" "daycare_boarding" "$metro"; then
-      PENDING_TRACK_B+=("$metro")
-    fi
-  fi
+log_msg "Checking coverage via coverage-check.sh..."
+# We capture the output of coverage-check.sh.
+# The query returns: geo_target | service_category | record_count
+# We want to prioritize those with record_count = 0 or lowest.
 
-  # Track C: prompt1/grooming
-  if [ -z "$TARGET_SERVICE" ] || [ "$TARGET_SERVICE" == "grooming" ]; then
-    if ! is_completed "prompt1" "grooming" "$metro"; then
-      PENDING_TRACK_C+=("$metro")
-    fi
-  fi
+COVERAGE_DATA=$(./scripts/coverage-check.sh | sed '1,/--- Search Coverage Report ---/d' | sed '/--- Pipeline Completion Stats ---/,$d')
 
-  # Track D: prompt1/dog_walking_petsitting
-  if [ -z "$TARGET_SERVICE" ] || [ "$TARGET_SERVICE" == "dog_walking_petsitting" ]; then
-    if ! is_completed "prompt1" "dog_walking_petsitting" "$metro"; then
-      PENDING_TRACK_D+=("$metro")
-    fi
-  fi
-done
+# Dynamic Tracks based on service_terms.json
+# We will create a map of service -> pending_metros
+# Since bash doesn't have multi-dimensional arrays, we'll use a naming convention
+# or just keep the existing Track A, B, C, D logic but populate them dynamically.
+
+# We'll map the original Track letters to the first 4 services for legacy compatibility
+# but we can actually just use the service names as keys.
+
+# For the sake of the current script structure, let's map:
+# Track A -> dog_training
+# Track B -> daycare_boarding
+# Track C -> grooming
+# Track D -> dog_walking_petsitting
+
+# Sort COVERAGE_DATA by record_count (ascending) and then filter for each track
+get_pending_for_service() {
+  local service=$1
+  echo "$COVERAGE_DATA" | grep "|$service|" | sort -t'|' -k3n | cut -d'|' -f1 | tr -d ' '
+}
+
+PENDING_TRACK_A=($(get_pending_for_service "dog_training"))
+PENDING_TRACK_B=($(get_pending_for_service "daycare_boarding"))
+PENDING_TRACK_C=($(get_pending_for_service "grooming"))
+PENDING_TRACK_D=($(get_pending_for_service "dog_walking_petsitting"))
+
 
 log_msg "Track A pending: ${#PENDING_TRACK_A[@]} metros"
 log_msg "Track B pending: ${#PENDING_TRACK_B[@]} metros"

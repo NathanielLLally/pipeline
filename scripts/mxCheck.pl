@@ -338,15 +338,13 @@ sub reverse_dns_lookup {
         return $ip;
     }
 
-    # Create a new resolver pointing to Google nameservers
-    my $google_dns = Net::DNS::Resolver->new;
-    $google_dns->nameservers('8.8.8.8', '8.8.4.4');
+    my $dns = Net::DNS::Resolver->new;
 
     my $started = net_start("DNS PTR", $reverse_host,
-        sprintf("reverse lookup for %s (%s) via 8.8.8.8, 8.8.4.4", $ip, $ip_version));
-    my $query = $google_dns->query($reverse_host, 'PTR');
+        sprintf("reverse lookup for %s (%s)", $ip, $ip_version));
+    my $query = $dns->query($reverse_host, 'PTR');
     net_done("DNS PTR", $reverse_host, $started,
-        $query ? "answer" : "no answer (" . $google_dns->errorstring . ")");
+        $query ? "answer" : "no answer (" . $dns->errorstring . ")");
 
     if ($query) {
         foreach my $rr ($query->answer) {
