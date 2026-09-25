@@ -18,6 +18,7 @@
 #
 # CPAN dependencies (cpanm):
 #   cpanm Net::DNS Net::SMTP Parallel::ForkManager Try::Tiny JSON::PP IO::Socket::Socks
+#   cpanm LWP::UserAgent LWP::Protocol::https
 #
 # Getopt::Long, Sys::Hostname, File::Temp, Time::HiRes and Net::Cmd are core, so
 # nothing needs to be installed for them.
@@ -116,9 +117,51 @@ use Sys::Hostname;
 use File::Temp qw(tempfile);
 use Time::HiRes qw(time sleep);
 use IO::Socket::Socks ();
-use Socket qw(inet_aton inet_ntoa sockaddr_in unpack_sockaddr_in);
+use LWP::UserAgent;
+use Socket qw(inet_aton inet_ntoa sockaddr_in unpack_sockaddr_in inet_pton inet_ntop);
 
-# --- Configuration & Defaults ---
+# --- DNS Outgoing IP Validation Subclass ---
+#
+# This subclass of Net::DNS::Resolver provides a method to determine the local
+# interface IP address that the OS will use to route DNS queries. This is used
+# for pre-flight QC to ensure the script isn't running on a misconfigured host
+# (e.g. routing through localhost or the wrong public interface).
+package Net::DNS::Resolver::Outgoing;
+use base qw(Net::DNS::Resolver);
+use Socket;
+
+sub get_local_outgoing_ip {
+    my ($self) = @_;
+
+    # We MUST probe remote public IPs to force the OS to select the public WAN interface.
+    # Using system nameservers often returns a local loopback or gateway IP.
+    my @targets = ('8.8.8.8', '1.1.1.1', '9.9.9.9');
+    
+    foreach my $target (@targets) {
+        my $packed = inet_aton($target);
+        next unless $packed;
+        
+        socket(my $sock, AF_INET, SOCK_STREAM, 0) or next;
+        
+        eval {
+            connect($sock, sockaddr_in(53, $packed));
+        };
+        
+        my $sockaddr = getsockname($sock);
+        if ($sockaddr) {
+            my $raw_ip = (length($sockaddr) == 4) ? $sockaddr : substr($sockaddr, 4, 4);
+            my $ip = inet_ntoa($raw_ip);
+            close($sock);
+            return $ip if $ip && $ip ne '0.0.0.0';
+        }
+        close($sock);
+    }
+    
+    return undef;
+}
+
+package main;
+
 my $threads = 30;
 my $email_arg;
 my $file_arg;
@@ -128,6 +171,7 @@ my $rate_limit = 0;        # checks started per second, 0 = unthrottled
 my $socks5_proxy;          # "host:port"
 my $socks5_user_cli;       # override for local testing only; see header note
 my $socks5_pass_cli;
+my $force_check = 0;
 
 GetOptions(
     'email=s'        => \$email_arg,
@@ -139,7 +183,9 @@ GetOptions(
     'socks5-user=s'  => \$socks5_user_cli,
     'socks5-pass=s'  => \$socks5_pass_cli,
     'help'           => \$help,
+    'force-check'      => \$force_check,
 ) or die "Error in command line arguments\n";
+
 
 if ($help || (!$email_arg && !$file_arg)) {
     print <<USAGE;
@@ -158,12 +204,16 @@ Options:
   --debug            Trace execution to STDERR, including a line before
                      every DNS and SMTP call naming host, port and payload
   --help             Show this help message
+  --force-check       Continue if reverse DNS fails (use IP literal HELO)
 USAGE
     exit 0;
 }
 
 if ($socks5_proxy && $socks5_proxy !~ /^(.+):(\d+)$/) {
     die "--socks5-proxy must be host:port, got '$socks5_proxy'\n";
+}
+if ($socks5_proxy) {
+  die "implement sanity checks on proxy for tcp connect to port 25, rev dns ptr on ip, honey pot and tamper checks before using";
 }
 my ($socks5_host, $socks5_port) = $socks5_proxy ? ($1, $2) : ();
 
@@ -294,8 +344,9 @@ sub get_socket_local_ip {
     try {
         my $sockaddr = $sock->sockname();
         return undef unless $sockaddr;
-        my ($port, $addr) = unpack_sockaddr_in($sockaddr);
-        return inet_ntoa($addr);
+        # Extract the 4-byte IP from the sockaddr_in structure (offset 4 on Linux)
+        my $raw_ip = (length($sockaddr) == 4) ? $sockaddr : substr($sockaddr, 4, 4);
+        return inet_ntoa($raw_ip);
     } catch {
         dbg("  could not get socket local ip: %s", $_);
         return undef;
@@ -420,39 +471,16 @@ sub normalize_ipv6 {
 # after that (mail/to/reset/quit) is unmodified Net::SMTP and works
 # identically on both paths.
 #
-# The hostname used in the HELO parameter is determined by a reverse DNS
-# lookup on the outgoing IP address, not by Sys::Hostname. This ensures the
-# HELO hostname matches the reverse DNS of the IP address the mail server
-# sees, which improves deliverability and reduces spam filter issues.
 sub smtp_connect {
-    my ($svr, $dns) = @_;
-    my $helo_host = hostname;  # Fallback to system hostname
+    my ($svr, $dns, $helo_host) = @_;
 
     if (!$socks5_proxy) {
-        # For direct connections, open the socket, get local IP, reverse DNS lookup
+        # For direct connections
         my $sock = Net::SMTP->new($svr, Timeout => 30, Hello => $helo_host);
-        if ($sock && $dns) {
-            my $local_ip = get_socket_local_ip($sock);
-            if ($local_ip) {
-                my $rev_host = reverse_dns_lookup($local_ip, $dns);
-                if ($rev_host && $rev_host ne $helo_host) {
-                    dbg("  reverse dns resolved %s to %s, updating HELO", $local_ip, $rev_host);
-                    # Reconnect with the correct HELO hostname
-                    $sock->quit;
-                    $sock = Net::SMTP->new($svr, Timeout => 30, Hello => $rev_host);
-                    if (!$sock) {
-                        dbg("  reconnect with HELO %s failed, falling back", $rev_host);
-                        $sock = Net::SMTP->new($svr, Timeout => 30, Hello => $helo_host);
-                    } else {
-                        $helo_host = $rev_host;
-                    }
-                }
-            }
-        }
         return $sock;
     }
 
-    # SOCKS5 path: open tunnel, get local IP, reverse DNS, then HELO
+    # SOCKS5 path
     my %sockopt = (
         ProxyAddr   => $socks5_host,
         ProxyPort   => $socks5_port,
@@ -472,14 +500,6 @@ sub smtp_connect {
         dbg("  socks5 tunnel to %s via %s failed: %s",
             "$svr:25", $socks5_proxy, $IO::Socket::Socks::SOCKS_ERROR // "?");
         return undef;
-    }
-
-    # Get local IP from the SOCKS tunnel and do reverse DNS lookup
-    if ($dns) {
-        my $local_ip = get_socket_local_ip($sock);
-        if ($local_ip) {
-            $helo_host = reverse_dns_lookup($local_ip, $dns);
-        }
     }
 
     bless $sock, 'Net::SMTP';
@@ -502,7 +522,7 @@ sub smtp_connect {
         $sock->close;
         return undef;
     }
-    dbg("  HELO sent as %s (reverse dns from outgoing ip)", $helo_host);
+    dbg("  HELO sent as %s", $helo_host);
 
     return $sock;
 }
@@ -536,9 +556,105 @@ sub rate_limit_wait {
     $rl_count_in_window++;
 }
 
+# Per-domain rate limiter: enforces 1 check per second per unique email domain.
+# This is independent of the global rate limit and is meant to avoid being too
+# aggressive to any single receiving mail server. Tracked in the parent only,
+# so it persists across all forks.
+my %domain_last_connect_time;
+
+sub domain_rate_limit_wait {
+    my ($domain) = @_;
+    return unless $domain;
+
+    my $now = time();
+    my $last = $domain_last_connect_time{$domain};
+
+    if (defined $last && $now - $last < 1) {
+        my $wait = 1 - ($now - $last);
+        if ($wait > 0) {
+            dbg("domain-rate-limit: %s, sleeping %.3fs", $domain, $wait);
+            sleep($wait);
+        }
+    }
+
+    $domain_last_connect_time{$domain} = time();
+}
+
+# --- Pre-flight WAN identity -----------------------------------------------
+#
+# The HELO name is decided once, here, before any MX lookup or SMTP connect,
+# and then handed to every child.
+#
+# It cannot be derived from the local socket: a socket probe reports the
+# address the kernel would bind to, which on any NATed host (this workstation
+# included -- 172.20.10.3) is an RFC1918 address that no receiving MX will
+# ever see. What the remote sees is the public egress address, so that is what
+# has to be asked for, from something outside the NAT. Two echo services are
+# tried in order; the first that answers wins.
+#
+# RFC 5321 wants a HELO that is either an FQDN resolving back to the sender or
+# an address literal in brackets. If the public address has a PTR, that PTR is
+# the HELO. If it does not, an honest address literal is still conformant, but
+# it is also the single strongest spam signal a receiving MX can see, so the
+# default is to stop rather than to quietly burn the IP's reputation.
+# --force-check opts into it deliberately.
+my $wan_ip;
+{
+    my $ua = LWP::UserAgent->new(timeout => 10, agent => 'mxCheck/1.0');
+    # ifconfig.me's bare root serves the HTML page to anything that does not
+    # look like curl; /ip is the plain-text endpoint and is what is wanted here.
+    foreach my $url ('https://ifconfig.me/ip', 'https://ipecho.net/plain') {
+        my $started = net_start("HTTP GET", $url, "public ip lookup");
+        my $res = $ua->get($url);
+        my $body = $res->is_success ? ($res->decoded_content // '') : '';
+        $body =~ s/^\s+|\s+$//g;
+        # An echo service that decides to serve its HTML page instead of a bare
+        # address would otherwise dump the whole document into the trace.
+        net_done("HTTP GET", $url, $started,
+            $res->is_success ? substr($body, 0, 80) : $res->status_line);
+        next unless $res->is_success;
+        if ($body =~ /^[0-9a-fA-F:.]+$/) {
+            $wan_ip = $body;
+            last;
+        }
+    }
+}
+die "mxCheck: could not determine this host's public IP from ifconfig.me or " .
+    "ipecho.net/plain. Without it there is no way to choose a legitimate HELO " .
+    "name; refusing to connect.\n" unless $wan_ip;
+
+# reverse_dns_lookup returns its argument unchanged when there is no PTR, so
+# "the answer is the IP we asked about" is how a missing PTR is detected.
+my $wan_ptr = reverse_dns_lookup($wan_ip);
+my $wan_helo;
+if ($wan_ptr && $wan_ptr ne $wan_ip) {
+    $wan_helo = $wan_ptr;
+    dbg("pre-flight: public ip %s has PTR %s; HELO will be %s",
+        $wan_ip, $wan_ptr, $wan_helo);
+} elsif ($force_check) {
+    # RFC 5321 s4.1.3: an IPv6 address literal carries an "IPv6:" tag inside
+    # the brackets. An IPv4 literal is bare. Getting this wrong produces a
+    # syntactically invalid HELO, which is worse than no PTR.
+    $wan_helo = ($wan_ip =~ /:/) ? "[IPv6:$wan_ip]" : "[$wan_ip]";
+    warn "[mxCheck] no PTR record for public IP $wan_ip; --force-check given, " .
+         "opening with the RFC 5321 address literal HELO $wan_helo\n";
+    dbg("pre-flight: no PTR for %s; --force-check, HELO will be %s",
+        $wan_ip, $wan_helo);
+} else {
+    die "mxCheck: public IP $wan_ip has no PTR record. A HELO from an " .
+        "unresolvable address is rejected or greylisted by most receiving MX " .
+        "hosts and damages this IP's sending reputation. Fix the reverse DNS, " .
+        "or re-run with --force-check to open with the address literal " .
+        "HELO " . (($wan_ip =~ /:/) ? "[IPv6:$wan_ip]" : "[$wan_ip]") . ".\n";
+}
+
 # Processing loop
 foreach my $email (@emails_to_check) {
     rate_limit_wait();
+
+    # Extract domain and apply per-domain rate limiting (1 check/second per domain)
+    my ($domain) = $email =~ /\@(.*)$/;
+    domain_rate_limit_wait($domain) if $domain;
 
     # Create a temp file to store the result of this specific email
     my ($tfh, $tfname) = tempfile(LEGACY => 1, UNLINK => 0);
@@ -560,7 +676,9 @@ foreach my $email (@emails_to_check) {
         mx_server => undef,
     };
 
+
     my $dns = Net::DNS::Resolver->new;
+
 
     try {
         if ($email =~ /\@(.*)$/) {
@@ -576,9 +694,9 @@ foreach my $email (@emails_to_check) {
                 $result->{mx_server} = $svr;
 
                 my $started = net_start("SMTP connect", "$svr:25",
-                    sprintf("reverse-dns HELO timeout 30s%s",
+                    sprintf("HELO %s timeout 30s%s", $wan_helo,
                         $socks5_proxy ? "  via socks5 $socks5_proxy" : ""));
-                my $smtp = smtp_connect($svr, $dns);
+                my $smtp = smtp_connect($svr, $dns, $wan_helo);
                 net_done("SMTP connect", "$svr:25", $started,
                     $smtp ? "banner: " . ($smtp->banner // "(none)") : "connect failed");
 
