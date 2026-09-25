@@ -556,6 +556,30 @@ sub rate_limit_wait {
     $rl_count_in_window++;
 }
 
+# Per-domain rate limiter: enforces 1 check per second per unique email domain.
+# This is independent of the global rate limit and is meant to avoid being too
+# aggressive to any single receiving mail server. Tracked in the parent only,
+# so it persists across all forks.
+my %domain_last_connect_time;
+
+sub domain_rate_limit_wait {
+    my ($domain) = @_;
+    return unless $domain;
+
+    my $now = time();
+    my $last = $domain_last_connect_time{$domain};
+
+    if (defined $last && $now - $last < 1) {
+        my $wait = 1 - ($now - $last);
+        if ($wait > 0) {
+            dbg("domain-rate-limit: %s, sleeping %.3fs", $domain, $wait);
+            sleep($wait);
+        }
+    }
+
+    $domain_last_connect_time{$domain} = time();
+}
+
 # --- Pre-flight WAN identity -----------------------------------------------
 #
 # The HELO name is decided once, here, before any MX lookup or SMTP connect,
@@ -627,6 +651,10 @@ if ($wan_ptr && $wan_ptr ne $wan_ip) {
 # Processing loop
 foreach my $email (@emails_to_check) {
     rate_limit_wait();
+
+    # Extract domain and apply per-domain rate limiting (1 check/second per domain)
+    my ($domain) = $email =~ /\@(.*)$/;
+    domain_rate_limit_wait($domain) if $domain;
 
     # Create a temp file to store the result of this specific email
     my ($tfh, $tfname) = tempfile(LEGACY => 1, UNLINK => 0);
