@@ -1,0 +1,12 @@
+# PyWorkflow Configuration
+# Generated: 2026-09-27 16:15:51
+# Documentation: https://docs.pyworkflow.dev
+
+module: workflows
+runtime: celery
+storage:
+  type: sqlite
+  base_path: pyworkflow_data/pyworkflow.db
+celery:
+  broker: redis://localhost:6379/0
+  result_backend: redis://localhost:6379/1

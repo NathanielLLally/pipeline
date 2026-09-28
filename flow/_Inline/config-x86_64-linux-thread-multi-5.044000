@@ -1,0 +1,38 @@
+version : 0.86
+languages : %
+    C : C
+    C++ : CPP
+    CPP : CPP
+    CXX : CPP
+    Cplusplus : CPP
+    Foo : Foo
+    PDLPP : Pdlpp
+    PYTHON : Python
+    Pdlpp : Pdlpp
+    Python : Python
+    c++ : CPP
+    cplusplus : CPP
+    cpp : CPP
+    cxx : CPP
+    foo : Foo
+    pdlpp : Pdlpp
+    py : Python
+    python : Python
+types : %
+    C : compiled
+    CPP : compiled
+    Foo : interpreted
+    Pdlpp : compiled
+    Python : interpreted
+modules : %
+    C : Inline::C
+    CPP : Inline::CPP
+    Foo : Inline::Foo
+    Pdlpp : Inline::Pdlpp
+    Python : Inline::Python
+suffixes : %
+    C : so
+    CPP : so
+    Foo : foo
+    Pdlpp : so
+    Python : pydat
