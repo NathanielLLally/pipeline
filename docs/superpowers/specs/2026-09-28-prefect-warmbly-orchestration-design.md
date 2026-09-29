@@ -369,7 +369,6 @@ TDD applies. Before writing flow code:
 ### 10.1 Current Constraints
 
 - **Local LLM quality:** Ollama models are weaker at tone inference and copywriting. Upgrade path exists via LiteLLM provider swap.
-- **Search capability:** Deeper fetch only works if research agent proposes a valid URL. No autonomous web search (datacenter proxies blocked by search engines). Research agent must identify a link in the crawled content.
 - **Rejection follow-up:** Rejections land in audit pool; you decide if/when to send generic campaigns. No automated fallback.
 
 ### 10.2 Future Extensions
@@ -396,21 +395,26 @@ TDD applies. Before writing flow code:
 
 ## 12. Implementation Phases
 
-### Phase 1: Core Pipeline (This Spec)
-- Candidate selector
-- Email validation
-- Research agent (pass 1 & 2)
-- Confidence gate
-- Drafting agent
-- Warmbly import
-- Database schema (`leads.agent_rejects`)
+### Phase 1: Warmbly Integration (MVP)
+- Prefect flow: email_validation (mxCheck) → warmbly_import
+- Unit test using mxCheck-validated emails as test data
+- Verify campaign/sequence appears in Warmbly UI
+- Validate import payload shape and Warmbly event trigger
 
-### Phase 2: Production Hardening
-- Systemd/deployment on accurateleadinfo.com
+### Phase 2: Core Research & Drafting Pipeline
+- Candidate selector
+- Research agent (pass 1 & 2 with Jina deeper_fetch)
+- Confidence gate + rejection pool
+- Drafting agent
+- Database schema (`leads.agent_rejects`)
+- Full integration with Phase 1 Warmbly import
+
+### Phase 3: Production Hardening
+- Deployment on accurateleadinfo.com
 - Scheduling + alert configuration
 - Cost monitoring (LiteLLM + Jina)
 
-### Phase 3: Tuning & Extensions
+### Phase 4: Tuning & Extensions
 - Confidence threshold calibration
 - Model swaps and cost optimization
 - Feedback loop / retraining
