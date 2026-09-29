@@ -6,9 +6,12 @@ Tests bidirectional communication:
 2. Emits custom event to Warmbly via Phoenix
 3. Verifies event appears in Warmbly UI
 
-Usage:
-    export WARMBLY_ORG_ID="org_12345..."  # Get from Warmbly UI settings
-    prefect flow run flow/warmbly_integration_test.py:warmbly_integration_test
+Usage (local testing):
+    export WARMBLY_ORG_ID="org_id_from_env_or_ui"
+    python flow/warmbly_integration_test.py
+
+Usage (via Prefect deployment):
+    prefect deployment run <flow>/<deployment>
 """
 
 import asyncio
@@ -86,10 +89,17 @@ def emit_warmbly_event(
         """Async helper to connect and emit event."""
         from warmbly.gateway import AsyncGatewayClient
 
-        gw = AsyncGatewayClient(token=token)
+        # Use per-tenant gateway URL from WARMBLY_API_URL env var
+        # Format: wss://api.crm.happytailspawcare.com (no path, no scheme conversion needed)
+        gateway_url = os.environ.get('WARMBLY_API_URL')
+        if not gateway_url:
+            print("❌ WARMBLY_API_URL not set in environment")
+            return False
+
+        gw = AsyncGatewayClient(token=token, base_url=gateway_url)
 
         # Connect with timeout
-        print(f"   Connecting to wss://realtime.warmbly.com...")
+        print(f"   Connecting to {gateway_url}/socket/websocket...")
         try:
             await asyncio.wait_for(gw.connect(), timeout=10.0)
             print(f"   ✅ Connected")
@@ -214,10 +224,6 @@ def warmbly_integration_test(
 
 
 if __name__ == "__main__":
-    # For local testing
-    print("To run this flow with Prefect:")
-    print("  1. Set WARMBLY_ORG_ID env var")
-    print("  2. Run: prefect flow run flow/warmbly_integration_test.py:warmbly_integration_test")
-    print("\nOr import and call directly:")
-    print("  from flow.warmbly_integration_test import warmbly_integration_test")
-    print("  result = warmbly_integration_test(org_id='org_...')")
+    # Local testing: run the flow directly
+    result = warmbly_integration_test()
+    print(f"\nFlow result: {result}")

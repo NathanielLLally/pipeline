@@ -292,7 +292,7 @@ if __name__ == "__main__":
 ```
 
 **Test verification:**
-1. Run flow: `prefect flow run warmbly_integration_test`
+1. Run flow: `python flow/warmbly_integration_test.py` (local test) or `prefect deployment run <flow>/<deployment>` (via Prefect)
 2. Check Warmbly UI for custom event (should appear in audit log or custom events feed)
 3. Check Discord for notification (if Warmbly has integration set up)
 4. Inspect Prefect logs for task output

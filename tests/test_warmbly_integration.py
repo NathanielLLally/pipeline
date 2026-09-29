@@ -106,7 +106,8 @@ class TestIntegrationWithLiveServers:
     These tests require:
     - WARMBLY_API_TOKEN in environment
     - WARMBLY_ORG_ID in environment (get from Warmbly UI settings)
-    - Network access to wss://realtime.warmbly.com
+    - WARMBLY_API_URL in environment (per-tenant API base URL, e.g., https://api.crm.happytailspawcare.com/v1)
+    - Network access to the per-tenant Warmbly realtime gateway
 
     Mark with @pytest.mark.live to run against live servers.
     """
