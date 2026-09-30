@@ -89,12 +89,18 @@ def emit_warmbly_event(
         """Async helper to connect and emit event."""
         from warmbly.gateway import AsyncGatewayClient
 
-        # Use per-tenant gateway URL from WARMBLY_API_URL env var
-        # Format: wss://api.crm.happytailspawcare.com (no path, no scheme conversion needed)
-        gateway_url = os.environ.get('WARMBLY_API_URL')
+        # Use per-tenant WebSocket gateway URL from WARMBLY_WEBSOCKET_URL env var
+        # Self-hosted Warmbly runs realtime gateway in Docker on port 4000
+        # (not the SDK's default wss://realtime.warmbly.com)
+        # Note: AsyncGatewayClient appends /socket/websocket to the base_url,
+        # so WARMBLY_WEBSOCKET_URL should be just the host and port (e.g., wss://api.crm.happytailspawcare.com:4000)
+        gateway_url = os.environ.get('WARMBLY_WEBSOCKET_URL')
         if not gateway_url:
-            print("❌ WARMBLY_API_URL not set in environment")
+            print("❌ WARMBLY_WEBSOCKET_URL not set in environment")
             return False
+
+        # Strip any trailing path from WARMBLY_WEBSOCKET_URL (in case it includes /socket/websocket)
+        gateway_url = gateway_url.rstrip('/').split('/socket/websocket')[0]
 
         gw = AsyncGatewayClient(token=token, base_url=gateway_url)
 
