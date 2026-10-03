@@ -44,3 +44,86 @@ class TestConfidentFirstPass:
         assert result['status'] == 'researched'
         assert result['passes'] == 1
         assert llm.call_count == 1
+
+
+class TestThresholdBoundary:
+    def test_confidence_exactly_at_threshold_passes(self):
+        """Spec 3b says 'confidence >= threshold'. Equality must pass.
+
+        Getting this backwards sends every borderline business to the
+        rejection pool silently.
+        """
+        with patch('flow.agents.research.complete_structured',
+                   return_value=_out(confidence=CONFIDENCE_THRESHOLD)) as llm:
+            result = research_agent.fn(BUSINESS, EMAILS, "text")
+
+        assert result['status'] == 'researched'
+        assert llm.call_count == 1
+
+    def test_confidence_just_below_threshold_escalates(self):
+        low = _out(confidence=CONFIDENCE_THRESHOLD - 0.01,
+                   next_url_to_check="https://happytails.example/about")
+        with patch('flow.agents.research.complete_structured',
+                   side_effect=[low, _out(confidence=0.95)]), \
+             patch('flow.agents.research.fetch_html', return_value="about text"):
+            result = research_agent.fn(BUSINESS, EMAILS, "text")
+
+        assert result['status'] == 'researched'
+        assert result['passes'] == 2
+
+    def test_still_low_after_two_passes_is_rejected(self):
+        low1 = _out(confidence=0.3,
+                    next_url_to_check="https://happytails.example/about")
+        low2 = _out(confidence=0.4)
+        with patch('flow.agents.research.complete_structured',
+                   side_effect=[low1, low2]), \
+             patch('flow.agents.research.fetch_html', return_value="more text"):
+            result = research_agent.fn(BUSINESS, EMAILS, "text")
+
+        assert result['status'] == 'rejected'
+        assert result['reason'] == 'low_confidence_after_two_passes'
+        assert result['passes'] == 2
+        # The research is kept: the rejection pool needs it (spec 2.2).
+        assert result['research']['confidence'] == 0.4
+
+    def test_low_confidence_without_a_url_rejects_without_refetching(self):
+        """No URL means nothing to escalate to.
+
+        Re-running pass 1 unchanged would cost a second call for an identical
+        prompt, and looping would cost unboundedly.
+        """
+        with patch('flow.agents.research.complete_structured',
+                   return_value=_out(confidence=0.2,
+                                     next_url_to_check=None)) as llm, \
+             patch('flow.agents.research.fetch_html') as fetch:
+            result = research_agent.fn(BUSINESS, EMAILS, "text")
+
+        assert result['status'] == 'rejected'
+        assert result['reason'] == 'low_confidence_no_escalation_url'
+        assert llm.call_count == 1
+        fetch.assert_not_called()
+
+
+class TestLLMFailures:
+    def test_schema_failure_on_pass_one_is_a_rejection_not_a_crash(self):
+        from flow.llm import LLMSchemaError
+
+        with patch('flow.agents.research.complete_structured',
+                   side_effect=LLMSchemaError("never validated")):
+            result = research_agent.fn(BUSINESS, EMAILS, "text")
+
+        assert result['status'] == 'rejected'
+        assert result['reason'] == 'llm_schema_failure'
+
+    def test_transport_failure_on_pass_two_keeps_pass_one_research(self):
+        from flow.llm import LLMTransportError
+
+        low = _out(confidence=0.3,
+                   next_url_to_check="https://happytails.example/about")
+        with patch('flow.agents.research.complete_structured',
+                   side_effect=[low, LLMTransportError("proxy down")]), \
+             patch('flow.agents.research.fetch_html', return_value="t"):
+            result = research_agent.fn(BUSINESS, EMAILS, "text")
+
+        assert result['status'] == 'rejected'
+        assert result['research']['confidence'] == 0.3
