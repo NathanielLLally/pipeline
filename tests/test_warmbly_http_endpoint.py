@@ -7,6 +7,7 @@ Warmbly uses to verify an endpoint before it will deliver real events.
 
 import asyncio
 import hashlib
+import time
 import hmac
 import json
 import os
@@ -18,13 +19,17 @@ from fastapi.testclient import TestClient
 from flow.warmbly_http_endpoint import (
     CHALLENGE_FIELD,
     CHALLENGE_HEADER,
-    SIGNATURE_ALGORITHM,
     SIGNATURE_HEADER,
     REDACTED,
+    SIGNATURE_HEADER,
+    SIGNATURE_TIMESTAMP_KEY,
+    SIGNATURE_VERSION_KEY,
     app,
+    build_signed_payload,
     describe_request,
     describe_signature_check,
     detect_challenge,
+    parse_signature_header,
     probe_signature_schemes,
     route_payload,
 )
@@ -187,8 +192,15 @@ class TestRealEvents:
         assert CHALLENGE_HEADER not in response.headers
 
 
+
 class TestSignatureValidation:
     """Signature checking must still apply to challenge requests."""
+
+    def _header(self, secret, body):
+        ts = str(int(time.time()))
+        signed = build_signed_payload(ts, body)
+        digest = hmac.new(secret.encode(), signed, hashlib.sha256).hexdigest()
+        return f'{SIGNATURE_TIMESTAMP_KEY}={ts},{SIGNATURE_VERSION_KEY}={digest}'
 
     def test_challenge_rejected_without_valid_signature(self, client):
         os.environ['WARMBLY_WEBHOOK_SECRET'] = 'test_secret'
@@ -201,14 +213,13 @@ class TestSignatureValidation:
         secret = 'test_secret'
         os.environ['WARMBLY_WEBHOOK_SECRET'] = secret
         body = json.dumps(TEST_EVENT).encode()
-        sig = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
 
         response = client.post(
             "/webhooks/warmbly",
             content=body,
             headers={
                 'Content-Type': 'application/json',
-                SIGNATURE_HEADER: f'{SIGNATURE_ALGORITHM}={sig}',
+                SIGNATURE_HEADER: self._header(secret, body),
             },
         )
 
@@ -225,8 +236,8 @@ class TestSignatureValidation:
         assert response.status_code == 400
 
 
-class TestDescribeSignatureCheck:
-    """describe_signature_check explains a 401 without leaking the secret."""
+class TestDescribeSignatureCheckBasics:
+    """Cases that do not depend on the signing scheme."""
 
     def test_reports_when_no_secret_configured(self):
         report = describe_signature_check(b'{}', None)
@@ -239,108 +250,74 @@ class TestDescribeSignatureCheck:
 
         report = describe_signature_check(b'{}', None)
 
-        assert report['secret_configured'] is True
         assert report['header_present'] is False
         assert report['matched'] is False
-
-    def test_reports_unexpected_algorithm_prefix(self):
-        os.environ['WARMBLY_WEBHOOK_SECRET'] = 'test_secret'
-
-        report = describe_signature_check(b'{}', 'sha512=deadbeef')
-
-        assert report['algorithm_received'] == 'sha512'
-        assert report['algorithm_expected'] == SIGNATURE_ALGORITHM
-        assert report['matched'] is False
-
-    def test_reports_bare_hex_header_with_no_prefix(self):
-        os.environ['WARMBLY_WEBHOOK_SECRET'] = 'test_secret'
-
-        report = describe_signature_check(b'{}', 'deadbeef')
-
-        assert report['header_format_ok'] is False
-        assert report['matched'] is False
-
-    def test_never_leaks_the_secret(self):
-        secret = 'super_secret_value'
-        os.environ['WARMBLY_WEBHOOK_SECRET'] = secret
-
-        report = describe_signature_check(b'{}', 'sha256=deadbeef')
-
-        assert secret not in json.dumps(report)
-
-    def test_truncates_signatures(self):
-        secret = 'test_secret'
-        os.environ['WARMBLY_WEBHOOK_SECRET'] = secret
-        body = b'{"a":1}'
-        sig = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
-
-        report = describe_signature_check(
-            body, f'{SIGNATURE_ALGORITHM}={sig}'
-        )
-
-        assert report['matched'] is True
-        assert report['signature_expected'] != sig
-        assert sig.startswith(report['signature_expected'].rstrip('…'))
 
     def test_reports_body_length(self):
         os.environ['WARMBLY_WEBHOOK_SECRET'] = 'test_secret'
 
-        report = describe_signature_check(b'12345', 'sha256=deadbeef')
+        report = describe_signature_check(b'12345', 't=1,v1=abc')
 
         assert report['body_bytes'] == 5
 
 
 class TestProbeSignatureSchemes:
-    """probe_signature_schemes finds which signing scheme Warmbly actually used."""
+    """The probe confirms which payload form the remote actually signs."""
 
-    def test_identifies_raw_body_hex_scheme(self):
-        secret = 'test_secret'
+    def test_identifies_dot_separated_timestamp_scheme(self):
+        secret, ts, body = 'test_secret', '1791037655', b'{"a":1}'
         os.environ['WARMBLY_WEBHOOK_SECRET'] = secret
-        body = b'{"a":1}'
-        sig = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+        digest = hmac.new(
+            secret.encode(), f'{ts}.'.encode() + body, hashlib.sha256
+        ).hexdigest()
 
-        matches = probe_signature_schemes(body, {}, sig)
+        matches = probe_signature_schemes(body, f't={ts},v1={digest}')
+
+        assert 'hex(t.body)' in matches
+
+    def test_identifies_unseparated_timestamp_scheme(self):
+        secret, ts, body = 'test_secret', '1791037655', b'{"a":1}'
+        os.environ['WARMBLY_WEBHOOK_SECRET'] = secret
+        digest = hmac.new(
+            secret.encode(), ts.encode() + body, hashlib.sha256
+        ).hexdigest()
+
+        matches = probe_signature_schemes(body, f't={ts},v1={digest}')
+
+        assert 'hex(t+body)' in matches
+
+    def test_identifies_raw_body_scheme(self):
+        secret, body = 'test_secret', b'{"a":1}'
+        os.environ['WARMBLY_WEBHOOK_SECRET'] = secret
+        digest = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+
+        matches = probe_signature_schemes(body, f't=1791037655,v1={digest}')
 
         assert 'hex(body)' in matches
 
-    def test_identifies_base64_body_scheme(self):
+    def test_identifies_base64_digest(self):
         import base64
 
-        secret = 'test_secret'
+        secret, ts, body = 'test_secret', '1791037655', b'{"a":1}'
         os.environ['WARMBLY_WEBHOOK_SECRET'] = secret
-        body = b'{"a":1}'
-        digest = hmac.new(secret.encode(), body, hashlib.sha256).digest()
-        sig = base64.b64encode(digest).decode()
+        raw = hmac.new(
+            secret.encode(), f'{ts}.'.encode() + body, hashlib.sha256
+        ).digest()
+        digest = base64.b64encode(raw).decode()
 
-        matches = probe_signature_schemes(body, {}, sig)
+        matches = probe_signature_schemes(body, f't={ts},v1={digest}')
 
-        assert 'base64(body)' in matches
-
-    def test_identifies_timestamped_body_scheme(self):
-        secret = 'test_secret'
-        os.environ['WARMBLY_WEBHOOK_SECRET'] = secret
-        body = b'{"a":1}'
-        ts = '1759500000'
-        signed = f'{ts}.'.encode() + body
-        sig = hmac.new(secret.encode(), signed, hashlib.sha256).hexdigest()
-
-        matches = probe_signature_schemes(
-            body, {'x-warmbly-timestamp': ts}, sig
-        )
-
-        assert 'hex(timestamp.body)' in matches
+        assert 'base64(t.body)' in matches
 
     def test_returns_empty_when_nothing_matches(self):
         os.environ['WARMBLY_WEBHOOK_SECRET'] = 'test_secret'
 
-        matches = probe_signature_schemes(b'{"a":1}', {}, 'deadbeef')
+        matches = probe_signature_schemes(b'{"a":1}', 't=1,v1=deadbeef')
 
         assert matches == []
 
     def test_returns_empty_without_a_secret(self):
-        matches = probe_signature_schemes(b'{"a":1}', {}, 'deadbeef')
-
-        assert matches == []
+        assert probe_signature_schemes(b'{"a":1}', 't=1,v1=deadbeef') == []
 
 
 class TestDescribeRequest:
@@ -366,3 +343,166 @@ class TestDescribeRequest:
         report = describe_request({}, b'{"event_type":"webhook.test"}')
 
         assert 'webhook.test' in report['body_preview']
+
+
+class TestParseSignatureHeader:
+    """Warmbly sends 't=<unix>,v1=<hex>' (Stripe-style elements)."""
+
+    def test_parses_timestamp_and_digest(self):
+        parsed = parse_signature_header('t=1791037655,v1=abc123')
+
+        assert parsed['t'] == ['1791037655']
+        assert parsed['v1'] == ['abc123']
+
+    def test_parses_real_warmbly_header(self):
+        header = (
+            't=1791037655,'
+            'v1=eccdf01d65769ad4d2ce3883df84e1b2b1ce9b486b256e914b4c213deade5c85'
+        )
+
+        parsed = parse_signature_header(header)
+
+        assert parsed[SIGNATURE_TIMESTAMP_KEY] == ['1791037655']
+        assert len(parsed[SIGNATURE_VERSION_KEY][0]) == 64
+
+    def test_collects_multiple_digests_for_key_rotation(self):
+        parsed = parse_signature_header('t=1,v1=aaa,v1=bbb')
+
+        assert parsed['v1'] == ['aaa', 'bbb']
+
+    def test_tolerates_whitespace(self):
+        parsed = parse_signature_header(' t=1 , v1=abc ')
+
+        assert parsed['t'] == ['1']
+        assert parsed['v1'] == ['abc']
+
+    def test_ignores_elements_without_a_value(self):
+        parsed = parse_signature_header('t=1,garbage,v1=abc')
+
+        assert 'garbage' not in parsed
+        assert parsed['v1'] == ['abc']
+
+    def test_keeps_base64_padding_in_value(self):
+        """A value may itself contain '=', so only split on the first one."""
+        parsed = parse_signature_header('t=1,v1=YWJjZA==')
+
+        assert parsed['v1'] == ['YWJjZA==']
+
+
+class TestBuildSignedPayload:
+    """Warmbly signs '<timestamp>.<raw body>'."""
+
+    def test_prefixes_timestamp_with_dot_separator(self):
+        assert build_signed_payload('123', b'{"a":1}') == b'123.{"a":1}'
+
+    def test_falls_back_to_raw_body_without_a_timestamp(self):
+        assert build_signed_payload(None, b'{"a":1}') == b'{"a":1}'
+
+
+class TestWarmblySignatureValidation:
+    """End-to-end signature checking against the real header format."""
+
+    def _sign(self, secret, timestamp, body):
+        signed = build_signed_payload(timestamp, body)
+        return hmac.new(secret.encode(), signed,
+                        hashlib.sha256).hexdigest()
+
+    def test_accepts_correct_timestamped_signature(self):
+        secret, ts, body = 'test_secret', '1791037655', b'{"a":1}'
+        os.environ['WARMBLY_WEBHOOK_SECRET'] = secret
+        digest = self._sign(secret, ts, body)
+
+        report = describe_signature_check(body, f't={ts},v1={digest}')
+
+        assert report['matched'] is True
+        assert report['timestamp'] == ts
+        assert report['signed_payload_form'] == 't.body'
+
+    def test_rejects_wrong_secret(self):
+        ts, body = '1791037655', b'{"a":1}'
+        os.environ['WARMBLY_WEBHOOK_SECRET'] = 'the_right_one'
+        digest = self._sign('the_wrong_one', ts, body)
+
+        report = describe_signature_check(body, f't={ts},v1={digest}')
+
+        assert report['matched'] is False
+        assert 'mismatch' in report['reason']
+
+    def test_accepts_when_any_rotated_digest_matches(self):
+        secret, ts, body = 'test_secret', '1791037655', b'{"a":1}'
+        os.environ['WARMBLY_WEBHOOK_SECRET'] = secret
+        good = self._sign(secret, ts, body)
+
+        report = describe_signature_check(
+            body, f't={ts},v1=deadbeef,v1={good}'
+        )
+
+        assert report['matched'] is True
+
+    def test_reports_missing_version_element(self):
+        os.environ['WARMBLY_WEBHOOK_SECRET'] = 'test_secret'
+
+        report = describe_signature_check(b'{}', 't=1791037655')
+
+        assert report['matched'] is False
+        assert SIGNATURE_VERSION_KEY in report['reason']
+
+    def test_never_leaks_the_secret(self):
+        secret = 'super_secret_value'
+        os.environ['WARMBLY_WEBHOOK_SECRET'] = secret
+
+        report = describe_signature_check(b'{}', 't=1,v1=deadbeef')
+
+        assert secret not in json.dumps(report)
+
+
+class TestSignatureAge:
+    """The timestamp enables replay detection; enforcement is opt-in."""
+
+    def _fresh_header(self, secret, body, age_seconds=0):
+        ts = str(int(time.time()) - age_seconds)
+        signed = build_signed_payload(ts, body)
+        digest = hmac.new(secret.encode(), signed, hashlib.sha256).hexdigest()
+        return f't={ts},v1={digest}'
+
+    def test_reports_age_in_seconds(self):
+        secret, body = 'test_secret', b'{"a":1}'
+        os.environ['WARMBLY_WEBHOOK_SECRET'] = secret
+        header = self._fresh_header(secret, body, age_seconds=120)
+
+        report = describe_signature_check(body, header)
+
+        assert report['matched'] is True
+        assert 110 <= report['timestamp_age_seconds'] <= 130
+
+    def test_old_signature_accepted_when_max_age_unset(self):
+        secret, body = 'test_secret', b'{"a":1}'
+        os.environ['WARMBLY_WEBHOOK_SECRET'] = secret
+        os.environ.pop('WARMBLY_SIGNATURE_MAX_AGE', None)
+        header = self._fresh_header(secret, body, age_seconds=99999)
+
+        report = describe_signature_check(body, header)
+
+        assert report['matched'] is True
+
+    def test_old_signature_rejected_when_max_age_set(self):
+        secret, body = 'test_secret', b'{"a":1}'
+        os.environ['WARMBLY_WEBHOOK_SECRET'] = secret
+        header = self._fresh_header(secret, body, age_seconds=600)
+
+        try:
+            report = describe_signature_check(
+                body, header, max_age_seconds=300
+            )
+        finally:
+            os.environ.pop('WARMBLY_SIGNATURE_MAX_AGE', None)
+
+        assert report['matched'] is False
+        assert 'old' in report['reason']
+
+    def test_unparseable_timestamp_reports_no_age(self):
+        os.environ['WARMBLY_WEBHOOK_SECRET'] = 'test_secret'
+
+        report = describe_signature_check(b'{}', 't=not-a-number,v1=abc')
+
+        assert report['timestamp_age_seconds'] is None

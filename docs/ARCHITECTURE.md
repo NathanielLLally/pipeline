@@ -564,5 +564,30 @@ container) on `accurateleadinfo.com`, fronted by the traefik container from the
   `X-Warmbly-Webhook-Challenge` header. Handled by `route_payload()` /
   `detect_challenge()`; header and field names come from `WARMBLY_CHALLENGE_HEADER` and
   `WARMBLY_CHALLENGE_FIELD` (defaults match the values above).
+- **Warmbly signs webhooks Stripe-style, not as `sha256=<hex>`.** Observed 2026-10-03:
+
+      X-Warmbly-Signature: t=1791037655,v1=eccdf01d…
+
+  `t` is a unix timestamp and `v1` is an HMAC-SHA256 hex digest. The timestamp is
+  carried *inside* the signature header, not as a separate header. An earlier
+  implementation assumed `<algorithm>=<digest>` and rejected every request with
+  `algorithm is 't', expected 'sha256'` — a 401 that looked like a wrong secret.
+  Element keys are configurable via `WARMBLY_SIGNATURE_TIMESTAMP_KEY` and
+  `WARMBLY_SIGNATURE_VERSION_KEY`; multiple `v1=` elements are accepted so a secret
+  rotation does not break delivery.
+- **The signed bytes are believed to be `<timestamp>.<raw body>`** (separator from
+  `WARMBLY_SIGNATURE_SEPARATOR`, default `.`). This is inferred from the header's
+  resemblance to Stripe's scheme and has **not** been confirmed against a known-good
+  secret. `probe_signature_schemes()` tests the alternatives (`t.body`, `t+body`, raw
+  body; hex and base64) on every rejection and names the form that matches, so a wrong
+  guess here self-corrects in the log rather than presenting as a bad secret. The raw
+  received bytes must be hashed — re-serialising the parsed JSON changes the digest.
+- **Replay rejection is opt-in.** `WARMBLY_SIGNATURE_MAX_AGE` (seconds) enables it;
+  unset, the signature age is logged but never rejected. Enabling it converts clock
+  drift into 401s, so it is deliberately off by default.
+- Rejections always log a structured reason; `WARMBLY_WEBHOOK_DEBUG=1` additionally logs
+  every request header, with credential headers redacted per
+  `WARMBLY_REDACTED_HEADERS`. Digests in logs are truncated to
+  `WARMBLY_SIGNATURE_PREVIEW_CHARS` (default 12) so a log cannot be used to replay.
 - The webhook process is a **bare foreground process in an interactive shell**, not a
   managed service; it will not survive a reboot or a closed terminal.

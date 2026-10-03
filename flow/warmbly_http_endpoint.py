@@ -27,6 +27,7 @@ import json
 import hashlib
 import hmac
 import os
+import time
 import asyncio
 from typing import Any, Optional
 
@@ -46,7 +47,17 @@ app = FastAPI(title="Warmbly Webhook Receiver")
 SIGNATURE_HEADER = os.environ.get(
     'WARMBLY_SIGNATURE_HEADER', 'X-Warmbly-Signature'
 )
-SIGNATURE_ALGORITHM = os.environ.get('WARMBLY_SIGNATURE_ALGORITHM', 'sha256')
+
+# Warmbly signs with Stripe-style elements: "t=<unix>,v1=<hex hmac-sha256>",
+# where the signed bytes are "<timestamp>.<raw body>". Observed 2026-10-03.
+SIGNATURE_TIMESTAMP_KEY = os.environ.get('WARMBLY_SIGNATURE_TIMESTAMP_KEY', 't')
+SIGNATURE_VERSION_KEY = os.environ.get('WARMBLY_SIGNATURE_VERSION_KEY', 'v1')
+SIGNATURE_SEPARATOR = os.environ.get('WARMBLY_SIGNATURE_SEPARATOR', '.')
+
+# Replay rejection is opt-in: unset means log the age but accept. Enabling it
+# turns clock drift into 401s, so it should be switched on deliberately.
+_max_age = os.environ.get('WARMBLY_SIGNATURE_MAX_AGE', '').strip()
+SIGNATURE_MAX_AGE = int(_max_age) if _max_age.isdigit() else None
 CHALLENGE_HEADER = os.environ.get(
     'WARMBLY_CHALLENGE_HEADER', 'X-Warmbly-Webhook-Challenge'
 )
@@ -86,9 +97,57 @@ def _preview(value: str, limit: int) -> str:
     return value[:limit] + '\u2026'
 
 
+def parse_signature_header(header: str) -> dict[str, list[str]]:
+    """
+    Parse a "t=123,v1=abc,v1=def" signature header into its elements.
+
+    Values are collected into lists because a sender may include more than one
+    digest during a secret rotation. Only the first "=" is a separator, so a
+    base64 value keeps its padding.
+    """
+    elements: dict[str, list[str]] = {}
+
+    for part in header.split(','):
+        key, sep, value = part.strip().partition('=')
+        if not sep:
+            # Not "key=value" - nothing to record.
+            continue
+        elements.setdefault(key.strip(), []).append(value.strip())
+
+    return elements
+
+
+def build_signed_payload(
+    timestamp: Optional[str],
+    payload_bytes: bytes,
+) -> bytes:
+    """
+    Reconstruct the bytes the remote signed: "<timestamp>.<raw body>".
+
+    Without a timestamp the raw body is the best guess. The body must be the
+    bytes as received - re-serialising the parsed JSON changes the digest.
+    """
+    if not timestamp:
+        return payload_bytes
+
+    return f'{timestamp}{SIGNATURE_SEPARATOR}'.encode() + payload_bytes
+
+
+def signature_age_seconds(timestamp: Optional[str]) -> Optional[int]:
+    """Seconds since the signature timestamp, or None if it is unusable."""
+    if not timestamp:
+        return None
+
+    try:
+        return int(time.time()) - int(timestamp)
+    except (TypeError, ValueError):
+        return None
+
+
 def describe_signature_check(
     payload_bytes: bytes,
     signature_header: Optional[str],
+    max_age_seconds: Optional[int] = None,
 ) -> dict[str, Any]:
     """
     Explain why a signature check passed or failed.
@@ -98,12 +157,13 @@ def describe_signature_check(
     request.
     """
     secret = os.environ.get('WARMBLY_WEBHOOK_SECRET')
+    if max_age_seconds is None:
+        max_age_seconds = SIGNATURE_MAX_AGE
 
     report: dict[str, Any] = {
         'secret_configured': bool(secret),
         'header_name_expected': SIGNATURE_HEADER,
         'header_present': signature_header is not None,
-        'algorithm_expected': SIGNATURE_ALGORITHM,
         'body_bytes': len(payload_bytes),
     }
 
@@ -118,82 +178,104 @@ def describe_signature_check(
         report['reason'] = f'no {SIGNATURE_HEADER} header on the request'
         return report
 
-    parts = signature_header.split('=', 1)
-    report['header_format_ok'] = len(parts) == 2
-    report['algorithm_received'] = parts[0] if len(parts) == 2 else None
+    elements = parse_signature_header(signature_header)
+    timestamps = elements.get(SIGNATURE_TIMESTAMP_KEY, [])
+    digests = elements.get(SIGNATURE_VERSION_KEY, [])
+    timestamp = timestamps[0] if timestamps else None
 
-    if len(parts) != 2:
+    report['elements_received'] = sorted(elements)
+    report['timestamp'] = timestamp
+    report['timestamp_age_seconds'] = signature_age_seconds(timestamp)
+
+    if not digests:
         report['matched'] = False
         report['reason'] = (
-            'header is not "<algorithm>=<digest>"; got a bare value of '
-            f'length {len(signature_header)}'
+            f'header has no {SIGNATURE_VERSION_KEY}= element; got '
+            f'{sorted(elements)}'
         )
         return report
 
-    if parts[0] != SIGNATURE_ALGORITHM:
-        report['matched'] = False
-        report['reason'] = (
-            f'algorithm is {parts[0]!r}, expected {SIGNATURE_ALGORITHM!r}'
-        )
-        return report
-
-    received = parts[1]
+    signed_bytes = build_signed_payload(timestamp, payload_bytes)
     expected = hmac.new(
-        secret.encode(), payload_bytes, hashlib.sha256
+        secret.encode(), signed_bytes, hashlib.sha256
     ).hexdigest()
 
-    report['signature_received'] = _preview(received, SIGNATURE_PREVIEW_CHARS)
+    report['signed_payload_form'] = (
+        f'{SIGNATURE_TIMESTAMP_KEY}{SIGNATURE_SEPARATOR}body'
+        if timestamp
+        else 'body'
+    )
     report['signature_expected'] = _preview(expected, SIGNATURE_PREVIEW_CHARS)
-    report['signature_received_length'] = len(received)
-    report['signature_expected_length'] = len(expected)
-    report['matched'] = hmac.compare_digest(received, expected)
-    report['reason'] = (
-        'signature matched'
-        if report['matched']
-        else 'digest mismatch: wrong secret, or the body was signed differently'
+    report['signatures_received'] = [
+        _preview(d, SIGNATURE_PREVIEW_CHARS) for d in digests
+    ]
+    report['matched'] = any(
+        hmac.compare_digest(d, expected) for d in digests
     )
 
+    if not report['matched']:
+        report['reason'] = (
+            'digest mismatch: wrong secret, or the body is signed in a form '
+            'other than ' + report['signed_payload_form']
+        )
+        return report
+
+    age = report['timestamp_age_seconds']
+    if max_age_seconds is not None and age is not None and age > max_age_seconds:
+        report['matched'] = False
+        report['reason'] = (
+            f'signature is {age}s old, older than the configured maximum of '
+            f'{max_age_seconds}s (possible replay, or clock drift)'
+        )
+        return report
+
+    report['reason'] = 'signature matched'
     return report
 
 
 def probe_signature_schemes(
     payload_bytes: bytes,
-    headers: dict[str, str],
-    received_digest: str,
+    signature_header: str,
 ) -> list[str]:
     """
-    Find which signing scheme, if any, produces the digest we were sent.
+    Find which signing scheme, if any, reproduces the digest we were sent.
 
-    A digest mismatch has two very different causes: the secret is wrong, or
-    the secret is right but the remote signs something other than the raw body.
-    This distinguishes them. An empty list means no scheme matched, which
-    points at the secret rather than the scheme.
+    A mismatch has two very different causes: the secret is wrong, or the
+    secret is right but the remote signs something other than what we assume.
+    This separates them. An empty list points at the secret; a non-empty one
+    names the form actually in use, which is what the constants should be set
+    to.
     """
     secret = os.environ.get('WARMBLY_WEBHOOK_SECRET')
-    if not secret or not received_digest:
+    if not secret or not signature_header:
         return []
 
-    timestamp = None
-    for name, value in headers.items():
-        if name.lower() == TIMESTAMP_HEADER.lower():
-            timestamp = value
-            break
+    elements = parse_signature_header(signature_header)
+    digests = elements.get(SIGNATURE_VERSION_KEY, [])
+    timestamps = elements.get(SIGNATURE_TIMESTAMP_KEY, [])
+    timestamp = timestamps[0] if timestamps else None
+
+    if not digests:
+        # Fall back to treating the whole header as a bare digest.
+        digests = [signature_header]
 
     candidates: dict[str, bytes] = {'body': payload_bytes}
     if timestamp:
-        candidates['timestamp.body'] = f'{timestamp}.'.encode() + payload_bytes
-        candidates['timestamp.body'] = timestamp.encode() + payload_bytes
+        key = SIGNATURE_TIMESTAMP_KEY
+        candidates[f'{key}.body'] = f'{timestamp}.'.encode() + payload_bytes
+        candidates[f'{key}+body'] = timestamp.encode() + payload_bytes
 
     matches = []
     for label, signed_bytes in candidates.items():
-        digest = hmac.new(secret.encode(), signed_bytes, hashlib.sha256)
-        hex_digest = digest.hexdigest()
-        b64_digest = base64.b64encode(digest.digest()).decode()
+        mac = hmac.new(secret.encode(), signed_bytes, hashlib.sha256)
+        hex_digest = mac.hexdigest()
+        b64_digest = base64.b64encode(mac.digest()).decode()
 
-        if hmac.compare_digest(received_digest, hex_digest):
-            matches.append(f'hex({label})')
-        if hmac.compare_digest(received_digest, b64_digest):
-            matches.append(f'base64({label})')
+        for received in digests:
+            if hmac.compare_digest(received, hex_digest):
+                matches.append(f'hex({label})')
+            if hmac.compare_digest(received, b64_digest):
+                matches.append(f'base64({label})')
 
     return matches
 
@@ -334,12 +416,11 @@ async def receive_warmbly_webhook(request: Request):
         print(json.dumps(check, indent=2))
 
         if signature_header:
-            digest = signature_header.split('=', 1)[-1]
-            schemes = probe_signature_schemes(body_bytes, headers, digest)
+            schemes = probe_signature_schemes(body_bytes, signature_header)
             if schemes:
                 print(
-                    "The secret is correct but the body is signed "
-                    f"differently. Matching scheme(s): {schemes}"
+                    "The secret is correct but the signed payload form "
+                    f"differs. Matching scheme(s): {schemes}"
                 )
             else:
                 print(
