@@ -48,7 +48,12 @@ const UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Geck
 const TIMEOUT_SEC = 25;
 const MAX_SUB = 3;              // sub-pages per business, beyond the homepage
 const MAX_BYTES = 4 << 20;      // a homepage past 4MB is a bundle, not content
-const EXCERPT_CHARS = 20000;    // enough for an about page; Phase C truncates further
+// No excerpt ceiling. The research agent reads the whole page: a hook invented
+// from half a page is worthless, and a wasted research pass costs the entire
+// pipeline run rather than the characters it saved. MAX_BYTES still bounds what
+// is fetched, so this is not unbounded input.
+// Crawls stored before this change were cut at 20000 chars and are flagged
+// needs_recrawl in leads.website_crawl.
 
 // Sub-pages worth the extra fetch, most valuable first. about/team come first because
 // they are the only pages that name people.
@@ -92,8 +97,9 @@ function jsonLiteral(value) {
  * extract-emails.mjs, which reads this text and not the HTML. That cost 496 businesses
  * their contact address on the first full crawl.
  *
- * Prefixed rather than appended because the caller truncates at EXCERPT_CHARS, and a
- * suffix on a long page would be cut off.
+ * Prefixed rather than appended. The caller no longer truncates, so this is no
+ * longer load-bearing, but keeping the contact block early costs nothing and
+ * keeps extract-emails.mjs reading it in the same place as before.
  */
 export function toText(html) {
   const mailtos = new Set();
@@ -340,7 +346,7 @@ async function crawlBusiness(biz, nextProxy, alreadyCrawled) {
   const res = await fetchWithRetry(home, nextProxy);
   // Extract once and hand it to usableBody, so the salvage decision is made on exactly
   // the text that will be stored.
-  const homeText = res.body ? toText(res.body).slice(0, EXCERPT_CHARS) : null;
+  const homeText = res.body ? toText(res.body) : null;
   const ok = usableBody(res, homeText);
   crawls.push({
     business_id: biz.id,
@@ -365,7 +371,7 @@ async function crawlBusiness(biz, nextProxy, alreadyCrawled) {
     if (alreadyCrawled.has(sub.url) || requested.has(sub.url)) continue;
     requested.add(sub.url);
     const r = await fetchWithRetry(sub.url, nextProxy);
-    const subText = r.body ? toText(r.body).slice(0, EXCERPT_CHARS) : null;
+    const subText = r.body ? toText(r.body) : null;
     const sok = usableBody(r, subText);
     crawls.push({
       business_id: biz.id,

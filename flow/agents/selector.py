@@ -25,15 +25,12 @@ from prefect import flow
 DEFAULT_TIERS = ['Tier 1', 'Tier 2']
 DEFAULT_BATCH_SIZE = 50
 
-# The crawler already caps text_excerpt at 20000 characters -- measured
-# 2026-10-03, where p99 and max are both exactly 20000 across 60124 crawls.
-# So there is no unbounded input to defend against, and the default matches
-# that ceiling: in practice nothing is truncated. An earlier 6000 default cut
-# 21% of crawls (12820 of 60124), and it cut the content-rich sites, which are
-# the ones research can actually find a hook in. 20000 chars is roughly 5000
-# input tokens -- cheap next to the cost of a useless research pass.
-# Lower it only to deliberately trade research quality for token spend.
-MAX_EXCERPT_CHARS = int(os.environ.get('MAX_EXCERPT_CHARS', '20000'))
+# No cap on crawl text, deliberately and by instruction. The research agent
+# reads everything available: a hook invented from half a page is worthless,
+# and a wasted research pass costs the whole pipeline run -- selection, two LLM
+# calls and a human review -- not just the input tokens it saved. There is no
+# environment variable offering a cap either, because offering the knob implies
+# the trade is reasonable.
 
 
 def build_candidate_query(
@@ -68,13 +65,17 @@ def build_candidate_query(
                 where e.business_id = b.id
             ) as emails,
             (
-                select w.text_excerpt
+                -- Every crawled page, not the longest one: the homepage plus
+                -- about/services/contact are all context, and picking one
+                -- discarded the rest.
+                select json_agg(json_build_object(
+                           'url', w.url, 'page_kind', w.page_kind,
+                           'text', w.text_excerpt)
+                       order by w.page_kind, w.fetched_at)
                 from leads.website_crawl w
                 where w.business_id = b.id
                   and w.text_excerpt is not null and w.text_excerpt <> ''
-                order by length(w.text_excerpt) desc
-                limit 1
-            ) as crawl_excerpt
+            ) as crawl_pages
         from leads.businesses b
         where b.icp_tier = any($1)
 {exclusion}          and exists (
@@ -92,6 +93,28 @@ def build_candidate_query(
     return sql, params
 
 
+def join_crawl_pages(pages: Optional[List[Dict[str, Any]]]) -> str:
+    """
+    Concatenate every crawled page into one context block, untruncated.
+
+    Each page is labelled with its url and kind so the model can attribute the
+    evidence it quotes to a specific page.
+    """
+    if not pages:
+        return ''
+
+    blocks = []
+    for page in pages:
+        text = (page.get('text') or '').strip()
+        if not text:
+            continue
+        blocks.append(
+            f"--- {page.get('page_kind') or 'page'}: {page.get('url')} ---\n"
+            f"{text}"
+        )
+    return '\n\n'.join(blocks)
+
+
 def shape_candidate(row: Any) -> Dict[str, Any]:
     """
     Turn one selected row into the shape the research agent consumes.
@@ -100,7 +123,7 @@ def shape_candidate(row: Any) -> Dict[str, Any]:
     build_research_prompt reads, so a caller can hand it straight through.
     """
     emails = row['emails'] or []
-    excerpt = row['crawl_excerpt'] or ''
+    pages = row.get('crawl_pages') or []
 
     return {
         'business': {
@@ -119,7 +142,8 @@ def shape_candidate(row: Any) -> Dict[str, Any]:
             'review_count': row['review_count'],
         },
         'candidate_emails': list(emails),
-        'crawl_excerpt': excerpt[:MAX_EXCERPT_CHARS],
+        'crawl_pages': list(pages),
+        'crawl_excerpt': join_crawl_pages(pages),
     }
 
 
@@ -146,8 +170,9 @@ async def fetch_candidates(
     shaped = []
     for r in rows:
         d = dict(r)
-        if isinstance(d.get('emails'), str):
-            d['emails'] = json.loads(d['emails'])
+        for key in ('emails', 'crawl_pages'):
+            if isinstance(d.get(key), str):
+                d[key] = json.loads(d[key])
         shaped.append(shape_candidate(d))
     return shaped
 
