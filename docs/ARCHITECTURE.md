@@ -509,6 +509,59 @@ The email table is authoritative; `businesses.contact_email` is a cache of the b
 
 ---
 
+## Second crawler: Jina, for the sites curl cannot reach (2026-10-03)
+
+`flow/jina_crawl.py` fetches the same business websites through `r.jina.ai` and writes
+`leads.website_crawl_jina`. It reuses `flow/fetch.py`'s `fetch_html` unchanged, which is
+why the module is small; everything else in it is target selection, response parsing and
+the upsert.
+
+**Why a second crawler.** `scripts/enrich-websites.mjs` fetches raw HTML with curl
+through the Webshare SOCKS5 pool. Measured 2026-10-03: of **54,150** eligible businesses
+(website present, not a social URL, not `qc_status = 'REJECTED'`), **30,713 — 57% — have
+no usable `text_excerpt` at all**, and a further 867 have text for some pages but an
+error or non-2xx/3xx status on others. That shortfall is overwhelmingly the class curl
+cannot get: JS-only sites, WAF challenges, and hosts that refuse datacenter ASNs. Jina
+runs a real browser from its own addresses and returns rendered markdown.
+
+**Default target set is that shortfall, not the database.** `--mode gaps` (the default)
+selects businesses with no usable crawl text *or* with a crawl row carrying an error or a
+bad status. `--mode all` selects every eligible business and exists only for a deliberate
+side-by-side comparison. Either way, businesses this crawler already has text for are
+excluded unless `--refetch` is passed, so a re-run costs nothing for what it has.
+
+**Why a separate table.** Jina returns rendered markdown from a headless browser; the mjs
+crawler returns tag-stripped HTML. They are not the same kind of text. Writing both into
+`leads.website_crawl` would make `text_excerpt` mean two things and silently change what
+every downstream reader quotes from — `extract-emails.mjs`,
+`enrich-decision-makers.mjs`, `flow/agents/selector.py`. The table is a mirror of
+`website_crawl` minus `content_bytes`: the response is JSON, so a byte count would
+measure Jina's envelope rather than the site. `signals` holds the response object minus
+`content` (stored once, in `text_excerpt`) — kept whole because `links` carries `mailto:`
+addresses the markdown body does not, and `usage.tokens` is how the API budget is
+accounted for.
+
+**A 200 is not evidence of a page.** Observed on the first live run: a GBP `website`
+pointing at an ad-click URL resolved through `match.adsrvr.org`, and Jina rendered the
+tracker — HTTP 200, 37 characters, the redirect target echoed as the entire body. Stored
+as-is that reads downstream as usable page text. Content under `MIN_CONTENT_CHARS` (300)
+is therefore recorded as a `fetch_error`, not as a crawl. Three of the first eight
+businesses tripped it; the five real pages in the same batch returned 10k–19k characters
+each, so the floor is nowhere near them.
+
+**Verified locally 2026-10-03.** 165 unit tests pass. Live: 12 rows written, 9 with text
+averaging ~13,900 characters, 3 recorded as too-short failures. A second run over the
+same `--limit 8` re-selected only the failures, confirming resumability. Token cost ran
+~2,700–5,300 per page (`JINA_API_KEY` is rate-limited to 500 req/min and 100k
+tokens/min, so `--concurrency` above ~8 will start hitting the token ceiling, not the
+request one).
+
+**Status: development.** Nothing downstream reads `website_crawl_jina` yet. Deciding
+whether it supersedes, feeds or merges into `website_crawl` needs a yield comparison on
+the gap set first.
+
+---
+
 ## Open items / unverified
 
 - The fleet-aware watchdog (commit `da4e4e6`) is **committed but not deployed**. The

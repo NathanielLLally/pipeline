@@ -33,25 +33,7 @@ DEFAULT_BATCH_SIZE = 50
 # the trade is reasonable.
 
 
-def build_candidate_query(
-    tiers: List[str],
-    batch_size: int,
-    exclude_ids: Optional[List[str]],
-) -> tuple:
-    """
-    Build the selection SQL and its bound parameters.
-
-    Returns (sql, params). Everything variable is a bound parameter: a batch
-    size or id list spliced into the text would be an injection vector.
-    """
-    params: List[Any] = [tiers, batch_size]
-    exclusion = ''
-
-    if exclude_ids:
-        params.append([str(i) for i in exclude_ids])
-        exclusion = f'  and b.id::text != all(${len(params)})\n'
-
-    sql = f"""
+_SELECT_BODY = """
         select
             b.id::text as id, b.name, b.website, b.domain,
             b.city, b.state, b.icp_score, b.icp_tier,
@@ -76,6 +58,43 @@ def build_candidate_query(
                 where w.business_id = b.id
                   and w.text_excerpt is not null and w.text_excerpt <> ''
             ) as crawl_pages
+"""
+
+
+def build_candidate_query(
+    tiers: Optional[List[str]],
+    batch_size: Optional[int],
+    exclude_ids: Optional[List[str]] = None,
+    include_ids: Optional[List[str]] = None,
+) -> tuple:
+    """
+    Build the selection SQL and its bound parameters.
+
+    Two modes. With `include_ids`, select exactly those businesses: a caller
+    naming a business has already decided it is worth researching, so the
+    tier, email and crawl-text predicates are bypassed rather than silently
+    dropping it. Otherwise select a batch by tier.
+
+    Returns (sql, params). Everything variable is a bound parameter: a batch
+    size or id list spliced into the text would be an injection vector.
+    """
+    if include_ids:
+        return (
+            _SELECT_BODY + """
+        from leads.businesses b
+        where b.id::text = any($1)
+    """,
+            [[str(i) for i in include_ids]],
+        )
+
+    params: List[Any] = [tiers, batch_size]
+    exclusion = ''
+
+    if exclude_ids:
+        params.append([str(i) for i in exclude_ids])
+        exclusion = f'  and b.id::text != all(${len(params)})\n'
+
+    sql = _SELECT_BODY + f"""
         from leads.businesses b
         where b.icp_tier = any($1)
 {exclusion}          and exists (
@@ -148,16 +167,18 @@ def shape_candidate(row: Any) -> Dict[str, Any]:
 
 
 async def fetch_candidates(
-    tiers: List[str],
-    batch_size: int,
+    tiers: Optional[List[str]] = None,
+    batch_size: Optional[int] = None,
     exclude_ids: Optional[List[str]] = None,
+    include_ids: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     """Run the selection query and shape the rows. Needs a live database."""
     url = os.environ.get('LEADS_DB_URL')
     if not url:
         raise RuntimeError('LEADS_DB_URL is not set')
 
-    sql, params = build_candidate_query(tiers, batch_size, exclude_ids)
+    sql, params = build_candidate_query(
+        tiers, batch_size, exclude_ids, include_ids)
     conn = await asyncpg.connect(url.replace('postgres://', 'postgresql://'))
     try:
         rows = await conn.fetch(sql, *params)

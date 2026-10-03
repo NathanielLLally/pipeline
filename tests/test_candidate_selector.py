@@ -180,3 +180,50 @@ class TestJoinCrawlPages:
     def test_empty_input_is_an_empty_string(self):
         assert join_crawl_pages([]) == ''
         assert join_crawl_pages(None) == ''
+
+
+class TestExplicitIds:
+    """business_ids means 'these exactly', bypassing the batch filters.
+
+    A caller naming a business has already decided it is worth researching, so
+    the tier/email/crawl predicates must not silently drop it. If it lacks
+    crawl text that is the caller's problem to see, not ours to hide.
+    """
+
+    def test_ids_mode_binds_the_ids(self):
+        sql, params = build_candidate_query(None, None, None,
+                                            include_ids=['a', 'b'])
+
+        assert ['a', 'b'] in params
+
+    def test_ids_mode_ignores_the_tier_filter(self):
+        """icp_tier is a selected column in both modes; the FILTER must go."""
+        sql, _ = build_candidate_query(['Tier 1'], 50, None,
+                                       include_ids=['a'])
+
+        assert 'icp_tier = any' not in sql
+
+    def test_ids_mode_does_not_require_an_email(self):
+        sql, _ = build_candidate_query(None, None, None, include_ids=['a'])
+
+        assert 'exists' not in sql.lower()
+
+    def test_ids_mode_has_no_limit(self):
+        """The id list is the limit."""
+        sql, _ = build_candidate_query(None, None, None, include_ids=['a'])
+
+        assert 'limit' not in sql.lower()
+
+    def test_batch_mode_is_unchanged_when_no_ids_given(self):
+        sql, params = build_candidate_query(['Tier 1'], 10, None,
+                                            include_ids=None)
+
+        assert 'icp_tier = any' in sql
+        assert 'limit' in sql.lower()
+        assert params[0] == ['Tier 1']
+
+    def test_empty_id_list_is_not_treated_as_ids_mode(self):
+        """An empty list is 'you gave me nothing', not 'select everything'."""
+        sql, _ = build_candidate_query(['Tier 1'], 10, None, include_ids=[])
+
+        assert 'icp_tier = any' in sql
