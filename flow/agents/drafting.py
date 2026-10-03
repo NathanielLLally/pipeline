@@ -4,7 +4,10 @@ The drafting-agent deployment.
 Its contract: a ResearchOutput plus the verified email pool in, a
 DraftingOutput out. The agent chooses which verified address(es) to write to
 based on the message's intent -- it is not bound by the researcher's
-suggestion (spec section 2.1), but it IS bound to the verified pool.
+suggestion (spec section 2.1), and it is NOT bound to the verified pool
+either: Warmbly refuses to send to anything it has not itself verified, so
+enforcing that here would only discard usable drafts. Out-of-pool selections
+are reported in `outside_known_pool` for observability.
 """
 
 import sys
@@ -66,15 +69,15 @@ def drafting_agent(
         return {'status': 'rejected', 'reason': 'llm_schema_failure',
                 'draft': None}
 
-    # The model is told to choose from the pool. Telling it is not the same
-    # as it complying, and the cost of non-compliance is mail to an address
-    # that was never MX-validated.
-    unverified = [e for e in draft.selected_emails if e not in pool]
-    if unverified:
-        print(f'draft selected unverified addresses: {unverified}')
-        return {'status': 'rejected', 'reason': 'selected_unverified_email',
-                'draft': draft.model_dump(mode='json'),
-                'unverified': unverified}
+    # Warmbly will not send to an address it has not itself verified, and it
+    # has its own verification. So the pool is an input and a prompt steer,
+    # not an allowlist: rejecting here would discard a usable draft and throw
+    # away an address Warmbly could have verified itself. Report, do not gate.
+    outside_known_pool = [e for e in draft.selected_emails if e not in pool]
+    if outside_known_pool:
+        print(f'selected outside the known pool: {outside_known_pool} '
+              f'(Warmbly verifies before sending)')
 
     print(f'drafted to {draft.selected_emails}: {draft.subject}')
-    return {'status': 'drafted', 'draft': draft.model_dump(mode='json')}
+    return {'status': 'drafted', 'draft': draft.model_dump(mode='json'),
+            'outside_known_pool': outside_known_pool}
