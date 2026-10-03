@@ -80,3 +80,33 @@ class TestMalformedReplies:
 
         assert out.confidence == 0.8
         assert post.call_count == 2
+
+
+class TestTransportFailures:
+    def test_401_becomes_a_transport_error_not_a_schema_error(self):
+        """The proxy 401s without a key; that is config, not a bad model."""
+        resp = MagicMock(spec=httpx.Response)
+        resp.status_code = 401
+        err = httpx.HTTPStatusError("401", request=MagicMock(), response=resp)
+        resp.raise_for_status.side_effect = err
+
+        with patch('flow.llm.httpx.post', return_value=resp):
+            with pytest.raises(LLMTransportError) as caught:
+                complete_structured("describe", ResearchOutput)
+
+        assert '401' in str(caught.value)
+
+    def test_timeout_becomes_a_transport_error(self):
+        with patch('flow.llm.httpx.post',
+                   side_effect=httpx.ReadTimeout("too slow")):
+            with pytest.raises(LLMTransportError):
+                complete_structured("describe", ResearchOutput)
+
+    def test_transport_failure_is_not_retried_as_a_schema_problem(self):
+        """Retrying a 401 three times just 401s three times."""
+        with patch('flow.llm.httpx.post',
+                   side_effect=httpx.ReadTimeout("too slow")) as post:
+            with pytest.raises(LLMTransportError):
+                complete_structured("describe", ResearchOutput, max_attempts=3)
+
+        assert post.call_count == 1
