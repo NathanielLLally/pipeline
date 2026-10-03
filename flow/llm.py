@@ -30,6 +30,35 @@ class LLMSchemaError(ValueError):
     """The model answered, but never in the shape we asked for."""
 
 
+def _strictify(node: Any) -> Any:
+    """Recursively impose OpenAI strict-mode rules on a JSON schema node."""
+    if isinstance(node, dict):
+        node = {k: _strictify(v) for k, v in node.items()}
+        if node.get('type') == 'object' or 'properties' in node:
+            node['additionalProperties'] = False
+            # Strict mode has no optional properties: every key must be listed
+            # in `required`. Optionality is expressed by the value being
+            # nullable, not by the key being absent -- which is why pydantic's
+            # Optional[...] fields still appear here.
+            node['required'] = list((node.get('properties') or {}).keys())
+        return node
+    if isinstance(node, list):
+        return [_strictify(v) for v in node]
+    return node
+
+
+def strict_json_schema(schema_model: Type[BaseModel]) -> dict:
+    """
+    Pydantic's schema, adjusted for OpenAI strict structured outputs.
+
+    Without this the proxy rejects the request with
+    400 "Invalid schema for response_format: 'additionalProperties' is
+    required to be supplied and to be false". Pydantic has no reason to emit
+    that -- it is an OpenAI constraint, not a JSON Schema one.
+    """
+    return _strictify(schema_model.model_json_schema())
+
+
 def _request(messages: list, schema_model: Type[BaseModel]) -> str:
     headers = {'Content-Type': 'application/json'}
     key = os.environ.get('LITELLM_API_KEY')
@@ -43,7 +72,7 @@ def _request(messages: list, schema_model: Type[BaseModel]) -> str:
             'type': 'json_schema',
             'json_schema': {
                 'name': schema_model.__name__,
-                'schema': schema_model.model_json_schema(),
+                'schema': strict_json_schema(schema_model),
                 'strict': True,
             },
         },
@@ -56,11 +85,19 @@ def _request(messages: list, schema_model: Type[BaseModel]) -> str:
         )
         response.raise_for_status()
     except httpx.HTTPStatusError as exc:
+        # The body carries the actual reason and the status alone is useless:
+        # a 401 from this proxy can mean "your key is wrong" or "the proxy has
+        # no upstream key for the provider this model routes to", which are
+        # entirely different problems. Naming the model matters for the same
+        # reason -- one model can 401 while another on the same key works.
         raise LLMTransportError(
-            f'proxy returned {exc.response.status_code}'
+            f'proxy returned {exc.response.status_code} for model '
+            f'{MODEL!r}: {exc.response.text[:400]}'
         ) from exc
     except httpx.HTTPError as exc:
-        raise LLMTransportError(f'{type(exc).__name__}: {exc}') from exc
+        raise LLMTransportError(
+            f'{type(exc).__name__} calling proxy for model {MODEL!r}: {exc}'
+        ) from exc
 
     return response.json()['choices'][0]['message']['content']
 
