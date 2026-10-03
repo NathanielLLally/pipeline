@@ -250,6 +250,53 @@ def shape_row(business: Dict[str, Any], url: str,
     }
 
 
+def extract_links(business: Dict[str, Any], url: str,
+                  parsed: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    One row per link in the Jina response.
+
+    Links are keyed on the crawled page they came from, not on their targets.
+    Only extracted when the crawl succeeded (text_excerpt is not None).
+    """
+    if not parsed.get('text_excerpt'):
+        return []
+
+    links_map = (parsed.get('payload') or {}).get('links') or {}
+    if not isinstance(links_map, dict):
+        return []
+
+    rows = []
+    for text, href in links_map.items():
+        if not text or not href:
+            continue
+        rows.append({
+            'business_id': business['id'],
+            'url': url,
+            'link_text': clean_text(str(text)) or text,
+            'link_href': str(href),
+        })
+    return rows
+
+
+def build_link_insert(rows: List[Dict[str, Any]]) -> tuple:
+    """
+    Build the upsert for links, or return empty strings if there are no rows.
+
+    Like build_insert, rows travel as a single JSON parameter.
+    """
+    if not rows:
+        return '', []
+
+    sql = """
+        insert into leads.website_crawl_jina_link
+            (business_id, url, link_text, link_href)
+        select (r->>'business_id')::uuid, r->>'url', r->>'link_text', r->>'link_href'
+        from jsonb_array_elements($1::jsonb) r
+        on conflict (business_id, url, link_href) do nothing
+    """
+    return sql, [json.dumps(rows)]
+
+
 def build_insert(rows: List[Dict[str, Any]]) -> tuple:
     """
     Build the upsert and its one bound parameter.
@@ -304,17 +351,31 @@ async def select_targets(**kwargs) -> List[Dict[str, Any]]:
         await conn.close()
 
 
-async def persist(rows: List[Dict[str, Any]]) -> int:
-    """Write one batch. Returns the number of rows sent."""
-    if not rows:
-        return 0
-    sql, params = build_insert(rows)
+async def persist(rows: List[Dict[str, Any]],
+                  links: List[Dict[str, Any]] = None) -> tuple:
+    """Write one batch of crawls and links. Returns (crawls_written, links_written)."""
+    if not rows and not links:
+        return 0, 0
+
+    crawls_written = 0
+    links_written = 0
+
     conn = await asyncpg.connect(_dsn())
     try:
-        await conn.execute(sql, *params)
+        if rows:
+            sql, params = build_insert(rows)
+            await conn.execute(sql, *params)
+            crawls_written = len(json.loads(params[0]))
+
+        if links:
+            sql, params = build_link_insert(links)
+            if sql:  # build_link_insert may return empty string
+                await conn.execute(sql, *params)
+                links_written = len(json.loads(params[0]))
     finally:
         await conn.close()
-    return len(json.loads(params[0]))
+
+    return crawls_written, links_written
 
 
 @flow(log_prints=True)
@@ -336,22 +397,27 @@ async def jina_crawl(
         return {'selected': 0, 'reachable': 0, 'failed': 0, 'written': 0}
 
     stats = {'selected': len(targets), 'reachable': 0, 'failed': 0,
-             'skipped': 0, 'written': 0, 'tokens': 0}
-    pending: List[Dict[str, Any]] = []
+             'skipped': 0, 'crawls_written': 0, 'links_written': 0, 'tokens': 0}
+    pending_crawls: List[Dict[str, Any]] = []
+    pending_links: List[Dict[str, Any]] = []
     gate = asyncio.Semaphore(max(1, concurrency))
     lock = asyncio.Lock()
 
     async def flush() -> None:
-        nonlocal pending
-        batch, pending = pending, []
-        if not batch:
+        nonlocal pending_crawls, pending_links
+        crawls, pending_crawls = pending_crawls, []
+        links, pending_links = pending_links, []
+        if not crawls and not links:
             return
         try:
-            stats['written'] += await persist(batch)
+            crawls_w, links_w = await persist(crawls, links)
+            stats['crawls_written'] += crawls_w
+            stats['links_written'] += links_w
         except Exception as exc:
             # A bad batch costs one chunk, never the run: the table is keyed on
             # (business_id, url), so a re-run picks up from what landed.
-            print(f'batch of {len(batch)} rows failed: {type(exc).__name__}: {exc}')
+            print(f'batch of {len(crawls)} crawls, {len(links)} links failed: '
+                  f'{type(exc).__name__}: {exc}')
 
     async def one(business: Dict[str, Any]) -> None:
         url = normalize_url(business.get('website'))
@@ -384,9 +450,13 @@ async def jina_crawl(
 
         if dry_run:
             return
+
+        links = extract_links(business, url, parsed)
+
         async with lock:
-            pending.append(row)
-            if len(pending) >= FLUSH_EVERY:
+            pending_crawls.append(row)
+            pending_links.extend(links)
+            if len(pending_crawls) >= FLUSH_EVERY:
                 await flush()
 
     await asyncio.gather(*(one(b) for b in targets))
@@ -395,8 +465,8 @@ async def jina_crawl(
             await flush()
 
     print(f"reachable={stats['reachable']} failed={stats['failed']} "
-          f"skipped={stats['skipped']} written={stats['written']} "
-          f"jina_tokens={stats['tokens']}"
+          f"skipped={stats['skipped']} crawls_written={stats['crawls_written']} "
+          f"links_written={stats['links_written']} jina_tokens={stats['tokens']}"
           + ('  (DRY RUN -- nothing written)' if dry_run else ''))
     return stats
 

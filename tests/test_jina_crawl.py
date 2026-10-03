@@ -244,6 +244,65 @@ class TestRowShaping:
         assert "\x00" not in row["text_excerpt"]
 
 
+class TestLinkExtraction:
+    def test_extracts_text_and_href_pairs_from_jina_links_map(self):
+        from flow.jina_crawl import extract_links
+
+        raw = json.dumps({"code": 200, "data": {"url": "https://x.example",
+                                                "content": "ok " * 200,
+                                                "links": {
+                                                    "Contact": "https://x.example/contact",
+                                                    "info@x.example": "mailto:info@x.example",
+                                                },
+                                                "httpStatus": 200}})
+        parsed = parse_jina_response(raw)
+        links = extract_links(BUSINESS, "https://x.example", parsed)
+
+        assert len(links) == 2
+        assert links[0]["link_text"] == "Contact"
+        assert links[0]["link_href"] == "https://x.example/contact"
+        assert links[1]["link_text"] == "info@x.example"
+        assert links[1]["link_href"] == "mailto:info@x.example"
+        assert all(l["business_id"] == BUSINESS["id"] for l in links)
+        assert all(l["url"] == "https://x.example" for l in links)
+
+    def test_link_rows_carry_the_crawl_url_not_the_link_target(self):
+        """Links are keyed on the page they came from, not where they point."""
+        from flow.jina_crawl import extract_links
+
+        raw = json.dumps({"code": 200, "data": {"url": "https://x.example/about",
+                                                "content": "ok " * 200,
+                                                "links": {"Home": "https://x.example/"},
+                                                "httpStatus": 200}})
+        links = extract_links(BUSINESS, "https://x.example/about",
+                             parse_jina_response(raw))
+
+        assert links[0]["url"] == "https://x.example/about"
+        assert links[0]["link_href"] == "https://x.example/"
+
+    def test_empty_links_map_produces_no_rows(self):
+        from flow.jina_crawl import extract_links
+
+        raw = json.dumps({"code": 200, "data": {"url": "https://x.example",
+                                                "content": "ok " * 200,
+                                                "links": {},
+                                                "httpStatus": 200}})
+        links = extract_links(BUSINESS, "https://x.example",
+                             parse_jina_response(raw))
+
+        assert len(links) == 0
+
+    def test_links_only_when_crawl_succeeded(self):
+        from flow.jina_crawl import extract_links
+
+        # No content, so the crawl itself failed.
+        parsed = {"text_excerpt": None, "payload": {}, "final_url": None,
+                  "http_status": 0, "fetch_error": "timeout"}
+        links = extract_links(BUSINESS, "https://x.example", parsed)
+
+        assert len(links) == 0
+
+
 class TestUrlNormalization:
     def test_adds_a_scheme_when_gbp_stored_a_bare_domain(self):
         assert normalize_url("happytailspawcare.com") == \
@@ -257,6 +316,44 @@ class TestUrlNormalization:
         assert normalize_url("") is None
         assert normalize_url(None) is None
         assert normalize_url("not a url at all") is None
+
+
+class TestBuildLinkInsert:
+    def test_builds_upsert_for_links_table(self):
+        from flow.jina_crawl import build_link_insert, extract_links
+
+        raw = json.dumps({"code": 200, "data": {"url": "https://x.example",
+                                                "content": "ok " * 200,
+                                                "links": {"Contact": "https://x.example/contact"},
+                                                "httpStatus": 200}})
+        links = extract_links(BUSINESS, "https://x.example", parse_jina_response(raw))
+        sql, params = build_link_insert(links)
+
+        assert "leads.website_crawl_jina_link" in sql
+        assert "on conflict" in sql.lower()
+        assert len(params) == 1
+        assert json.loads(params[0])[0]["business_id"] == BUSINESS["id"]
+
+    def test_links_travel_as_json_parameter(self):
+        """No text splicing, no injection vectors."""
+        from flow.jina_crawl import build_link_insert, extract_links
+
+        raw = json.dumps({"code": 200, "data": {"url": "https://x.example",
+                                                "content": "ok " * 200,
+                                                "links": {"'; DROP TABLE leads.--": "https://x.example"},
+                                                "httpStatus": 200}})
+        links = extract_links(BUSINESS, "https://x.example", parse_jina_response(raw))
+        sql, _ = build_link_insert(links)
+
+        assert "DROP TABLE" not in sql
+
+    def test_empty_links_list_produces_no_insert(self):
+        from flow.jina_crawl import build_link_insert
+
+        sql, params = build_link_insert([])
+
+        assert sql == ""
+        assert params == []
 
 
 class TestInsert:
