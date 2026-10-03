@@ -24,9 +24,11 @@ from prefect import serve
 
 from flow.agents.drafting import drafting_agent
 from flow.agents.research import research_agent
+from flow.agents.selector import candidate_selector
 
 if __name__ == "__main__":
     serve(
+        candidate_selector.to_deployment(name="candidate-selector"),
         research_agent.to_deployment(name="research-agent"),
         drafting_agent.to_deployment(name="drafting-agent"),
     )
