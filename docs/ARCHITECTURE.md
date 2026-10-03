@@ -636,3 +636,37 @@ Warmbly (htpc) --HTTPS--> traefik --> flow/warmbly_http_endpoint.py  (uvicorn)
 **Verified locally only.** Deployment to `accurateleadinfo.com`, and verification against
 real Warmbly traffic, have **not** been done. The prod Prefect server still has zero
 deployments.
+
+### AI node deployments, verified locally 2026-10-03
+
+`research-agent` and `drafting-agent` are Prefect deployments, served together by
+`flow/serve_agents.py`. Each is independently runnable, pausable and rate-limitable in
+the UI, which is the point of splitting them.
+
+- **LLM calls go to the self-hosted LiteLLM proxy on `:4000`** via `httpx`, asking for
+  `response_format={"type":"json_schema"}` and validating with Pydantic
+  (`flow/llm.py`). The `litellm` Python package and `instructor` are not used and not
+  installed. The proxy **401s without `LITELLM_API_KEY`**; the nodes surface that as
+  `LLMTransportError` and return a rejection rather than crashing.
+- **`research-agent` owns its own escalation** — pass 1, confidence gate
+  (`CONFIDENCE_THRESHOLD`, default 0.7, `>=` passes), `deeper_fetch`, pass 2, second
+  gate. Its caller never drives that.
+- **`drafting-agent` does not enforce the verified pool.** Warmbly will not send to an
+  address it has not itself verified and has its own verification, so the pool is an
+  input and a prompt steer. Out-of-pool selections come back in `outside_known_pool`
+  for observability.
+- **Deployment-level concurrency is `global_concurrency_limit`**, not the deprecated
+  `concurrency_limit` field, and `prefect concurrency-limit` is for *task tags* — it
+  will silently not apply to a deployment. Set via
+  `PATCH /api/deployments/<id> {"concurrency_limit": N}`; read it back from
+  `global_concurrency_limit`. `research-agent` is set to 2.
+- **`flow/fetch.py` is committed broken** (stray indent on line 1 → `IndentationError`,
+  since `5b7707a`), so `flow/agents/research.py` defers that import to call time as a
+  workaround. Collapse it back to a top-level import once fixed. The same file has
+  `urls: list[str] | None` at line 44, which will crash Prefect's schema resolution on
+  the 3.9 prod interpreter. Issues #3 and #4.
+- `tests/test_warmbly_integration.py` requires `PREFECT_API_URL` to be set and does not
+  set it; without it Prefect starts an ephemeral server that returns 500 under this
+  Python (the same breakage that makes `prefect_test_harness` unusable).
+
+**Verified locally only.** Nothing is deployed to `accurateleadinfo.com`.
