@@ -20,8 +20,12 @@ from flow.warmbly_http_endpoint import (
     CHALLENGE_HEADER,
     SIGNATURE_ALGORITHM,
     SIGNATURE_HEADER,
+    REDACTED,
     app,
+    describe_request,
+    describe_signature_check,
     detect_challenge,
+    probe_signature_schemes,
     route_payload,
 )
 
@@ -219,3 +223,146 @@ class TestSignatureValidation:
         )
 
         assert response.status_code == 400
+
+
+class TestDescribeSignatureCheck:
+    """describe_signature_check explains a 401 without leaking the secret."""
+
+    def test_reports_when_no_secret_configured(self):
+        report = describe_signature_check(b'{}', None)
+
+        assert report['secret_configured'] is False
+        assert report['matched'] is True
+
+    def test_reports_missing_header(self):
+        os.environ['WARMBLY_WEBHOOK_SECRET'] = 'test_secret'
+
+        report = describe_signature_check(b'{}', None)
+
+        assert report['secret_configured'] is True
+        assert report['header_present'] is False
+        assert report['matched'] is False
+
+    def test_reports_unexpected_algorithm_prefix(self):
+        os.environ['WARMBLY_WEBHOOK_SECRET'] = 'test_secret'
+
+        report = describe_signature_check(b'{}', 'sha512=deadbeef')
+
+        assert report['algorithm_received'] == 'sha512'
+        assert report['algorithm_expected'] == SIGNATURE_ALGORITHM
+        assert report['matched'] is False
+
+    def test_reports_bare_hex_header_with_no_prefix(self):
+        os.environ['WARMBLY_WEBHOOK_SECRET'] = 'test_secret'
+
+        report = describe_signature_check(b'{}', 'deadbeef')
+
+        assert report['header_format_ok'] is False
+        assert report['matched'] is False
+
+    def test_never_leaks_the_secret(self):
+        secret = 'super_secret_value'
+        os.environ['WARMBLY_WEBHOOK_SECRET'] = secret
+
+        report = describe_signature_check(b'{}', 'sha256=deadbeef')
+
+        assert secret not in json.dumps(report)
+
+    def test_truncates_signatures(self):
+        secret = 'test_secret'
+        os.environ['WARMBLY_WEBHOOK_SECRET'] = secret
+        body = b'{"a":1}'
+        sig = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+
+        report = describe_signature_check(
+            body, f'{SIGNATURE_ALGORITHM}={sig}'
+        )
+
+        assert report['matched'] is True
+        assert report['signature_expected'] != sig
+        assert sig.startswith(report['signature_expected'].rstrip('…'))
+
+    def test_reports_body_length(self):
+        os.environ['WARMBLY_WEBHOOK_SECRET'] = 'test_secret'
+
+        report = describe_signature_check(b'12345', 'sha256=deadbeef')
+
+        assert report['body_bytes'] == 5
+
+
+class TestProbeSignatureSchemes:
+    """probe_signature_schemes finds which signing scheme Warmbly actually used."""
+
+    def test_identifies_raw_body_hex_scheme(self):
+        secret = 'test_secret'
+        os.environ['WARMBLY_WEBHOOK_SECRET'] = secret
+        body = b'{"a":1}'
+        sig = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+
+        matches = probe_signature_schemes(body, {}, sig)
+
+        assert 'hex(body)' in matches
+
+    def test_identifies_base64_body_scheme(self):
+        import base64
+
+        secret = 'test_secret'
+        os.environ['WARMBLY_WEBHOOK_SECRET'] = secret
+        body = b'{"a":1}'
+        digest = hmac.new(secret.encode(), body, hashlib.sha256).digest()
+        sig = base64.b64encode(digest).decode()
+
+        matches = probe_signature_schemes(body, {}, sig)
+
+        assert 'base64(body)' in matches
+
+    def test_identifies_timestamped_body_scheme(self):
+        secret = 'test_secret'
+        os.environ['WARMBLY_WEBHOOK_SECRET'] = secret
+        body = b'{"a":1}'
+        ts = '1759500000'
+        signed = f'{ts}.'.encode() + body
+        sig = hmac.new(secret.encode(), signed, hashlib.sha256).hexdigest()
+
+        matches = probe_signature_schemes(
+            body, {'x-warmbly-timestamp': ts}, sig
+        )
+
+        assert 'hex(timestamp.body)' in matches
+
+    def test_returns_empty_when_nothing_matches(self):
+        os.environ['WARMBLY_WEBHOOK_SECRET'] = 'test_secret'
+
+        matches = probe_signature_schemes(b'{"a":1}', {}, 'deadbeef')
+
+        assert matches == []
+
+    def test_returns_empty_without_a_secret(self):
+        matches = probe_signature_schemes(b'{"a":1}', {}, 'deadbeef')
+
+        assert matches == []
+
+
+class TestDescribeRequest:
+    """describe_request dumps headers for debugging, redacting credentials."""
+
+    def test_includes_header_names(self):
+        report = describe_request({'x-warmbly-signature': 'sha256=abc'}, b'{}')
+
+        assert 'x-warmbly-signature' in report['headers']
+
+    def test_redacts_authorization(self):
+        report = describe_request({'authorization': 'Bearer hunter2'}, b'{}')
+
+        assert 'hunter2' not in json.dumps(report)
+        assert report['headers']['authorization'] == REDACTED
+
+    def test_redacts_cookies(self):
+        report = describe_request({'cookie': 'session=abc123'}, b'{}')
+
+        assert 'abc123' not in json.dumps(report)
+
+    def test_includes_body_preview(self):
+        report = describe_request({}, b'{"event_type":"webhook.test"}')
+
+        assert 'webhook.test' in report['body_preview']
