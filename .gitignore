@@ -4,3 +4,7 @@ map-outputs/**
 *.log
 .claude
 phase2-logs
+
+# Python bytecode
+__pycache__/
+*.pyc

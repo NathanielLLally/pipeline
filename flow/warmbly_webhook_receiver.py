@@ -15,6 +15,8 @@ emitted event and this process meet on the same Prefect server):
     $ python flow/warmbly_webhook_receiver.py
 """
 
+import os
+from collections import OrderedDict
 from typing import Any
 
 import sys
@@ -34,9 +36,23 @@ from flow.warmbly_events import EVENT_NAME
 
 # Best-effort duplicate suppression within one process. This does NOT survive
 # a restart and is not shared between workers; a durable guard needs a unique
-# index on the Warmbly event id. Tracked as a GitHub issue rather than solved
-# here, because the schema has no table for it yet.
-seen_event_ids: set = set()
+# index on the Warmbly event id. Tracked in issue #2, because the schema has no
+# table for it yet.
+#
+# Bounded, because serve() runs for days: one retained id per event would be an
+# unbounded leak, and an id is only useful for as long as Warmbly might retry.
+# Oldest-first eviction, so the ids most likely to be retried are the ones kept.
+MAX_SEEN_EVENT_IDS = int(
+    os.environ.get('WARMBLY_MAX_SEEN_EVENT_IDS', '10000')
+)
+seen_event_ids: OrderedDict = OrderedDict()
+
+
+def remember_event_id(event_id: str) -> None:
+    """Record an event id, evicting the oldest once the cap is reached."""
+    seen_event_ids[event_id] = None
+    while len(seen_event_ids) > MAX_SEEN_EVENT_IDS:
+        seen_event_ids.popitem(last=False)
 
 KNOWN_EVENT_PREFIXES = ('contact', 'campaign', 'email', 'webhook')
 
@@ -70,7 +86,7 @@ def warmbly_webhook_receiver(payload: dict[str, Any]) -> dict:
             "event_id": event_id,
         }
     if event_id:
-        seen_event_ids.add(event_id)
+        remember_event_id(event_id)
 
     event_class = classify_event(payload)
 

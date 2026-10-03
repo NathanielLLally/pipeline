@@ -81,3 +81,34 @@ class TestReceiverFlow:
         result = warmbly_webhook_receiver.fn({"event_type": "contact.created"})
 
         assert result['status'] == 'processed'
+
+
+class TestDedupMemoryBound:
+    """The dedup set must not grow without bound in a long-lived process.
+
+    serve() runs for days or weeks. One id retained per event forever is a
+    slow leak, and the ids are only useful for as long as Warmbly might
+    retry.
+    """
+
+    def test_seen_ids_are_capped(self):
+        from flow.warmbly_webhook_receiver import MAX_SEEN_EVENT_IDS
+
+        for n in range(MAX_SEEN_EVENT_IDS + 50):
+            warmbly_webhook_receiver.fn(
+                {"id": f"evt-{n}", "event_type": "contact.created"}
+            )
+
+        assert len(seen_event_ids) <= MAX_SEEN_EVENT_IDS
+
+    def test_most_recent_id_still_deduplicates_after_eviction(self):
+        from flow.warmbly_webhook_receiver import MAX_SEEN_EVENT_IDS
+
+        for n in range(MAX_SEEN_EVENT_IDS + 50):
+            warmbly_webhook_receiver.fn(
+                {"id": f"evt-{n}", "event_type": "contact.created"}
+            )
+        last = {"id": f"evt-{MAX_SEEN_EVENT_IDS + 49}",
+                "event_type": "contact.created"}
+
+        assert warmbly_webhook_receiver.fn(last)['status'] == 'duplicate'
