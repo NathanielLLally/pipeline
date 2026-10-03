@@ -45,3 +45,56 @@ class TestHappyPath:
 
         assert result['status'] == 'drafted'
         assert result['draft']['subject'].startswith("Booking")
+
+
+class TestVerifiedPoolBinding:
+    def test_address_outside_the_pool_is_rejected(self):
+        """An invented address would mean mail to an unverified recipient.
+
+        The prompt asks the model to choose from the pool; this test is here
+        because asking is not enforcing.
+        """
+        with patch('flow.agents.drafting.complete_structured',
+                   return_value=_draft(
+                       selected_emails=["ceo@happytails.example"])):
+            result = drafting_agent.fn(RESEARCH, EMAILS)
+
+        assert result['status'] == 'rejected'
+        assert result['reason'] == 'selected_unverified_email'
+        assert result['unverified'] == ["ceo@happytails.example"]
+
+    def test_partially_valid_selection_is_rejected_whole(self):
+        """One good address does not license one bad one."""
+        with patch('flow.agents.drafting.complete_structured',
+                   return_value=_draft(selected_emails=[
+                       "owner@happytails.example", "ceo@happytails.example"])):
+            result = drafting_agent.fn(RESEARCH, EMAILS)
+
+        assert result['status'] == 'rejected'
+        assert result['unverified'] == ["ceo@happytails.example"]
+
+    def test_agent_may_ignore_the_researcher_suggestion(self):
+        """Spec 2.1: not bound by the suggestion, only by the pool."""
+        with patch('flow.agents.drafting.complete_structured',
+                   return_value=_draft(
+                       selected_emails=["info@happytails.example"])):
+            result = drafting_agent.fn(RESEARCH, EMAILS)
+
+        assert result['status'] == 'drafted'
+
+    def test_multiple_pool_addresses_are_allowed(self):
+        with patch('flow.agents.drafting.complete_structured',
+                   return_value=_draft(selected_emails=[
+                       "owner@happytails.example",
+                       "info@happytails.example"])):
+            result = drafting_agent.fn(RESEARCH, EMAILS)
+
+        assert result['status'] == 'drafted'
+
+    def test_empty_pool_rejects_any_selection(self):
+        with patch('flow.agents.drafting.complete_structured',
+                   return_value=_draft()):
+            result = drafting_agent.fn(RESEARCH, [])
+
+        assert result['status'] == 'rejected'
+        assert result['reason'] == 'selected_unverified_email'
