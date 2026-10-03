@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 from flow.warmbly_http_endpoint import (
     CHALLENGE_FIELD,
     CHALLENGE_HEADER,
-    SIGNATURE_HEADER,
+    EVENT_NAME,
     REDACTED,
     SIGNATURE_HEADER,
     SIGNATURE_TIMESTAMP_KEY,
@@ -106,17 +106,14 @@ class TestRoutePayload:
         assert response.body.decode() == CHALLENGE
         assert response.headers[CHALLENGE_HEADER] == CHALLENGE
 
-    def test_real_payload_routes_to_research(self):
-        with patch(
-            'flow.warmbly_http_endpoint.trigger_research_flow',
-            new_callable=AsyncMock,
-        ) as mock_trigger:
-            mock_trigger.return_value = {"status": "queued"}
+    def test_real_payload_routes_to_emission(self):
+        with patch('flow.warmbly_http_endpoint.emit_event') as mock_emit:
             result = asyncio.run(route_payload(REAL_EVENT))
 
-        mock_trigger.assert_called_once_with(REAL_EVENT)
+        mock_emit.assert_called_once()
         assert result['status'] == "accepted"
-        assert result['routing'] == {"status": "queued"}
+        assert result['emitted'] is True
+        assert result['event_name'] == EVENT_NAME
 
 
 class TestChallengeEcho:
@@ -135,15 +132,12 @@ class TestChallengeEcho:
 
         assert response.headers[CHALLENGE_HEADER] == CHALLENGE
 
-    def test_challenge_event_does_not_trigger_research(self, client):
+    def test_challenge_event_does_not_emit(self, client):
         """A verification ping is not a real event; don't run the pipeline."""
-        with patch(
-            'flow.warmbly_http_endpoint.trigger_research_flow',
-            new_callable=AsyncMock,
-        ) as mock_trigger:
+        with patch('flow.warmbly_http_endpoint.emit_event') as mock_emit:
             client.post("/webhooks/warmbly", json=TEST_EVENT)
 
-        mock_trigger.assert_not_called()
+        mock_emit.assert_not_called()
 
     def test_challenge_echoed_regardless_of_event_type(self, client):
         """Echo any payload carrying data.challenge, not only webhook.test."""
@@ -159,11 +153,7 @@ class TestRealEvents:
     """Events without a challenge route to the research pipeline as before."""
 
     def test_real_event_returns_accepted_envelope(self, client):
-        with patch(
-            'flow.warmbly_http_endpoint.trigger_research_flow',
-            new_callable=AsyncMock,
-        ) as mock_trigger:
-            mock_trigger.return_value = {"status": "queued"}
+        with patch('flow.warmbly_http_endpoint.emit_event') as mock_emit:
             response = client.post("/webhooks/warmbly", json=REAL_EVENT)
 
         assert response.status_code == 200
@@ -171,22 +161,14 @@ class TestRealEvents:
         assert body['status'] == "accepted"
         assert body['event_type'] == "contact.created"
 
-    def test_real_event_triggers_research(self, client):
-        with patch(
-            'flow.warmbly_http_endpoint.trigger_research_flow',
-            new_callable=AsyncMock,
-        ) as mock_trigger:
-            mock_trigger.return_value = {"status": "queued"}
+    def test_real_event_emits(self, client):
+        with patch('flow.warmbly_http_endpoint.emit_event') as mock_emit:
             client.post("/webhooks/warmbly", json=REAL_EVENT)
 
-        mock_trigger.assert_called_once()
+        mock_emit.assert_called_once()
 
     def test_no_challenge_header_on_real_event(self, client):
-        with patch(
-            'flow.warmbly_http_endpoint.trigger_research_flow',
-            new_callable=AsyncMock,
-        ) as mock_trigger:
-            mock_trigger.return_value = {"status": "queued"}
+        with patch('flow.warmbly_http_endpoint.emit_event') as mock_emit:
             response = client.post("/webhooks/warmbly", json=REAL_EVENT)
 
         assert CHALLENGE_HEADER not in response.headers
@@ -506,3 +488,129 @@ class TestSignatureAge:
         report = describe_signature_check(b'{}', 't=not-a-number,v1=abc')
 
         assert report['timestamp_age_seconds'] is None
+
+
+class TestEventEmission:
+    """A real event becomes a Prefect event; a challenge ping does not."""
+
+    def test_real_event_emits_prefect_event(self, client):
+        with patch('flow.warmbly_http_endpoint.emit_event') as mock_emit:
+            client.post("/webhooks/warmbly", json=REAL_EVENT)
+
+        mock_emit.assert_called_once()
+        kwargs = mock_emit.call_args.kwargs
+        assert kwargs['event'] == EVENT_NAME
+        assert kwargs['payload'] == REAL_EVENT
+        assert 'prefect.resource.id' in kwargs['resource']
+
+    def test_challenge_does_not_emit(self, client):
+        with patch('flow.warmbly_http_endpoint.emit_event') as mock_emit:
+            response = client.post("/webhooks/warmbly", json=TEST_EVENT)
+
+        mock_emit.assert_not_called()
+        assert response.text == CHALLENGE
+
+    def test_emit_failure_still_returns_200(self, client):
+        """An orchestration outage must not look like a webhook failure.
+
+        Warmbly retries non-2xx and eventually disables the endpoint, so
+        losing Prefect must not cost us the delivery channel too.
+        """
+        with patch(
+            'flow.warmbly_http_endpoint.emit_event',
+            side_effect=ConnectionError("prefect unreachable"),
+        ):
+            response = client.post("/webhooks/warmbly", json=REAL_EVENT)
+
+        assert response.status_code == 200
+        assert response.json()['emitted'] is False
+
+    def test_control_bytes_are_stripped_before_emitting(self, client):
+        """A NUL byte aborts the Postgres transaction Prefect persists into."""
+        body = json.dumps({
+            "id": "ctl-1", "event_type": "contact.created",
+            "data": {"note": "line1\u0000line2\u0001end"},
+        }).encode()
+
+        with patch('flow.warmbly_http_endpoint.emit_event') as mock_emit:
+            client.post("/webhooks/warmbly", content=body,
+                        headers={'Content-Type': 'application/json'})
+
+        emitted = mock_emit.call_args.kwargs['payload']
+        assert '\u0000' not in json.dumps(emitted)
+        assert emitted['data']['note'] == "line1line2end"
+
+    def test_tabs_and_newlines_survive_stripping(self, client):
+        """Tab, LF and CR are legitimate text, not junk to remove."""
+        body = json.dumps({
+            "id": "ctl-2", "event_type": "contact.created",
+            "data": {"note": "a\tb\nc\rd"},
+        }).encode()
+
+        with patch('flow.warmbly_http_endpoint.emit_event') as mock_emit:
+            client.post("/webhooks/warmbly", content=body,
+                        headers={'Content-Type': 'application/json'})
+
+        assert mock_emit.call_args.kwargs['payload']['data']['note'] == "a\tb\nc\rd"
+
+
+class TestClockSkew:
+    """A timestamp from the future is skew, not expiry."""
+
+    def test_future_timestamp_is_not_rejected_as_stale(self):
+        """A host whose clock is behind Warmbly's yields a negative age.
+
+        Negative age means 'from the future', not 'expired', and must never
+        trip the max-age check -- that would reject every delivery.
+        """
+        secret, body = 'test_secret', b'{"a":1}'
+        os.environ['WARMBLY_WEBHOOK_SECRET'] = secret
+        future = str(int(time.time()) + 600)
+        signed = build_signed_payload(future, body)
+        digest = hmac.new(secret.encode(), signed, hashlib.sha256).hexdigest()
+
+        report = describe_signature_check(
+            body, f'{SIGNATURE_TIMESTAMP_KEY}={future},'
+                  f'{SIGNATURE_VERSION_KEY}={digest}',
+            max_age_seconds=300,
+        )
+
+        assert report['timestamp_age_seconds'] < 0
+        assert report['matched'] is True
+
+    def test_skew_is_reported_so_it_is_diagnosable(self):
+        secret, body = 'test_secret', b'{"a":1}'
+        os.environ['WARMBLY_WEBHOOK_SECRET'] = secret
+        future = str(int(time.time()) + 600)
+        signed = build_signed_payload(future, body)
+        digest = hmac.new(secret.encode(), signed, hashlib.sha256).hexdigest()
+
+        report = describe_signature_check(
+            body, f'{SIGNATURE_TIMESTAMP_KEY}={future},'
+                  f'{SIGNATURE_VERSION_KEY}={digest}',
+        )
+
+        assert report['clock_skew_seconds'] > 500
+
+
+class TestBodySizeLimit:
+    """An unbounded body is buffered before any check can reject it."""
+
+    def test_oversized_body_is_rejected(self, client):
+        os.environ['WARMBLY_MAX_BODY_BYTES'] = '1024'
+        try:
+            response = client.post(
+                "/webhooks/warmbly",
+                content=b'{"pad":"' + b'x' * 4096 + b'"}',
+                headers={'Content-Type': 'application/json'},
+            )
+        finally:
+            os.environ.pop('WARMBLY_MAX_BODY_BYTES', None)
+
+        assert response.status_code == 413
+
+    def test_normal_body_is_unaffected(self, client):
+        with patch('flow.warmbly_http_endpoint.emit_event'):
+            response = client.post("/webhooks/warmbly", json=REAL_EVENT)
+
+        assert response.status_code == 200

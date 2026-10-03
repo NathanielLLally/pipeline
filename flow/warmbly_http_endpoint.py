@@ -37,6 +37,9 @@ from uvicorn import run as uvicorn_run
 import httpx
 
 from prefect import flow, task
+from prefect.events import emit_event
+
+from flow.warmbly_events import EVENT_NAME
 
 
 app = FastAPI(title="Warmbly Webhook Receiver")
@@ -221,6 +224,11 @@ def describe_signature_check(
         return report
 
     age = report['timestamp_age_seconds']
+    if age is not None and age < 0:
+        # Negative age means the signature is timestamped in the future, i.e.
+        # our clock is behind the sender's. That is skew to diagnose, never
+        # expiry -- treating it as expiry would reject every delivery.
+        report['clock_skew_seconds'] = -age
     if max_age_seconds is not None and age is not None and age > max_age_seconds:
         report['matched'] = False
         report['reason'] = (
@@ -317,31 +325,66 @@ def validate_webhook_signature(
     return describe_signature_check(payload_bytes, signature_header)['matched']
 
 
-async def trigger_research_flow(event_data: dict[str, Any]) -> dict:
+# Tab, newline and carriage return are legitimate in text; the rest of the C0
+# range is not, and a NUL aborts the whole Postgres transaction that Prefect
+# uses to persist the event.
+_ALLOWED_CONTROL = {'\t', '\n', '\r'}
+
+
+DEFAULT_MAX_BODY_BYTES = 1_048_576
+
+
+def max_body_bytes() -> int:
     """
-    Call Prefect API to trigger the research flow with event data.
+    Largest body we will process, read per request.
 
-    This would eventually call the main research pipeline flow
-    with the Warmbly event as input.
+    Read at call time rather than import time so the limit can be changed
+    without restarting the listener, consistent with the rest of this
+    module's configuration.
     """
-    prefect_api_url = os.environ.get(
-        'PREFECT_API_URL',
-        'http://127.0.0.1:4200/api'
-    )
+    configured = os.environ.get('WARMBLY_MAX_BODY_BYTES', '').strip()
+    return int(configured) if configured.isdigit() else DEFAULT_MAX_BODY_BYTES
 
-    # For now, just log the event
-    # In production, this would:
-    # 1. Look up the contact/campaign in Warmbly
-    # 2. Extract relevant fields (email, company, etc.)
-    # 3. Trigger flow: research_and_draft with the extracted data
 
-    print(f"\n📥 Would trigger research flow with: {event_data}")
+def strip_control_characters(value: Any) -> Any:
+    """Recursively remove C0 control characters from strings in a payload."""
+    if isinstance(value, str):
+        return ''.join(
+            c for c in value
+            if c in _ALLOWED_CONTROL or ord(c) >= 0x20
+        )
+    if isinstance(value, dict):
+        return {k: strip_control_characters(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [strip_control_characters(v) for v in value]
+    return value
 
-    return {
-        "status": "queued",
-        "flow": "research_and_draft",
-        "event_type": event_data.get("event_type"),
-    }
+
+def emit_webhook_event(payload: dict[str, Any]) -> bool:
+    """
+    Hand a real Warmbly event to Prefect.
+
+    Returns whether Prefect accepted it.
+    """
+    endpoint_id = (payload.get('data') or {}).get('endpoint_id', 'unknown')
+
+    try:
+        emit_event(
+            event=EVENT_NAME,
+            resource={
+                'prefect.resource.id': f'warmbly.webhook.{endpoint_id}',
+                'warmbly.event_type': str(payload.get('event_type')),
+            },
+            payload=strip_control_characters(payload),
+        )
+        return True
+    except Exception as exc:
+        # Deliberately broad: nothing Prefect can raise is worth a 500 to
+        # Warmbly, which retries non-2xx and eventually disables the
+        # endpoint. Log loudly so the dropped event is findable.
+        print(f"FAILED to emit {EVENT_NAME}: {type(exc).__name__}: {exc}")
+        print(f"  dropped payload id={payload.get('id')}")
+        return False
 
 
 def detect_challenge(payload: dict[str, Any]) -> Optional[str]:
@@ -379,12 +422,13 @@ async def route_payload(payload: dict[str, Any]):
             headers={CHALLENGE_HEADER: challenge},
         )
 
-    result = await trigger_research_flow(payload)
+    emitted = emit_webhook_event(payload)
 
     return {
         "status": "accepted",
         "event_type": payload.get('event_type'),
-        "routing": result,
+        "event_name": EVENT_NAME,
+        "emitted": emitted,
     }
 
 
@@ -397,6 +441,14 @@ async def receive_warmbly_webhook(request: Request):
     """
     # Read raw body for signature validation
     body_bytes = await request.body()
+
+    # Bounds post-buffering work only: uvicorn has already read the body, so a
+    # hard wire-level limit belongs at traefik if that ever matters.
+    limit = max_body_bytes()
+    if len(body_bytes) > limit:
+        print(f"REJECTED 413: body {len(body_bytes)}B exceeds {limit}B")
+        raise HTTPException(status_code=413, detail="Payload too large")
+
     headers = dict(request.headers)
     signature_header = request.headers.get(SIGNATURE_HEADER)
 
