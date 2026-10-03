@@ -37,9 +37,21 @@ def test_script_imports_without_module_error(script):
     )
     try:
         output, _ = proc.communicate(timeout=12)
-        # Exited rather than blocking -- that means it failed.
-        assert 'ModuleNotFoundError' not in output, output[-800:]
-        assert 'Traceback' not in output, output[-800:]
+        # Exited rather than blocking. Only import-phase failures are this
+        # test's business: a blanket 'no Traceback' assertion also catches
+        # runtime problems that have nothing to do with sys.path -- notably
+        # Prefect spinning up an ephemeral API server (no PREFECT_API_URL in
+        # the subprocess env) which returns 500 under this Python.
+        for import_failure in (
+            'ModuleNotFoundError',
+            'ImportError',
+            'IndentationError',
+            'SyntaxError',
+        ):
+            assert import_failure not in output, (
+                f'{script} failed to import: {import_failure}\n'
+                f'{output[-800:]}'
+            )
     except subprocess.TimeoutExpired:
         proc.kill()
         proc.communicate()
