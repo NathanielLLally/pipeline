@@ -17,7 +17,16 @@ emitted event and this process meet on the same Prefect server):
 
 from typing import Any
 
-from prefect import flow, serve, task
+import sys
+from pathlib import Path
+
+# These modules are started directly as scripts on the prod host
+# (`python flow/warmbly_http_endpoint.py`), which puts `flow/` on sys.path
+# rather than the repo root, breaking absolute `flow.*` imports. Adding the
+# repo root keeps both `python flow/x.py` and `python -m flow.x` working.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from prefect import flow, serve
 from prefect.events import DeploymentEventTrigger
 
 from flow.warmbly_events import EVENT_NAME
@@ -32,9 +41,14 @@ seen_event_ids: set = set()
 KNOWN_EVENT_PREFIXES = ('contact', 'campaign', 'email', 'webhook')
 
 
-@task
 def classify_event(payload: dict[str, Any]) -> str:
-    """Classify an event by its dotted prefix for downstream routing."""
+    """
+    Classify an event by its dotted prefix for downstream routing.
+
+    Deliberately not a Prefect task: it is a prefix lookup with nothing
+    to retry, cache or rate-limit, so a task run would buy a server
+    round-trip for a string split. The flow is the unit Prefect manages.
+    """
     event_type = payload.get('event_type') or ''
     prefix = event_type.split('.', 1)[0]
 

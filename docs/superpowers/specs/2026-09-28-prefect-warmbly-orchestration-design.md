@@ -50,7 +50,7 @@ The pipeline transforms a batch of qualified business prospects into research-ba
 │ • Input: business record + crawl excerpt + verified_email_pool  │
 │         + ICP profile + offer context                           │
 │ • Model: LiteLLM client (swappable, default: local Ollama)      │
-│ • Output: ResearchOutput schema (validated via instructor)      │
+│ • Output: ResearchOutput schema (pydantic-validated)            │
 │ • Structured output: pain signals, tone, confidence score,      │
 │   suggested lead email, optional next_url_to_check              │
 └──────────────────┬──────────────────────────────────────────────┘
@@ -95,7 +95,7 @@ The pipeline transforms a batch of qualified business prospects into research-ba
 │ • Model: LiteLLM client (swappable, default: local Ollama)      │
 │ • Agent decides which verified email(s) to write to based on    │
 │   the message intent (not bound by research suggestion)         │
-│ • Output: DraftingOutput schema (validated via instructor)      │
+│ • Output: DraftingOutput schema (pydantic-validated)            │
 │ • Structured output: selected_emails[], subject, body, rationale│
 └──────────────────┬──────────────────────────────────────────────┘
                    │
@@ -119,6 +119,11 @@ The pipeline transforms a batch of qualified business prospects into research-ba
         └──────────────────────────┘
 ```
 
+> **On reading the diagram:** `stage 2b: deeper_fetch` is drawn inline above, but it is
+> *not* a peer stage. It lives inside the `research-agent` deployment along with both
+> passes and both gate checks. See 2.3 for which stages are deployments and which are
+> tasks.
+
 ### 2.2 Rejection Pool Handling
 
 Businesses rejected at stage 3b (low confidence after 2-pass research) flow to `leads.agent_rejects`:
@@ -137,6 +142,39 @@ manually_reviewed (bool, false initially)
 - Send a generic (non-personalized) campaign to these contacts
 - Manually review and reach out to strong fit rejections
 - Use rejection data to tune the confidence threshold over time
+
+### 2.3 Node Boundaries and Prefect Objects
+
+Prefect is the operating model for this pipeline, not a library the stages import: every
+stage is deployed, operated and managed by Prefect rather than run as its own service.
+Stages are therefore split into two kinds.
+
+**Stages that are their own deployment** — independently schedulable, pausable,
+versioned, and subject to their own concurrency limit:
+
+| Deployment | Owns | Why it is separate |
+|---|---|---|
+| `orchestration/research-and-draft` | candidate selection, sequencing, Warmbly import | The parent; what you schedule |
+| `email-validation` | `mxCheck.pl` subprocess, verified-email pool | A concurrency limit here bounds the real connection rate against other people's mail servers, so two pipeline runs cannot silently double it |
+| `research-agent` | pass 1, confidence gate, `deeper_fetch`, pass 2, second gate | A concurrency limit bounds total LLM pressure *including* its own escalation |
+| `drafting-agent` | draft subject/body, recipient selection | Model and prompt swap independently of research |
+
+**Stages that are tasks inside the parent** — nothing about them is separately
+operable:
+
+- `candidate_selector` — one SQL query against `leads.businesses`.
+- `warmbly_import` — one REST call.
+
+**`deeper_fetch` is part of the research node, not a peer of it.** It is driven by
+`next_url_to_check`, which only the research agent produces, and the confidence gate's
+loop-back is research's own control flow. Promoting it to a sibling deployment would
+force the parent to run pass 1, inspect the confidence, decide whether to fetch, and
+then run pass 2 — leaking the node's retry logic into its caller. Kept inside, the node
+has a single contract: *business record + verified email pool in, `ResearchOutput` or a
+rejection out*, with how hard it worked to get there being its own business. It remains
+reusable as `flow/fetch.py` without being separately deployed.
+
+---
 
 ---
 
@@ -170,7 +208,17 @@ class ResearchOutput(BaseModel):
                                        # optional URL for deeper_fetch
 ```
 
-**Validation:** Output forced to strict JSON schema via `instructor` + Pydantic. Malformed responses are validation errors in Prefect, not garbled emails in Warmbly.
+**Validation:** Output is requested as strict JSON schema via the LiteLLM proxy's
+OpenAI-compatible `response_format={"type": "json_schema", ...}`, then validated with
+Pydantic (`Model.model_validate_json`). Malformed responses are validation errors in
+Prefect, not garbled emails in Warmbly.
+
+**No `instructor` dependency.** Earlier drafts of this spec named the `instructor`
+library here. It was never installed and was not chosen by the project owner; it
+automates a prompt/validate/retry loop that is roughly fifteen lines against a proxy
+that already supports `response_format`, with Prefect task retries supplying the
+backoff. If a locally-routed model turns out to ignore strict schema requests, revisit
+adding it rather than assuming it is needed.
 
 ### 3.3 DraftingOutput
 
@@ -190,19 +238,39 @@ class DraftingOutput(BaseModel):
 ### 4.1 Required Environment Variables
 
 ```bash
-# LLM provider
-LLM_MODEL=ollama/mistral              # e.g. ollama/*, openai/gpt-4, etc.
-                                      # swappable at runtime via LiteLLM
-OLLAMA_BASE_URL=http://127.0.0.1:11434  # if using local Ollama
+# LLM provider -- calls go through the self-hosted LiteLLM PROXY over HTTP.
+# The litellm python package is NOT required and is not installed; httpx is.
+LITELLM_BASE_URL=http://127.0.0.1:4000  # litellm-compose-litellm-1, up on :4000
+LITELLM_API_KEY=<proxy key>             # the proxy returns 401 without one
+LLM_MODEL=<model name as the proxy routes it>   # swappable at runtime; the
+                                        # proxy owns provider routing, so this
+                                        # is a proxy model name, not a provider
+                                        # path
 
 # Prefect
-PREFECT_API_URL=http://127.0.0.1:4200   # OSS server (test)
-                                         # prod points to accurateleadinfo.com
-                                         # Prefect manages deployment
+PREFECT_API_URL=http://127.0.0.1:4200/api
+# NOTE: this reads identically on both hosts and means DIFFERENT servers -- the
+# local dev stack on hawkeye, or the canonical prod stack on accurateleadinfo.com.
+# See 6.1. Check `prefect deployment ls` output, not this variable, to know which.
 
-# Warmbly
-WARMBLY_URL=https://crm.accurateleadinfo.com
+# Warmbly  (names below are the ones actually present in .env)
+WARMBLY_API_URL=<per-tenant API host>   # Warmbly runs on htpc / 209.145.48.101,
+                                        # NOT on accurateleadinfo.com. Exact URL
+                                        # UNVERIFIED -- read it from .env, do not
+                                        # assume crm.<domain>.
 WARMBLY_API_TOKEN=<token>
+WARMBLY_ORG_ID=<uuid>
+WARMBLY_PHX_HOST=<phoenix host>         # realtime/WebSocket integration
+WARMBLY_WEBSOCKET_URL=<ws url>
+
+# Warmbly inbound webhook (flow/warmbly_http_endpoint.py)
+WARMBLY_WEBHOOK_SECRET=<shared secret>  # unset disables signature checking
+WARMBLY_WEBHOOK_EVENT_NAME=warmbly.webhook.received   # emitted into Prefect
+WARMBLY_WEBHOOK_DEBUG=                  # 1 logs full request headers
+WARMBLY_SIGNATURE_TIMESTAMP_KEY=t       # header is "t=<unix>,v1=<hex>"
+WARMBLY_SIGNATURE_VERSION_KEY=v1
+WARMBLY_SIGNATURE_SEPARATOR=.           # signed bytes are "<t>.<raw body>"
+WARMBLY_SIGNATURE_MAX_AGE=              # unset = log age, never reject
 
 # Jina Reader (for deeper_fetch)
 JINA_API_KEY=<token>
@@ -221,7 +289,7 @@ CONFIDENCE_THRESHOLD=0.7              # gate threshold
 
 ### 4.2 Optional Configuration
 
-- **Scheduling:** `@flow` decorator with `schedule=...` (Prefect cron syntax) or event-triggered via `DeploymentEventTrigger`
+- **Scheduling:** on the *deployment*, not the `@flow` decorator -- `to_deployment(cron=...)` / `serve(cron=...)`, or event-triggered via `DeploymentEventTrigger`. `@flow` takes no `schedule` argument in Prefect 3.
 - **Retry policy:** Prefect task-level retries (e.g., 3 attempts for Jina fetch, 1 for LLM to avoid cost)
 - **Rate limiting:** mxCheck.pl's `--rate-limit` flag to avoid SMTP blocks
 
@@ -253,24 +321,55 @@ CONFIDENCE_THRESHOLD=0.7              # gate threshold
 
 ### 6.1 Infrastructure
 
-- **Prod:** Prefect service runs on `accurateleadinfo.com` (same host as Warmbly CRM)
-- **Test:** Prefect OSS at `127.0.0.1:4200` (local development)
-- **Scheduling:** Prefect owns cron, retries, state, history — no systemd/cron wrapper needed
+Verified 2026-10-03. Three hosts are involved, which the earlier draft of this section
+got wrong by assuming Prefect and Warmbly shared one.
+
+| Host | Address | Runs |
+|---|---|---|
+| `accurateleadinfo.com` | 144.91.96.230 | **Canonical Prefect** (`prefect-compose` stack), traefik, the Warmbly webhook listener |
+| `hawkeye` (workstation) | local | A **second, separate** `prefect-compose` stack used for development |
+| `htpc` | 209.145.48.101 | Warmbly (12 containers: backend, web, worker, consumer, realtime, postgres, nats, …) |
+
+**Prefect runs as a Docker stack, not `prefect server start`.** On both hosts the
+`prefect-compose` stack provides `prefect-server`, `prefect-worker`, `prefect-services`,
+postgres and redis. A worker therefore already exists to run deployments; nothing needs
+supervising by hand.
+
+**The two Prefect servers are a live hazard.** Both answer on `127.0.0.1:4200` from
+their own host, so `PREFECT_API_URL` reads identically in both `.env` files while
+meaning different servers with different databases. As of 2026-10-03 the development
+server held all deployments and automations and the prod server held **none**. Work
+registered against one is invisible to the other, and a flow or event emitted on the
+wrong server fails silently: the emitter succeeds, and nothing ever runs.
+
+**`accurateleadinfo.com` is canonical for anything in a delivery path**, because the
+Warmbly webhook listener runs there and the workstation is not always on. Registering a
+deployment is therefore an action taken *against the prod server*, and a run that
+appears only in the local UI has not been deployed.
+
+- **Scheduling:** Prefect owns cron, retries, state, history — no systemd/cron wrapper
+  needed, and none should be added.
 
 ### 6.2 Starting the Pipeline
 
-```bash
-# Start Prefect service (one-time)
-prefect server start
+The stack is already running; these are the per-code-change steps.
 
-# Deploy flows to Prefect (one-time per code update)
+```bash
+# Register / update every deployment (parent + the three node deployments)
 python -m flow.orchestration deploy
 
-# Run manually (for testing)
-prefect flow run orchestration.research_and_draft --batch-size 5
+# Confirm they landed on the PROD server, not the local one
+prefect deployment ls
 
-# Or let Prefect's scheduler handle cron (in deployment config)
+# Run the parent manually for testing
+prefect deployment run orchestration/research-and-draft --param batch_size=5
+
+# Thereafter Prefect's scheduler owns cadence; nodes are paused/resumed in the UI
 ```
+
+Each node deployment is independently runnable the same way, which is the point of
+splitting them: `research-agent` can be re-run against a single business, or paused
+during a model swap, without stopping the parent.
 
 ### 6.3 Secrets & Configuration
 
@@ -301,6 +400,34 @@ Campaign sends (Warmbly owns delivery)
 
 **Note:** Prefect posts the draft to Warmbly; Warmbly manages the notification and campaign lifecycle. Prefect does not push sends.
 
+**Inbound direction (Warmbly -> Prefect).** Prefect's own webhook triggers are a
+**Prefect Cloud feature** and do not exist on a self-hosted server, so there is no
+built-in URL to point Warmbly at. The inbound path is therefore:
+
+```
+Warmbly (htpc) --HTTPS POST--> traefik (accurateleadinfo.com:443)
+    -> flow/warmbly_http_endpoint.py   (uvicorn, host process)
+         - validates "t=<unix>,v1=<hex>" signature over "<t>.<raw body>"
+         - echoes data.challenge synchronously for webhook.test verification
+         - emit_event(WARMBLY_WEBHOOK_EVENT_NAME, payload=<event>)
+    -> Prefect automation (expect: that event name)
+    -> warmbly-webhook-receiver deployment runs
+```
+
+Two constraints this path must respect:
+
+- **The response must be synchronous.** Verification requires echoing
+  `data.challenge` in the reply, so the listener answers immediately and the flow run
+  is fired asynchronously. The handler cannot itself *be* the flow run.
+- **Warmbly's `safehttp` guard rejects non-web ports** -- only 80 and 443. Its UI
+  misreports this as "destination address is not publicly routable"; the real reason
+  appears only in the `warmbly-backend-1` log. Hence traefik in front, never a direct
+  port.
+
+The event name is the entire routing key: the automation created by
+`to_deployment(triggers=[...])` matches on name alone (`match: {}`), so a name reused
+across consumers fans out to all of them.
+
 ### 7.2 Jina Reader Integration
 
 - `flow/fetch.py` is the working task wrapper around Jina API
@@ -326,10 +453,16 @@ Start with `CONFIDENCE_THRESHOLD=0.7`. Monitor:
 
 ### 8.2 Model Selection
 
-Default: `ollama/mistral` (local, free). If quality is insufficient:
-- Try `ollama/neural-chat` or other Ollama models
-- Or swap to Claude/GPT via LiteLLM (e.g., `openai/gpt-4o`) with API key
-- No code changes needed; just update `LLM_MODEL` env var
+Model routing is owned by the LiteLLM proxy, not by this pipeline. `LLM_MODEL` names
+a model *as the proxy exposes it*; which provider that reaches, and with which key, is
+proxy configuration.
+
+- To change model: update `LLM_MODEL`, or re-point that name in the proxy config.
+- No pipeline code changes either way.
+- Check what the proxy actually offers with `curl -H "Authorization: Bearer $LITELLM_API_KEY" http://127.0.0.1:4000/v1/models` before assuming a name resolves.
+
+Note the proxy runs on both the workstation and `accurateleadinfo.com`, so as with
+Prefect, `127.0.0.1:4000` means different instances depending on where the code runs.
 
 ### 8.3 Batch Size
 
@@ -426,13 +559,15 @@ TDD applies. Before writing flow code:
 ```
 /home/nathaniel/leads/
 ├── flow/
-│   ├── orchestration.py       # main flows (research_and_draft, deeper_fetch, etc.)
-│   ├── fetch.py               # Jina wrapper (existing)
+│   ├── orchestration.py       # parent flow + `deploy` entrypoint registering all 4
+│   ├── fetch.py               # Jina wrapper (existing; used inside research node)
 │   ├── schemas.py             # Pydantic models
+│   ├── warmbly_http_endpoint.py   # inbound listener: signature, challenge, emit_event
+│   ├── warmbly_webhook_receiver.py # @flow + deployment consuming the emitted event
 │   └── agents/
-│       ├── research.py        # research_agent prompts & LiteLLM calls
-│       ├── drafting.py        # drafting_agent prompts & LiteLLM calls
-│       └── validation.py      # email_validation + mxCheck wrapper
+│       ├── research.py        # research-agent deployment (pass 1/2, gate, deeper_fetch)
+│       ├── drafting.py        # drafting-agent deployment
+│       └── validation.py      # email-validation deployment + mxCheck wrapper
 ├── docs/superpowers/specs/
 │   └── 2026-09-28-prefect-warmbly-orchestration-design.md  # this file
 ├── .env                       # secrets + configuration

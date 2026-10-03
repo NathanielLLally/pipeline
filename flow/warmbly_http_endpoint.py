@@ -36,6 +36,15 @@ from fastapi.responses import PlainTextResponse
 from uvicorn import run as uvicorn_run
 import httpx
 
+import sys
+from pathlib import Path
+
+# These modules are started directly as scripts on the prod host
+# (`python flow/warmbly_http_endpoint.py`), which puts `flow/` on sys.path
+# rather than the repo root, breaking absolute `flow.*` imports. Adding the
+# repo root keeps both `python flow/x.py` and `python -m flow.x` working.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from prefect import flow, task
 from prefect.events import emit_event
 

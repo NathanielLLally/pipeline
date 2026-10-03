@@ -591,3 +591,48 @@ container) on `accurateleadinfo.com`, fronted by the traefik container from the
   `WARMBLY_SIGNATURE_PREVIEW_CHARS` (default 12) so a log cannot be used to replay.
 - The webhook process is a **bare foreground process in an interactive shell**, not a
   managed service; it will not survive a reboot or a closed terminal.
+
+### Warmbly webhook → Prefect, verified locally 2026-10-03
+
+The listener no longer prints and drops events: it emits a Prefect event and the
+deployment picks it up.
+
+```
+Warmbly (htpc) --HTTPS--> traefik --> flow/warmbly_http_endpoint.py  (uvicorn)
+    signature check -> challenge echo (synchronous, no event)
+    real event -> emit_event("warmbly.webhook.received")
+        --> Prefect automation (matches on event NAME alone; match: {})
+            --> warmbly-webhook-receiver deployment  --> flow run
+```
+
+- **The event name is the whole routing key.** It lives in `flow/warmbly_events.py`,
+  imported by both the emitter and the deployment's trigger so they cannot drift, and
+  is overridable via `WARMBLY_WEBHOOK_EVENT_NAME`. Automations created from
+  `to_deployment(triggers=[...])` have an empty `match`, so any event with the same name
+  fires every consumer subscribed to it.
+- **`serve()` and the listener must run on the same host.** `emit_event` goes to
+  whichever server the listener's `PREFECT_API_URL` resolves to, and the serving process
+  only runs work from the server it polls. Split them and the listener reports
+  `"emitted": true` while nothing ever runs.
+- **Both modules are started directly as scripts, which breaks absolute imports.**
+  `python flow/x.py` puts `flow/` on `sys.path`, not the repo root, so
+  `from flow.warmbly_events import ...` raises `ModuleNotFoundError: No module named
+  'flow'`. Both files now insert the repo root into `sys.path` at the top so the script
+  and `python -m flow.x` forms both work. `tests/test_scripts_runnable.py` pins this,
+  because the failure is invisible under pytest (which adds the rootdir itself).
+- **Emission failure is not an HTTP failure.** If Prefect is unreachable the listener
+  logs the exception and still returns 200 with `"emitted": false`, because Warmbly
+  retries non-2xx and eventually disables the endpoint. An orchestration outage must not
+  cost the delivery channel.
+- **C0 control characters are stripped before emitting.** A NUL would abort the Postgres
+  transaction Prefect persists the event into; tab, LF and CR are preserved.
+- **Calling a Prefect `@flow` directly creates a real flow run** against
+  `PREFECT_API_URL`. Unit tests therefore exercise `warmbly_webhook_receiver.fn`, the
+  undecorated function. Note that `tests/test_warmbly_integration.py` (pre-existing) does
+  *not* do this and does write flow runs into the live server when the suite runs.
+- `prefect_test_harness` is **not usable here**: its temporary server returns 500 on
+  `/api/admin/version` under Python 3.15 with Prefect 3.2.15.
+
+**Verified locally only.** Deployment to `accurateleadinfo.com`, and verification against
+real Warmbly traffic, have **not** been done. The prod Prefect server still has zero
+deployments.
