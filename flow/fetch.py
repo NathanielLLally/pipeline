@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import requests
-from bs4 import BeautifulSoup
 import json
 import os
 from typing import List, Optional
-
 from prefect import flow, task
+import sys
 
 
 JINA_API_KEY = os.environ.get('JINA_API_KEY');
@@ -58,7 +57,5 @@ def scrape(urls: Optional[List[str]] = None) -> None:
             print(content if content else "No article content found.")
 
 if __name__ == "__main__":
-    urls = [
-        "https://happytailspawcare.com"
-    ]
+    urls = sys.argv[1:]
     scrape(urls=urls)

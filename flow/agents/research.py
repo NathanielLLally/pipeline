@@ -25,9 +25,10 @@ CONFIDENCE_THRESHOLD = float(
 )
 
 SYSTEM_PROMPT = (
-    'You research small service businesses to find one specific, evidenced '
-    'reason a lead-generation offer would matter to them. Quote evidence '
-    'from the supplied text. Never invent an email address.'
+    'You research small service businesses to find specific, evidenced '
+    'reasons a lead-generation service would matter to them. Quote evidence '
+    'from the supplied text. Never invent an email address.  Extract business '
+    ' name, pain signals, personalization hook, and a confidence score.'
 )
 
 
