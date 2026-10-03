@@ -556,9 +556,19 @@ same `--limit 8` re-selected only the failures, confirming resumability. Token c
 tokens/min, so `--concurrency` above ~8 will start hitting the token ceiling, not the
 request one).
 
-**Status: development.** Nothing downstream reads `website_crawl_jina` yet. Deciding
-whether it supersedes, feeds or merges into `website_crawl` needs a yield comparison on
-the gap set first.
+**Link extraction.** Jina returns a `data.links` map of display text → href pairs.
+`flow/jina_crawl.py` extracts all of them into `leads.website_crawl_jina_link`, keyed
+on (business_id, url, link_href) so a re-crawl of the same page does not duplicate.
+Includes mailto:, https://, tel:, and other schemes. Observed on first live run: 38 links
+extracted from 1 page (1 mailto, 36 https, 1 tel), compared to a handful (if any) per
+page when relying on tag-stripped HTML. The `links` map complements the rendered markdown
+body — addresses that appeared *only* as `<a href="mailto:...">Email us</a>` are visible
+here where the stripped text alone would lose them.
+
+**Status: development.** Nothing downstream reads `website_crawl_jina` or its links yet.
+Deciding whether it supersedes, feeds or merges into `website_crawl` needs a yield
+comparison on the gap set first. Email extraction from the links map is the natural
+first downstream consumer.
 
 ---
 
