@@ -52,8 +52,9 @@ const MAX_BYTES = 4 << 20;      // a homepage past 4MB is a bundle, not content
 // from half a page is worthless, and a wasted research pass costs the entire
 // pipeline run rather than the characters it saved. MAX_BYTES still bounds what
 // is fetched, so this is not unbounded input.
-// Crawls stored before this change were cut at 20000 chars and are flagged
-// needs_recrawl in leads.website_crawl.
+// Crawls stored before this change were cut at 20000 chars. They are detected
+// by length in the alreadyCrawled query below rather than flagged in a column,
+// so they are simply not treated as crawled and get refetched.
 
 // Sub-pages worth the extra fetch, most valuable first. about/team come first because
 // they are the only pages that name people.
@@ -445,7 +446,18 @@ async function main() {
     const prior = JSON.parse(q(`
       SELECT coalesce(json_agg(t), '[]')
       FROM (SELECT business_id, url FROM leads.website_crawl
-            WHERE text_excerpt IS NOT NULL) t;
+            WHERE text_excerpt IS NOT NULL
+              -- Text cut at the former 20000-char EXCERPT_CHARS ceiling is not
+              -- complete content, so by the same rule as the 403 case above it
+              -- does not count as crawled and gets fetched again.
+              --
+              -- Bounded by fetched_at because a predicate runs on every pass
+              -- where a backfill runs once: the ceiling is gone, so a page
+              -- whose genuine length is exactly 20000 must not be refetched
+              -- forever. Every crawl predating this change is from Sep 19-23
+              -- 2026, so the cutoff separates them cleanly.
+              AND NOT (length(text_excerpt) = 20000
+                       AND fetched_at < '2026-09-24')) t;
     `, { env, args: ["-tA"] }).trim());
     for (const p of prior) {
       if (!crawled.has(p.business_id)) crawled.set(p.business_id, new Set());
