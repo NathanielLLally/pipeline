@@ -128,3 +128,21 @@ class TestShapeCandidate:
         out = shape_candidate(self._row(emails=None))
 
         assert out['candidate_emails'] == []
+
+    def test_a_p90_length_excerpt_is_not_truncated(self):
+        """p90 is 9900 chars and the crawler's own ceiling is 20000.
+
+        An earlier 6000 default silently cut 21% of crawls, worst on the
+        content-rich sites research most needs. This pins that a realistic
+        long excerpt survives intact.
+        """
+        excerpt = 'y' * 9900
+        out = shape_candidate(self._row(crawl_excerpt=excerpt))
+
+        assert out['crawl_excerpt'] == excerpt
+
+    def test_the_crawlers_own_ceiling_is_not_truncated(self):
+        excerpt = 'z' * 20_000
+        out = shape_candidate(self._row(crawl_excerpt=excerpt))
+
+        assert len(out['crawl_excerpt']) == 20_000

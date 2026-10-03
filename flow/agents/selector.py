@@ -25,9 +25,15 @@ from prefect import flow
 DEFAULT_TIERS = ['Tier 1', 'Tier 2']
 DEFAULT_BATCH_SIZE = 50
 
-# Crawl excerpts run to tens of thousands of characters. The research prompt
-# pays for every one of them, so cap what we hand over.
-MAX_EXCERPT_CHARS = int(os.environ.get('MAX_EXCERPT_CHARS', '6000'))
+# The crawler already caps text_excerpt at 20000 characters -- measured
+# 2026-10-03, where p99 and max are both exactly 20000 across 60124 crawls.
+# So there is no unbounded input to defend against, and the default matches
+# that ceiling: in practice nothing is truncated. An earlier 6000 default cut
+# 21% of crawls (12820 of 60124), and it cut the content-rich sites, which are
+# the ones research can actually find a hook in. 20000 chars is roughly 5000
+# input tokens -- cheap next to the cost of a useless research pass.
+# Lower it only to deliberately trade research quality for token spend.
+MAX_EXCERPT_CHARS = int(os.environ.get('MAX_EXCERPT_CHARS', '20000'))
 
 
 def build_candidate_query(
