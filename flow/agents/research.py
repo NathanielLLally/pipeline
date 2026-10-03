@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from prefect import flow
 
+from flow.fetch import fetch_html
 from flow.llm import LLMSchemaError, LLMTransportError, complete_structured
 from flow.schemas import ResearchOutput
 
@@ -28,20 +29,6 @@ SYSTEM_PROMPT = (
     'reason a lead-generation offer would matter to them. Quote evidence '
     'from the supplied text. Never invent an email address.'
 )
-
-
-def fetch_html(url: str) -> str:
-    """Fetch one page, deferring the import of the Jina wrapper.
-
-    `flow.fetch` currently raises IndentationError on import (a stray indent
-    on its first line, filed as issue #4), which would make this whole module
-    unimportable. Importing it at call time keeps the node loadable and makes
-    the breakage surface at the point of use. Collapse this back to a
-    top-level `from flow.fetch import fetch_html` once #4 is fixed.
-    """
-    from flow.fetch import fetch_html as _fetch_html
-
-    return _fetch_html(url)
 
 
 def build_research_prompt(

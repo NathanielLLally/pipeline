@@ -1,9 +1,10 @@
-    from __future__ import annotations
+from __future__ import annotations
 
 import requests
 from bs4 import BeautifulSoup
 import json
 import os
+from typing import List, Optional
 
 from prefect import flow, task
 
@@ -41,7 +42,7 @@ def parse(html: str) -> str:
     return html
 
 @flow(log_prints=True)
-def scrape(urls: list[str] | None = None) -> None:
+def scrape(urls: Optional[List[str]] = None) -> None:
     """Scrape and print article content from URLs.
 
     A regular Python function that composes our tasks together.
