@@ -9,7 +9,7 @@ deployment, record it here in the same session. Mark anything you did not person
 verify as unverified rather than stating it as settled — the value of this file depends
 on being trustworthy without re-checking.
 
-Last verified: 2026-09-18.
+Last verified: 2026-09-30.
 
 ---
 
@@ -526,3 +526,43 @@ The email table is authoritative; `businesses.contact_email` is a cache of the b
 - Whether the local workstation timer should keep running is undecided. It duplicates
   the remote one into the same table; if the remote deployment is canonical, the local
   timer is arguably redundant and could be disabled to make the tick log single-writer.
+
+## Inbound webhooks: Warmbly → host process behind traefik (2026-09-30)
+
+Warmbly delivers events to a FastAPI/uvicorn process running **on the host** (not in a
+container) on `accurateleadinfo.com`, fronted by the traefik container from the
+`~/n8n-compose` stack.
+
+- **`~/leads` on the prod host is a symlink to `~/src/git/pipeline/`.** Editing a file
+  locally is not deploying it — an earlier session lost many turns debugging an
+  environment variable that was in fact reaching unmodified remote code. The deployed
+  file is `~/src/git/pipeline/flow/warmbly_http_endpoint.py`. A **stale duplicate**
+  exists at `~/src/git/pipeline/flows/` (plural) and should be deleted.
+- The prod interpreter is **Python 3.9**, so PEP 604 unions (`str | None`) crash at
+  import; use `Optional[str]`. PEP 585 generics (`dict[str, Any]`) are fine.
+- The `~/n8n-compose` stack has been **repurposed** — n8n itself is gone. It now runs
+  postgres (`2345:5432`), adminer (`8081:8080`) and traefik (`80`, `443`).
+- **Warmbly's `safehttp` SSRF guard rejects non-web ports.** Only 80 and 443 are
+  permitted. The UI reports this as "destination address is not publicly routable",
+  which is misleading; the real reason (`blocked request to a non-web port`) appears only
+  in the `warmbly-backend-1` container log. This is why the endpoint must sit behind
+  traefik rather than being exposed directly on 8765.
+- **Container → host networking:** `127.0.0.1` inside the container is the container's
+  own loopback, and `host.docker.internal` does not resolve on this Linux server Docker.
+  The Docker bridge gateway (`172.20.0.1`) works.
+- **Traefik's file provider cannot proxy to a Unix socket** — `unix://…` is rejected as a
+  `loadBalancer.servers[].url`, even with the socket bind-mounted and world-writable.
+  uvicorn serves it fine (`uvicorn_run(app, uds=…)`); traefik is the limitation.
+- **A router needs a `Host()` matcher, not just `Path()`.** Without one, ACME never binds
+  a certificate to the hostname and traefik serves `CN=TRAEFIK DEFAULT CERT`.
+- **`docker compose restart` does NOT apply a changed `command:`.** It restarts the
+  existing container with its existing arguments; verified by `docker inspect … .Config.Cmd`
+  still showing the old `--providers.file` flags after a restart. Recreating the container
+  with `docker compose up -d traefik` is required.
+- Webhook verification is **challenge/response**: a `webhook.test` event carries
+  `data.challenge` (`whcg_…`) and must be echoed back in the body and/or the
+  `X-Warmbly-Webhook-Challenge` header. Handled by `route_payload()` /
+  `detect_challenge()`; header and field names come from `WARMBLY_CHALLENGE_HEADER` and
+  `WARMBLY_CHALLENGE_FIELD` (defaults match the values above).
+- The webhook process is a **bare foreground process in an interactive shell**, not a
+  managed service; it will not survive a reboot or a closed terminal.
