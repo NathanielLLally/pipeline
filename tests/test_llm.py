@@ -51,3 +51,32 @@ class TestRequestShape:
 
         assert isinstance(out, ResearchOutput)
         assert out.confidence == 0.8
+
+
+class TestMalformedReplies:
+    def test_prose_reply_is_retried_then_raises(self):
+        with patch('flow.llm.httpx.post', return_value=_reply("Sure! Here you go:")) as post:
+            with pytest.raises(LLMSchemaError):
+                complete_structured("describe", ResearchOutput, max_attempts=2)
+
+        assert post.call_count == 2
+
+    def test_valid_json_wrong_shape_is_retried_with_the_errors(self):
+        bad = json.dumps(dict(VALID, inferred_tone="enthusiastic"))
+        with patch('flow.llm.httpx.post', return_value=_reply(bad)) as post:
+            with pytest.raises(LLMSchemaError):
+                complete_structured("describe", ResearchOutput, max_attempts=3)
+
+        assert post.call_count == 3
+        # The retry must tell the model what was wrong, or it will repeat it.
+        final_messages = post.call_args.kwargs['json']['messages']
+        assert any('inferred_tone' in str(m['content']) for m in final_messages)
+
+    def test_recovers_when_the_second_attempt_validates(self):
+        bad = _reply(json.dumps(dict(VALID, confidence=5.0)))
+        good = _reply(json.dumps(VALID))
+        with patch('flow.llm.httpx.post', side_effect=[bad, good]) as post:
+            out = complete_structured("describe", ResearchOutput)
+
+        assert out.confidence == 0.8
+        assert post.call_count == 2
