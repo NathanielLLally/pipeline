@@ -1,0 +1,80 @@
+"""
+The drafting-agent deployment.
+
+Its contract: a ResearchOutput plus the verified email pool in, a
+DraftingOutput out. The agent chooses which verified address(es) to write to
+based on the message's intent -- it is not bound by the researcher's
+suggestion (spec section 2.1), but it IS bound to the verified pool.
+"""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+
+from prefect import flow
+
+from flow.llm import LLMSchemaError, LLMTransportError, complete_structured
+from flow.schemas import DraftingOutput
+
+SYSTEM_PROMPT = (
+    'You write short, specific first-contact emails to small service business '
+    'owners. One concrete observation, one offer, one ask. No flattery, no '
+    'placeholders, no invented facts. Write only to addresses you were given.'
+)
+
+
+def build_drafting_prompt(
+    research: dict,
+    verified_emails: list,
+    template_slug: str = 'default',
+) -> str:
+    """Assemble the drafting prompt. Pure, so it can be asserted on."""
+    pool = ', '.join(e['email'] for e in verified_emails) or '(none)'
+
+    return '\n'.join([
+        f"Business: {research.get('business_name')}",
+        f"Tone observed on their site: {research.get('inferred_tone')}",
+        f"Why this matters to them: {research.get('personalization_hook')}",
+        f"Pain signals: {'; '.join(research.get('pain_signals') or [])}",
+        f"Evidence: {'; '.join(research.get('evidence') or [])}",
+        f"Researcher suggested: {research.get('suggested_email')}",
+        f"Template: {template_slug}",
+        '',
+        f"Verified addresses you may write to: {pool}",
+        '',
+        'Choose selected_emails from the verified addresses above and only '
+        'those. Return subject, body, and a rationale for the framing.',
+    ])
+
+
+@flow(log_prints=True)
+def drafting_agent(
+    research: dict,
+    verified_emails: list,
+    template_slug: str = 'default',
+) -> dict:
+    """Draft one outreach email for a researched business."""
+    pool = {e['email'] for e in verified_emails}
+    prompt = build_drafting_prompt(research, verified_emails, template_slug)
+
+    try:
+        draft = complete_structured(prompt, DraftingOutput,
+                                    system=SYSTEM_PROMPT)
+    except (LLMSchemaError, LLMTransportError) as exc:
+        print(f'drafting failed: {type(exc).__name__}: {exc}')
+        return {'status': 'rejected', 'reason': 'llm_schema_failure',
+                'draft': None}
+
+    # The model is told to choose from the pool. Telling it is not the same
+    # as it complying, and the cost of non-compliance is mail to an address
+    # that was never MX-validated.
+    unverified = [e for e in draft.selected_emails if e not in pool]
+    if unverified:
+        print(f'draft selected unverified addresses: {unverified}')
+        return {'status': 'rejected', 'reason': 'selected_unverified_email',
+                'draft': draft.model_dump(mode='json'),
+                'unverified': unverified}
+
+    print(f'drafted to {draft.selected_emails}: {draft.subject}')
+    return {'status': 'drafted', 'draft': draft.model_dump(mode='json')}
