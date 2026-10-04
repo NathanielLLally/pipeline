@@ -17,7 +17,6 @@ Must run on the same host as whatever triggers these: PREFECT_API_URL reads
 different servers.
 """
 
-import os
 import sys
 from pathlib import Path
 
@@ -30,17 +29,10 @@ from flow.agents.drafting import drafting_agent
 from flow.agents.selector import candidate_selector
 
 if __name__ == "__main__":
-    research_concurrency = int(
-        os.environ.get('RESEARCH_AGENT_CONCURRENCY', '2')
-    )
-
     serve(
         research_agent.to_deployment(
             name="research-agent",
             triggers=[],  # manually triggered or called as subflow
-            job_variables={
-                "concurrency_limit": research_concurrency
-            },
         ),
         drafting_agent.to_deployment(
             name="drafting-agent",

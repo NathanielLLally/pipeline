@@ -718,8 +718,9 @@ runnable, pausable and rate-limitable in the UI, which is the point of splitting
   address it has not itself verified and has its own verification, so the pool is an
   input and a prompt steer. Out-of-pool selections come back in `outside_known_pool`
   for observability.
-- **Research-agent concurrency is configurable** via `RESEARCH_AGENT_CONCURRENCY` env var
-  (default: 2). Set at deployment time in `flow/serve_agents.py` via `job_variables`.
+- **Concurrency limits** are set per-deployment when registered to a work pool
+  (via `PATCH /api/deployments/<id> {"global_concurrency_limit": N}`). The `serve()`
+  development mode does not support work-pool-specific configuration.
 - **Smoke test: 11 of 12 tests pass** (drafting pool tests 12/12, research tests 8/8).
   All pool-reporting behavior verified.
 - `tests/test_warmbly_integration.py` requires `PREFECT_API_URL` to be set and does not
