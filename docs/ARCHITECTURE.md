@@ -723,6 +723,7 @@ runnable, pausable and rate-limitable in the UI, which is the point of splitting
   development mode does not support work-pool-specific configuration.
 - Unit tests verified (20 total passing): research-agent tests 8/8, drafting-agent
   tests 12/12. All pool-reporting behavior verified.
+- `tests/test_warmbly_contacts.py` verified: 23/23 tests passing (verified 2026-10-04).
 - `tests/test_warmbly_integration.py` requires `PREFECT_API_URL` to be set and does not
   set it; without it Prefect starts an ephemeral server that returns 500 under this
   Python (the same breakage that makes `prefect_test_harness` unusable).
