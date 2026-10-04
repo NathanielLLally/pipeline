@@ -1,6 +1,11 @@
+import sys
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from flow.agents.research import (
     CONFIDENCE_THRESHOLD,
@@ -127,3 +132,92 @@ class TestLLMFailures:
 
         assert result['status'] == 'rejected'
         assert result['research']['confidence'] == 0.3
+
+
+class TestJSONArtifactInput:
+    """Test loading research_agent inputs from JSON files."""
+
+    def test_loads_from_json_input_file(self):
+        """Loads all params from a JSON artifact when json_input_file is provided"""
+        import json
+
+        with TemporaryDirectory() as tmpdir:
+            input_file = Path(tmpdir) / "biz-1-research-input.json"
+            input_data = {
+                "business": BUSINESS,
+                "verified_emails": EMAILS,
+                "crawl_excerpt": "training text",
+                "offer": "dog training leads",
+            }
+            input_file.write_text(json.dumps(input_data))
+
+            with patch('flow.agents.research.complete_structured',
+                       return_value=_out(confidence=0.9)), \
+                 patch('flow.agents.research.write_artifact'):
+                result = research_agent.fn(json_input_file=str(input_file))
+
+            assert result['status'] == 'researched'
+            assert result['passes'] == 1
+
+    def test_raises_when_json_input_file_missing(self):
+        """Raises FileNotFoundError if json_input_file does not exist"""
+        with pytest.raises(FileNotFoundError):
+            research_agent.fn(json_input_file="/nonexistent/file.json")
+
+    def test_writes_input_artifact(self):
+        """Writes input artifact when dict params are provided"""
+        with patch('flow.agents.research.complete_structured',
+                   return_value=_out(confidence=0.9)), \
+             patch('flow.agents.research.write_artifact') as mock_write:
+            research_agent.fn(BUSINESS, EMAILS, "text")
+
+            # Should be called twice: once for input, once for output
+            assert mock_write.call_count == 2
+            input_call = mock_write.call_args_list[0]
+            assert input_call.kwargs['suffix'] == 'input'
+
+    def test_writes_output_artifact(self):
+        """Writes output artifact after successful research"""
+        with patch('flow.agents.research.complete_structured',
+                   return_value=_out(confidence=0.9)), \
+             patch('flow.agents.research.write_artifact') as mock_write:
+            research_agent.fn(BUSINESS, EMAILS, "text")
+
+            output_call = mock_write.call_args_list[1]
+            assert output_call.kwargs['suffix'] == 'output'
+            data = output_call.args[0]
+            assert data['status'] == 'researched'
+
+    def test_requires_either_dict_params_or_json_file(self):
+        """Raises ValueError if neither dict params nor json_input_file provided"""
+        with pytest.raises(ValueError, match='Either json_input_file or'):
+            research_agent.fn()
+
+    def test_json_input_takes_precedence_over_dict_params(self):
+        """json_input_file overrides dict params when both provided"""
+        import json
+
+        with TemporaryDirectory() as tmpdir:
+            input_file = Path(tmpdir) / "test-input.json"
+            input_data = {
+                "business": {"id": "json-biz", "business_name": "JSON Business"},
+                "verified_emails": [{"email": "json@example.com", "verified_at": "2026-10-04T00:00:00Z", "source": "json"}],
+                "crawl_excerpt": "json text",
+                "offer": None,
+            }
+            input_file.write_text(json.dumps(input_data))
+
+            with patch('flow.agents.research.complete_structured',
+                       return_value=_out(confidence=0.9)), \
+                 patch('flow.agents.research.write_artifact') as mock_write:
+                # Pass both: json_input_file should win
+                research_agent.fn(
+                    business=BUSINESS,
+                    verified_emails=EMAILS,
+                    json_input_file=str(input_file)
+                )
+
+            # Check that the input artifact written was from the JSON file, not the dict params
+            input_call = mock_write.call_args_list[0]
+            data = input_call.args[0]
+            assert data['business']['id'] == 'json-biz'

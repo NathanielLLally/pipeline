@@ -5,6 +5,10 @@ Its contract: a business record plus a verified email pool in, a
 ResearchOutput or a rejection out. Pass 1, the confidence gate, deeper_fetch
 and pass 2 all live inside, because escalation is this node's own business and
 its caller should not have to drive it (spec section 2.3).
+
+Can be called with dict params or from a JSON input artifact:
+  research_agent(business=..., verified_emails=..., crawl_excerpt=...)
+  research_agent(json_input_file='biz-1-research-input.json')
 """
 
 import os
@@ -17,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from prefect import flow
 from prefect.variables import Variable
 
+from flow.artifacts import read_artifact, write_artifact
 from flow.fetch import fetch_html
 from flow.llm import LLMSchemaError, LLMTransportError, complete_structured
 from flow.offer import resolve_offer
@@ -84,12 +89,52 @@ def _set_research_output(result: dict, business_id: str) -> dict:
 
 @flow(log_prints=True)
 def research_agent(
-    business: dict,
-    verified_emails: list,
+    business: Optional[dict] = None,
+    verified_emails: Optional[list] = None,
     crawl_excerpt: str = '',
     offer: Optional[str] = None,
+    json_input_file: Optional[str] = None,
 ) -> dict:
-    """Research one business, escalating once if confidence is low."""
+    """
+    Research one business, escalating once if confidence is low.
+
+    Can be called with explicit dict params or from a JSON input artifact:
+      research_agent(business={...}, verified_emails=[...], ...)
+      research_agent(json_input_file='biz-1-research-input.json')
+
+    If json_input_file is provided, it takes precedence and dict params are ignored.
+    Writes output and input artifacts to the current directory, tagged by flow run tags.
+    """
+    # Load from JSON if provided
+    if json_input_file:
+        try:
+            input_data = read_artifact(json_input_file, suffix='input')
+            business = input_data.get('business')
+            verified_emails = input_data.get('verified_emails', [])
+            crawl_excerpt = input_data.get('crawl_excerpt', '')
+            offer = input_data.get('offer')
+        except Exception as e:
+            print(f'Failed to load input artifact: {e}')
+            raise
+    else:
+        # Validate that required params are present
+        if business is None or verified_emails is None:
+            raise ValueError(
+                'Either json_input_file or (business, verified_emails) required'
+            )
+        input_data = {
+            'business': business,
+            'verified_emails': verified_emails,
+            'crawl_excerpt': crawl_excerpt,
+            'offer': offer,
+        }
+
+    # Write input artifact
+    try:
+        write_artifact(input_data, suffix='input')
+    except Exception as e:
+        print(f'Warning: could not write input artifact: {e}')
+
     business_id = business.get('id', 'unknown')
     prompt = build_research_prompt(
         business, verified_emails, crawl_excerpt, offer=offer)
@@ -101,7 +146,9 @@ def research_agent(
         print(f'pass 1 failed: {type(exc).__name__}: {exc}')
         result = {'status': 'rejected', 'reason': 'llm_schema_failure',
                   'research': None, 'passes': 1}
-        return _set_research_output(result, business_id)
+        _set_research_output(result, business_id)
+        write_artifact(result, suffix='output')
+        return result
 
     print(f'pass 1 confidence {first.confidence} '
           f'(threshold {CONFIDENCE_THRESHOLD})')
@@ -109,14 +156,18 @@ def research_agent(
     if first.confidence >= CONFIDENCE_THRESHOLD:
         result = {'status': 'researched', 'research': first.model_dump(mode='json'),
                   'passes': 1}
-        return _set_research_output(result, business_id)
+        _set_research_output(result, business_id)
+        write_artifact(result, suffix='output')
+        return result
 
     if not first.next_url_to_check:
         print('below threshold and no next_url_to_check; nothing to escalate')
         result = {'status': 'rejected',
                   'reason': 'low_confidence_no_escalation_url',
                   'research': first.model_dump(mode='json'), 'passes': 1}
-        return _set_research_output(result, business_id)
+        _set_research_output(result, business_id)
+        write_artifact(result, suffix='output')
+        return result
 
     print(f'escalating: fetching {first.next_url_to_check}')
     extra = fetch_html(first.next_url_to_check)
@@ -132,16 +183,22 @@ def research_agent(
         print(f'pass 2 failed: {type(exc).__name__}: {exc}')
         result = {'status': 'rejected', 'reason': 'llm_schema_failure',
                   'research': first.model_dump(mode='json'), 'passes': 2}
-        return _set_research_output(result, business_id)
+        _set_research_output(result, business_id)
+        write_artifact(result, suffix='output')
+        return result
 
     print(f'pass 2 confidence {second.confidence}')
 
     if second.confidence >= CONFIDENCE_THRESHOLD:
         result = {'status': 'researched',
                   'research': second.model_dump(mode='json'), 'passes': 2}
-        return _set_research_output(result, business_id)
+        _set_research_output(result, business_id)
+        write_artifact(result, suffix='output')
+        return result
 
     result = {'status': 'rejected',
               'reason': 'low_confidence_after_two_passes',
               'research': second.model_dump(mode='json'), 'passes': 2}
-    return _set_research_output(result, business_id)
+    _set_research_output(result, business_id)
+    write_artifact(result, suffix='output')
+    return result

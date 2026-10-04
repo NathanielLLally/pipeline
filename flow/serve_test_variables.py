@@ -20,5 +20,7 @@ if __name__ == "__main__":
     deployment = test_prefect_variables.to_deployment(
         name="test-prefect-variables",
         description="Test Prefect variables: set/get, storage, overwrite, pretty-print",
+        # Optional: set job_variables for infrastructure config
+        # job_variables={},
     )
     serve(deployment)

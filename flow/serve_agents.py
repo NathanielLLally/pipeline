@@ -42,6 +42,7 @@ from prefect import serve
 from flow.agents.research import research_agent
 from flow.agents.drafting import drafting_agent
 from flow.agents.selector import candidate_selector
+from flow.agents.import_contacts import import_contacts
 from flow.run_agents import run_agents
 
 if __name__ == "__main__":
@@ -52,6 +53,10 @@ if __name__ == "__main__":
         ),
         drafting_agent.to_deployment(
             name="drafting-agent",
+            triggers=[],  # manually triggered or called as subflow
+        ),
+        import_contacts.to_deployment(
+            name="import-contacts",
             triggers=[],  # manually triggered or called as subflow
         ),
         candidate_selector.to_deployment(name="candidate-selector"),

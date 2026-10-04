@@ -1,6 +1,12 @@
+import json
+import sys
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from flow.agents.drafting import build_drafting_prompt, drafting_agent
 from flow.schemas import DraftingOutput
@@ -152,3 +158,88 @@ class TestOfferContext:
         prompt = build_drafting_prompt(RESEARCH, EMAILS)
 
         assert DEFAULT_OFFER in prompt
+
+
+class TestJSONArtifactInput:
+    """Test loading drafting_agent inputs from JSON files."""
+
+    def test_loads_from_json_input_file(self):
+        """Loads all params from a JSON artifact when json_input_file is provided"""
+        with TemporaryDirectory() as tmpdir:
+            input_file = Path(tmpdir) / "biz-1-drafting-input.json"
+            input_data = {
+                "research": RESEARCH,
+                "verified_emails": EMAILS,
+                "template_slug": "default",
+                "offer": None,
+            }
+            input_file.write_text(json.dumps(input_data))
+
+            with patch('flow.agents.drafting.complete_structured',
+                       return_value=_draft()), \
+                 patch('flow.agents.drafting.write_artifact'):
+                result = drafting_agent.fn(json_input_file=str(input_file))
+
+            assert result['status'] == 'drafted'
+
+    def test_raises_when_json_input_file_missing(self):
+        """Raises FileNotFoundError if json_input_file does not exist"""
+        with pytest.raises(FileNotFoundError):
+            drafting_agent.fn(json_input_file="/nonexistent/file.json")
+
+    def test_writes_input_artifact(self):
+        """Writes input artifact when dict params are provided"""
+        with patch('flow.agents.drafting.complete_structured',
+                   return_value=_draft()), \
+             patch('flow.agents.drafting.write_artifact') as mock_write:
+            drafting_agent.fn(RESEARCH, EMAILS)
+
+            # Should be called twice: once for input, once for output
+            assert mock_write.call_count == 2
+            input_call = mock_write.call_args_list[0]
+            assert input_call.kwargs['suffix'] == 'input'
+
+    def test_writes_output_artifact(self):
+        """Writes output artifact after successful drafting"""
+        with patch('flow.agents.drafting.complete_structured',
+                   return_value=_draft()), \
+             patch('flow.agents.drafting.write_artifact') as mock_write:
+            drafting_agent.fn(RESEARCH, EMAILS)
+
+            output_call = mock_write.call_args_list[1]
+            assert output_call.kwargs['suffix'] == 'output'
+            data = output_call.args[0]
+            assert data['status'] == 'drafted'
+
+    def test_requires_either_dict_params_or_json_file(self):
+        """Raises ValueError if neither dict params nor json_input_file provided"""
+        with pytest.raises(ValueError, match='Either json_input_file or'):
+            drafting_agent.fn()
+
+    def test_json_input_takes_precedence_over_dict_params(self):
+        """json_input_file overrides dict params when both provided"""
+        with TemporaryDirectory() as tmpdir:
+            input_file = Path(tmpdir) / "test-input.json"
+            json_research = dict(RESEARCH, business_id='json-biz')
+            input_data = {
+                "research": json_research,
+                "verified_emails": EMAILS,
+                "template_slug": "json-template",
+                "offer": "json offer",
+            }
+            input_file.write_text(json.dumps(input_data))
+
+            with patch('flow.agents.drafting.complete_structured',
+                       return_value=_draft()), \
+                 patch('flow.agents.drafting.write_artifact') as mock_write:
+                # Pass both: json_input_file should win
+                drafting_agent.fn(
+                    research=RESEARCH,
+                    verified_emails=EMAILS,
+                    json_input_file=str(input_file)
+                )
+
+            # Check that the input artifact written was from the JSON file
+            input_call = mock_write.call_args_list[0]
+            data = input_call.args[0]
+            assert data['template_slug'] == 'json-template'

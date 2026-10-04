@@ -8,18 +8,22 @@ suggestion (spec section 2.1), and it is NOT bound to the verified pool
 either: Warmbly refuses to send to anything it has not itself verified, so
 enforcing that here would only discard usable drafts. Out-of-pool selections
 are reported in `outside_known_pool` for observability.
+
+Can be called with dict params or from a JSON input artifact:
+  drafting_agent(research={...}, verified_emails=[...], ...)
+  drafting_agent(json_input_file='biz-1-drafting-input.json')
 """
 
 import sys
 from pathlib import Path
+from typing import Any, Dict, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
-
-from typing import Any, Dict, Optional
 
 from prefect import flow
 from prefect.variables import Variable
 
+from flow.artifacts import read_artifact, write_artifact
 from flow.llm import LLMSchemaError, LLMTransportError, complete_structured
 from flow.offer import OUTREACH_GOAL, resolve_offer
 from flow.schemas import DraftingOutput
@@ -74,12 +78,52 @@ def _set_drafting_output(result: dict, business_id: str) -> dict:
 
 @flow(log_prints=True)
 def drafting_agent(
-    research: dict,
-    verified_emails: list,
+    research: Optional[dict] = None,
+    verified_emails: Optional[list] = None,
     template_slug: str = 'default',
     offer: Optional[str] = None,
+    json_input_file: Optional[str] = None,
 ) -> dict:
-    """Draft one outreach email for a researched business."""
+    """
+    Draft one outreach email for a researched business.
+
+    Can be called with explicit dict params or from a JSON input artifact:
+      drafting_agent(research={...}, verified_emails=[...], ...)
+      drafting_agent(json_input_file='biz-1-drafting-input.json')
+
+    If json_input_file is provided, it takes precedence and dict params are ignored.
+    Writes output and input artifacts to the current directory, tagged by flow run tags.
+    """
+    # Load from JSON if provided
+    if json_input_file:
+        try:
+            input_data = read_artifact(json_input_file, suffix='input')
+            research = input_data.get('research')
+            verified_emails = input_data.get('verified_emails', [])
+            template_slug = input_data.get('template_slug', 'default')
+            offer = input_data.get('offer')
+        except Exception as e:
+            print(f'Failed to load input artifact: {e}')
+            raise
+    else:
+        # Validate that required params are present
+        if research is None or verified_emails is None:
+            raise ValueError(
+                'Either json_input_file or (research, verified_emails) required'
+            )
+        input_data = {
+            'research': research,
+            'verified_emails': verified_emails,
+            'template_slug': template_slug,
+            'offer': offer,
+        }
+
+    # Write input artifact
+    try:
+        write_artifact(input_data, suffix='input')
+    except Exception as e:
+        print(f'Warning: could not write input artifact: {e}')
+
     business_id = research.get('business_id', 'unknown')
     pool = {e['email'] for e in verified_emails}
     prompt = build_drafting_prompt(
@@ -92,7 +136,9 @@ def drafting_agent(
         print(f'drafting failed: {type(exc).__name__}: {exc}')
         result = {'status': 'rejected', 'reason': 'llm_schema_failure',
                   'draft': None}
-        return _set_drafting_output(result, business_id)
+        _set_drafting_output(result, business_id)
+        write_artifact(result, suffix='output')
+        return result
 
     # Warmbly will not send to an address it has not itself verified, and it
     # has its own verification. So the pool is an input and a prompt steer,
@@ -106,4 +152,6 @@ def drafting_agent(
     print(f'drafted to {draft.selected_emails}: {draft.subject}')
     result = {'status': 'drafted', 'draft': draft.model_dump(mode='json'),
               'outside_known_pool': outside_known_pool}
-    return _set_drafting_output(result, business_id)
+    _set_drafting_output(result, business_id)
+    write_artifact(result, suffix='output')
+    return result
