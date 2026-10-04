@@ -394,3 +394,140 @@ class TestSchemaValidation:
         with pytest.raises(ValidationError, match='unfilled placeholder'):
             DraftingOutput.model_validate(retrieved['draft'])
 
+
+class TestFlowVariablePersistence:
+    """
+    Test that flows store and retrieve variables correctly.
+
+    The research_agent and drafting_agent flows are @flow decorated and store
+    their output as Prefect variables. These tests verify the storage pattern
+    by calling the flow implementation directly (bypassing async ceremony) and
+    verifying that the variable gets stored with the right key.
+    """
+
+    def test_research_agent_flow_persists_output_variable(self):
+        """
+        The research_agent stores its result as a variable keyed by business_id.
+
+        The _set_research_output helper, called by every return path in the
+        flow, stores the output and returns it unchanged. Verify the variable
+        is keyed, persistent, and re-validates as the schema.
+        """
+        from flow.agents.research import _set_research_output
+
+        business_id = 'biz_research_flow_test'
+        result = {
+            'status': 'researched',
+            'research': RESEARCH_OUTPUT,
+            'passes': 1,
+        }
+
+        # Call the storage mechanism
+        returned = _set_research_output(result, business_id)
+
+        # Verify the original result was returned unchanged
+        assert returned == result
+        assert returned['research']['confidence'] == 0.92
+
+        # Verify the variable was stored with the right key
+        var_name = f"research_agent_output_{business_id}"
+        stored = Variable.get(var_name)
+        assert stored is not None
+        assert stored['status'] == 'researched'
+
+        # Verify the stored data re-validates as ResearchOutput
+        research_output = ResearchOutput.model_validate(
+            stored['research']
+        )
+        assert research_output.business_name == 'Happy Tails Dog Training'
+        assert research_output.confidence == 0.92
+
+    def test_drafting_agent_flow_persists_output_variable(self):
+        """
+        The drafting_agent stores its result as a variable keyed by business_id.
+
+        The _set_drafting_output helper, called by every return path, stores
+        the output and returns it unchanged. Verify the variable is keyed,
+        persistent, and re-validates as the schema.
+        """
+        from flow.agents.drafting import _set_drafting_output
+
+        business_id = 'biz_draft_flow_test'
+        result = {
+            'status': 'drafted',
+            'draft': DRAFT_OUTPUT,
+            'outside_known_pool': [],
+        }
+
+        # Call the storage mechanism
+        returned = _set_drafting_output(result, business_id)
+
+        # Verify the original result was returned unchanged
+        assert returned == result
+        assert returned['draft']['subject'] == 'Ready-to-train dog leads for Happy Tails'
+
+        # Verify the variable was stored with the right key
+        var_name = f"drafting_agent_output_{business_id}"
+        stored = Variable.get(var_name)
+        assert stored is not None
+        assert stored['status'] == 'drafted'
+
+        # Verify the stored data re-validates as DraftingOutput
+        draft_output = DraftingOutput.model_validate(stored['draft'])
+        assert len(draft_output.selected_emails) == 2
+        assert draft_output.subject == 'Ready-to-train dog leads for Happy Tails'
+
+    def test_variable_overwrite_on_flow_rerun(self):
+        """
+        Variables are overwritten by subsequent flow runs.
+
+        Each call to _set_research_output passes overwrite=True, so a second
+        invocation with the same business_id replaces the first result.
+        """
+        from flow.agents.research import _set_research_output
+
+        business_id = 'biz_overwrite_test'
+
+        # First run
+        result_1 = {
+            'status': 'researched',
+            'research': {
+                **RESEARCH_OUTPUT,
+                'personalization_hook': 'first run hook',
+                'confidence': 0.8,
+            },
+            'passes': 1,
+        }
+
+        _set_research_output(result_1, business_id)
+
+        var_name = f"research_agent_output_{business_id}"
+        stored_1 = Variable.get(var_name)
+        assert stored_1['research']['personalization_hook'] == 'first run hook'
+        assert stored_1['research']['confidence'] == 0.8
+
+        # Second run with updated result
+        result_2 = {
+            'status': 'researched',
+            'research': {
+                **RESEARCH_OUTPUT,
+                'personalization_hook': 'second run hook with more depth',
+                'confidence': 0.92,
+                'pain_signals': [
+                    'no booking system',
+                    'manual inquiry process',
+                ],
+            },
+            'passes': 2,
+        }
+
+        _set_research_output(result_2, business_id)
+
+        # Verify the variable was overwritten
+        stored_2 = Variable.get(var_name)
+        assert stored_2['research']['personalization_hook'] == \
+            'second run hook with more depth'
+        assert stored_2['research']['confidence'] == 0.92
+        assert len(stored_2['research']['pain_signals']) == 2
+        assert stored_2['passes'] == 2
+

@@ -62,7 +62,7 @@ def build_drafting_prompt(
 
 def _set_drafting_output(result: dict, business_id: str) -> dict:
     """Store drafting output as a Prefect variable and return it."""
-    var_name = f'drafting-agent-output-{business_id}'
+    var_name = f'drafting_agent_output_{business_id}'
     try:
         Variable.set(var_name, result, overwrite=True)
     except Exception as e:
