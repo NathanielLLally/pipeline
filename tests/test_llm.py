@@ -219,7 +219,7 @@ class TestProxyAuthHeader:
             complete_structured("describe", ResearchOutput)
 
         headers = post.call_args.kwargs['headers']
-        assert 'sk-proxy' not in headers.get('Authorization', '')
+        assert 'Authorization' not in headers
 
     def test_header_name_is_configurable(self, monkeypatch):
         monkeypatch.setenv('LITELLM_API_KEY', 'sk-proxy')
@@ -292,96 +292,3 @@ class TestRequestDebugLogging:
             complete_structured("describe", ResearchOutput)
 
         assert 'LITELLM_API_KEY' in capsys.readouterr().out
-
-
-class TestOAuthCredential:
-    """LiteLLM needs two credentials, carrying different things.
-
-    x-litellm-api-key authenticates us TO the proxy; Authorization carries the
-    Claude OAuth token the proxy forwards upstream. Verified live: both
-    together return 200, the OAuth token alone is rejected by the proxy, and
-    the proxy key alone yields "Missing Anthropic API Key".
-
-    The token is read from the credentials file at request time rather than
-    cached, so a refresh performed by Claude Code is picked up without
-    restarting a long-lived serving process.
-    """
-
-    def _creds(self, tmp_path, token='oauth-token-value', expires_in=3600):
-        import time
-        path = tmp_path / '.credentials.json'
-        path.write_text(json.dumps({'claudeAiOauth': {
-            'accessToken': token,
-            'expiresAt': int((time.time() + expires_in) * 1000)}}))
-        return path
-
-    def test_reads_the_access_token(self, tmp_path, monkeypatch):
-        from flow.llm import oauth_access_token
-
-        monkeypatch.setenv('CLAUDE_OAUTH_CREDENTIALS',
-                           str(self._creds(tmp_path)))
-
-        assert oauth_access_token() == 'oauth-token-value'
-
-    def test_missing_file_is_not_an_error(self, tmp_path, monkeypatch):
-        from flow.llm import oauth_access_token
-
-        monkeypatch.setenv('CLAUDE_OAUTH_CREDENTIALS',
-                           str(tmp_path / 'nope.json'))
-
-        assert oauth_access_token() is None
-
-    def test_malformed_file_is_not_an_error(self, tmp_path, monkeypatch):
-        from flow.llm import oauth_access_token
-
-        bad = tmp_path / 'bad.json'
-        bad.write_text('not json at all')
-        monkeypatch.setenv('CLAUDE_OAUTH_CREDENTIALS', str(bad))
-
-        assert oauth_access_token() is None
-
-    def test_sends_the_token_as_authorization(self, tmp_path, monkeypatch):
-        monkeypatch.setenv('CLAUDE_OAUTH_CREDENTIALS',
-                           str(self._creds(tmp_path)))
-        monkeypatch.setenv('LITELLM_API_KEY', 'sk-proxy')
-
-        with patch('flow.llm.httpx.post', return_value=_reply(json.dumps(VALID))) as post:
-            complete_structured("describe", ResearchOutput)
-
-        headers = post.call_args.kwargs['headers']
-        assert headers['Authorization'] == 'Bearer oauth-token-value'
-        assert headers['x-litellm-api-key'] == 'Bearer sk-proxy'
-
-    def test_no_authorization_when_there_is_no_token(self, tmp_path, monkeypatch):
-        monkeypatch.setenv('CLAUDE_OAUTH_CREDENTIALS',
-                           str(tmp_path / 'nope.json'))
-        monkeypatch.setenv('LITELLM_API_KEY', 'sk-proxy')
-
-        with patch('flow.llm.httpx.post', return_value=_reply(json.dumps(VALID))) as post:
-            complete_structured("describe", ResearchOutput)
-
-        assert 'Authorization' not in post.call_args.kwargs['headers']
-
-    def test_expired_token_is_reported(self, tmp_path, monkeypatch, capsys):
-        """An expired token 401s; say so rather than leaving a bare 401."""
-        monkeypatch.setenv('CLAUDE_OAUTH_CREDENTIALS',
-                           str(self._creds(tmp_path, expires_in=-60)))
-        monkeypatch.setenv('LITELLM_API_KEY', 'sk-proxy')
-
-        with patch('flow.llm.httpx.post', return_value=_reply(json.dumps(VALID))):
-            complete_structured("describe", ResearchOutput)
-
-        assert 'expired' in capsys.readouterr().out.lower()
-
-    def test_debug_never_prints_the_token(self, tmp_path, monkeypatch, capsys):
-        monkeypatch.setenv('CLAUDE_OAUTH_CREDENTIALS',
-                           str(self._creds(tmp_path, token='x' * 108)))
-        monkeypatch.setenv('LITELLM_API_KEY', 'sk-proxy')
-        monkeypatch.setenv('LLM_DEBUG', '1')
-
-        with patch('flow.llm.httpx.post', return_value=_reply(json.dumps(VALID))):
-            complete_structured("describe", ResearchOutput)
-
-        out = capsys.readouterr().out
-        assert 'x' * 108 not in out
-        assert 'Authorization' in out
