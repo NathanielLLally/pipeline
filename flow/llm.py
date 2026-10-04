@@ -21,6 +21,15 @@ PROXY_URL = os.environ.get('LITELLM_BASE_URL', 'http://127.0.0.1:4000')
 MODEL = os.environ.get('LLM_MODEL', 'gpt-4o-mini')
 REQUEST_TIMEOUT = float(os.environ.get('LLM_REQUEST_TIMEOUT', '120'))
 
+# The proxy key goes in its own header, not Authorization. LiteLLM reserves
+# Authorization for the UPSTREAM provider credential and passes it through, so
+# putting the proxy key there makes it offer our proxy key to Anthropic as an
+# Anthropic key -- which fails with "Missing Anthropic API Key". This is the
+# same header Claude Code is configured with via ANTHROPIC_CUSTOM_HEADERS.
+LITELLM_AUTH_HEADER = os.environ.get(
+    'LITELLM_AUTH_HEADER', 'x-litellm-api-key'
+)
+
 
 class LLMTransportError(RuntimeError):
     """The proxy could not be reached, refused us, or timed out."""
@@ -63,7 +72,9 @@ def _request(messages: list, schema_model: Type[BaseModel]) -> str:
     headers = {'Content-Type': 'application/json'}
     key = os.environ.get('LITELLM_API_KEY')
     if key:
-        headers['Authorization'] = f'Bearer {key}'
+        headers[os.environ.get('LITELLM_AUTH_HEADER', LITELLM_AUTH_HEADER)] = (
+            f'Bearer {key}'
+        )
 
     body = {
         'model': MODEL,

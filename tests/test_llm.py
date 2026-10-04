@@ -39,11 +39,13 @@ class TestRequestShape:
         assert 'properties' in body['response_format']['json_schema']['schema']
 
     def test_sends_the_api_key(self, monkeypatch):
+        """In x-litellm-api-key; see TestProxyAuthHeader for why not Authorization."""
         monkeypatch.setenv('LITELLM_API_KEY', 'sk-test')
         with patch('flow.llm.httpx.post', return_value=_reply(json.dumps(VALID))) as post:
             complete_structured("describe", ResearchOutput)
 
-        assert post.call_args.kwargs['headers']['Authorization'] == 'Bearer sk-test'
+        headers = post.call_args.kwargs['headers']
+        assert headers['x-litellm-api-key'] == 'Bearer sk-test'
 
     def test_returns_a_validated_model(self):
         with patch('flow.llm.httpx.post', return_value=_reply(json.dumps(VALID))):
@@ -185,3 +187,43 @@ class TestStrictSchema:
         sent = post.call_args.kwargs['json']['response_format']['json_schema']['schema']
         assert sent == strict_json_schema(ResearchOutput)
         assert sent['additionalProperties'] is False
+
+
+class TestProxyAuthHeader:
+    """The proxy key goes in x-litellm-api-key, not Authorization.
+
+    Authorization is reserved for the upstream provider credential, which
+    LiteLLM passes through. Sending the proxy key there makes LiteLLM offer it
+    to Anthropic as an Anthropic key and the call 401s with 'Missing Anthropic
+    API Key' -- verified against the live proxy.
+    """
+
+    def test_key_goes_in_the_litellm_header(self, monkeypatch):
+        monkeypatch.setenv('LITELLM_API_KEY', 'sk-proxy')
+        with patch('flow.llm.httpx.post', return_value=_reply(json.dumps(VALID))) as post:
+            complete_structured("describe", ResearchOutput)
+
+        headers = post.call_args.kwargs['headers']
+        assert headers['x-litellm-api-key'] == 'Bearer sk-proxy'
+
+    def test_authorization_is_not_sent(self, monkeypatch):
+        monkeypatch.setenv('LITELLM_API_KEY', 'sk-proxy')
+        with patch('flow.llm.httpx.post', return_value=_reply(json.dumps(VALID))) as post:
+            complete_structured("describe", ResearchOutput)
+
+        assert 'Authorization' not in post.call_args.kwargs['headers']
+
+    def test_header_name_is_configurable(self, monkeypatch):
+        monkeypatch.setenv('LITELLM_API_KEY', 'sk-proxy')
+        monkeypatch.setenv('LITELLM_AUTH_HEADER', 'x-custom-key')
+        with patch('flow.llm.httpx.post', return_value=_reply(json.dumps(VALID))) as post:
+            complete_structured("describe", ResearchOutput)
+
+        assert post.call_args.kwargs['headers']['x-custom-key'] == 'Bearer sk-proxy'
+
+    def test_no_auth_header_when_no_key_configured(self, monkeypatch):
+        monkeypatch.delenv('LITELLM_API_KEY', raising=False)
+        with patch('flow.llm.httpx.post', return_value=_reply(json.dumps(VALID))) as post:
+            complete_structured("describe", ResearchOutput)
+
+        assert 'x-litellm-api-key' not in post.call_args.kwargs['headers']
