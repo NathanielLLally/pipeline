@@ -721,8 +721,8 @@ runnable, pausable and rate-limitable in the UI, which is the point of splitting
 - **Concurrency limits** are set per-deployment when registered to a work pool
   (via `PATCH /api/deployments/<id> {"global_concurrency_limit": N}`). The `serve()`
   development mode does not support work-pool-specific configuration.
-- **Smoke test: 11 of 12 tests pass** (drafting pool tests 12/12, research tests 8/8).
-  All pool-reporting behavior verified.
+- Unit tests verified (20 total passing): research-agent tests 8/8, drafting-agent
+  tests 12/12. All pool-reporting behavior verified.
 - `tests/test_warmbly_integration.py` requires `PREFECT_API_URL` to be set and does not
   set it; without it Prefect starts an ephemeral server that returns 500 under this
   Python (the same breakage that makes `prefect_test_harness` unusable).
