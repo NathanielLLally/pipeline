@@ -32,6 +32,11 @@ class VerifiedEmail(BaseModel):
 
 class ResearchOutput(BaseModel):
     business_name: str
+    # The person to write to, extracted from the crawled pages. Optional
+    # because plenty of sites never name anyone, and an invented name is
+    # worse than none -- hence the placeholder validator below.
+    contact_name: Optional[str] = None
+    contact_title: Optional[str] = None
     pain_signals: List[str]
     personalization_hook: str
     inferred_tone: Literal['clinical', 'warm', 'premium', 'casual', 'sparse']
@@ -39,6 +44,20 @@ class ResearchOutput(BaseModel):
     evidence: List[str]
     suggested_email: str
     next_url_to_check: Optional[str] = None
+
+    @field_validator('contact_name', 'contact_title')
+    @classmethod
+    def no_invented_person(cls, value: Optional[str]) -> Optional[str]:
+        """Reject '[Owner Name]' and friends; no name beats a fake one."""
+        if value is None:
+            return value
+        found = find_placeholder(value)
+        if found:
+            raise ValueError(
+                f'invented person {found!r}: leave contact_name null unless '
+                'the page actually names someone'
+            )
+        return value
 
 
 # A placeholder is a token the model left for a human to fill: [Your Name],

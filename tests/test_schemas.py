@@ -89,3 +89,31 @@ class TestNoPlaceholders:
         body = ('Noticed your site [the services page especially] leans on '
                 'phone bookings.')
         assert DraftingOutput(**self._draft(body=body)).body == body
+
+
+class TestResearchExtractsPeople:
+    """The research node extracts the person to write to, not just the hook.
+
+    A contact needs a name, and the crawled pages are where it is stated
+    ("you'll work directly with an experienced trainer", an about page, a
+    signature). leads.businesses has a decision_maker_name from an earlier
+    enrichment pass, but research reading the live page is the better source.
+    """
+
+    def test_contact_name_is_optional(self):
+        out = ResearchOutput(**_research())
+
+        assert out.contact_name is None
+        assert out.contact_title is None
+
+    def test_carries_an_extracted_person(self):
+        out = ResearchOutput(**_research(contact_name='Wyatt Smith',
+                                         contact_title='Owner'))
+
+        assert out.contact_name == 'Wyatt Smith'
+        assert out.contact_title == 'Owner'
+
+    def test_rejects_a_placeholder_person(self):
+        """An invented '[Owner Name]' is worse than no name at all."""
+        with pytest.raises(ValidationError):
+            ResearchOutput(**_research(contact_name='[Owner Name]'))

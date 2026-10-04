@@ -58,6 +58,9 @@ def build_research_prompt(
 
     parts += [
         '',
+        'Extract contact_name and contact_title if the pages actually name '
+        'a person to write to (an owner, founder or trainer); leave them null '
+        'rather than inventing one. '
         'Return pain_signals, a personalization_hook, inferred_tone, a '
         'confidence between 0 and 1, evidence quoted from the text above, and '
         'suggested_email chosen from the verified pool. If confidence is low '

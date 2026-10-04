@@ -1,0 +1,806 @@
+/home/nathaniel/leads/.venv/lib/python3.15/site-packages/pydantic_settings/main.py:480: UserWarning: Config key `pyproject_toml_table_header` is set in model_config but will be ignored because no PyprojectTomlConfigSettingsSource source is configured. To use this config key, add a PyprojectTomlConfigSettingsSource source to the settings sources via the settings_customise_sources hook.
+  cls._settings_warn_unused_config_keys(sources, cls.model_config)
+/home/nathaniel/leads/.venv/lib/python3.15/site-packages/pydantic_settings/main.py:480: UserWarning: Config key `toml_file` is set in model_config but will be ignored because no TomlConfigSettingsSource source is configured. To use this config key, add a TomlConfigSettingsSource source to the settings sources via the settings_customise_sources hook.
+  cls._settings_warn_unused_config_keys(sources, cls.model_config)
+21:30:09.813 | DEBUG   | httpcore.connection - connect_tcp.started host='127.0.0.1' port=4200 local_address=None timeout=60.0 socket_options=None
+21:30:09.815 | DEBUG   | httpcore.connection - connect_tcp.complete return_value=<httpcore._backends.anyio.AnyIOStream object at 0x7f7dd82c3230>
+21:30:09.816 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'GET']>
+21:30:09.816 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:30:09.817 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'GET']>
+21:30:09.817 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:30:09.817 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'GET']>
+21:30:09.824 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 200, b'OK', [(b'date', b'Sun, 04 Oct 2026 01:30:09 GMT'), (b'server', b'uvicorn'), (b'content-length', b'674'), (b'content-type', b'application/json'), (b'vary', b'Accept-Encoding, Origin'), (b'content-encoding', b'gzip')])
+21:30:09.825 | INFO    | httpx - HTTP Request: GET http://127.0.0.1:4200/api/deployments/name/run-agents/run-agents "HTTP/1.1 200 OK"
+21:30:09.825 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'GET']>
+21:30:09.826 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:30:09.826 | DEBUG   | httpcore.http11 - response_closed.started
+21:30:09.827 | DEBUG   | httpcore.http11 - response_closed.complete
+21:30:09.839 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'GET']>
+21:30:09.840 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:30:09.840 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'GET']>
+21:30:09.840 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:30:09.841 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'GET']>
+21:30:09.843 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 422, b'Unprocessable Entity', [(b'date', b'Sun, 04 Oct 2026 01:30:09 GMT'), (b'server', b'uvicorn'), (b'content-length', b'41'), (b'content-type', b'application/json'), (b'vary', b'Origin')])
+21:30:09.843 | INFO    | httpx - HTTP Request: GET http://127.0.0.1:4200/api/csrf-token?client=3b65a1d9-889c-41ec-8e4d-9664473015a4 "HTTP/1.1 422 Unprocessable Entity"
+21:30:09.843 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'GET']>
+21:30:09.844 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:30:09.844 | DEBUG   | httpcore.http11 - response_closed.started
+21:30:09.844 | DEBUG   | httpcore.http11 - response_closed.complete
+/home/nathaniel/leads/.venv/lib/python3.15/site-packages/prefect/client/base.py:239: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.
+  await self._add_csrf_headers(request=request)
+21:30:09.845 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'PATCH']>
+21:30:09.846 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:30:09.846 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'PATCH']>
+21:30:09.847 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:30:09.847 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'PATCH']>
+21:30:09.870 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 204, b'No Content', [(b'date', b'Sun, 04 Oct 2026 01:30:09 GMT'), (b'server', b'uvicorn'), (b'vary', b'Origin')])
+21:30:09.871 | INFO    | httpx - HTTP Request: PATCH http://127.0.0.1:4200/api/deployments/79716825-1c56-49fd-838a-b6d97053ebb0 "HTTP/1.1 204 No Content"
+21:30:09.871 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'PATCH']>
+21:30:09.871 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:30:09.871 | DEBUG   | httpcore.http11 - response_closed.started
+21:30:09.871 | DEBUG   | httpcore.http11 - response_closed.complete
+21:30:09.872 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'DELETE']>
+21:30:09.872 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:30:09.872 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'DELETE']>
+21:30:09.873 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:30:09.873 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'DELETE']>
+21:30:09.879 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 202, b'Accepted', [(b'date', b'Sun, 04 Oct 2026 01:30:09 GMT'), (b'server', b'uvicorn'), (b'content-length', b'4'), (b'content-type', b'application/json'), (b'vary', b'Origin')])
+21:30:09.880 | INFO    | httpx - HTTP Request: DELETE http://127.0.0.1:4200/api/automations/owned-by/prefect.deployment.79716825-1c56-49fd-838a-b6d97053ebb0 "HTTP/1.1 202 Accepted"
+21:30:09.881 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'DELETE']>
+21:30:09.881 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:30:09.881 | DEBUG   | httpcore.http11 - response_closed.started
+21:30:09.882 | DEBUG   | httpcore.http11 - response_closed.complete
+21:30:09.882 | DEBUG   | httpcore.connection - close.started
+21:30:09.883 | DEBUG   | httpcore.connection - close.complete
+21:30:09.889 | DEBUG   | httpcore.connection - connect_tcp.started host='127.0.0.1' port=4200 local_address=None timeout=60.0 socket_options=None
+21:30:09.891 | DEBUG   | httpcore.connection - connect_tcp.complete return_value=<httpcore._backends.anyio.AnyIOStream object at 0x7f7dd79dce10>
+21:30:09.891 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'GET']>
+21:30:09.892 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:30:09.892 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'GET']>
+21:30:09.892 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:30:09.892 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'GET']>
+21:30:09.899 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 200, b'OK', [(b'date', b'Sun, 04 Oct 2026 01:30:09 GMT'), (b'server', b'uvicorn'), (b'content-length', b'627'), (b'content-type', b'application/json'), (b'vary', b'Accept-Encoding, Origin'), (b'content-encoding', b'gzip')])
+21:30:09.899 | INFO    | httpx - HTTP Request: GET http://127.0.0.1:4200/api/deployments/name/candidate-selector/candidate-selector "HTTP/1.1 200 OK"
+21:30:09.900 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'GET']>
+21:30:09.900 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:30:09.901 | DEBUG   | httpcore.http11 - response_closed.started
+21:30:09.901 | DEBUG   | httpcore.http11 - response_closed.complete
+21:30:09.902 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'GET']>
+21:30:09.903 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:30:09.903 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'GET']>
+21:30:09.904 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:30:09.904 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'GET']>
+21:30:09.906 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 422, b'Unprocessable Entity', [(b'date', b'Sun, 04 Oct 2026 01:30:09 GMT'), (b'server', b'uvicorn'), (b'content-length', b'41'), (b'content-type', b'application/json'), (b'vary', b'Origin')])
+21:30:09.906 | INFO    | httpx - HTTP Request: GET http://127.0.0.1:4200/api/csrf-token?client=eb81ef1a-e08a-4e8e-b748-c279049697e1 "HTTP/1.1 422 Unprocessable Entity"
+21:30:09.907 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'GET']>
+21:30:09.907 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:30:09.907 | DEBUG   | httpcore.http11 - response_closed.started
+21:30:09.908 | DEBUG   | httpcore.http11 - response_closed.complete
+21:30:09.908 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'PATCH']>
+21:30:09.909 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:30:09.909 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'PATCH']>
+21:30:09.910 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:30:09.910 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'PATCH']>
+21:30:09.932 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 204, b'No Content', [(b'date', b'Sun, 04 Oct 2026 01:30:09 GMT'), (b'server', b'uvicorn'), (b'vary', b'Origin')])
+21:30:09.933 | INFO    | httpx - HTTP Request: PATCH http://127.0.0.1:4200/api/deployments/f85c7286-7dfc-4dd4-9951-ecad449e97b8 "HTTP/1.1 204 No Content"
+21:30:09.933 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'PATCH']>
+21:30:09.934 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:30:09.934 | DEBUG   | httpcore.http11 - response_closed.started
+21:30:09.934 | DEBUG   | httpcore.http11 - response_closed.complete
+21:30:09.935 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'DELETE']>
+21:30:09.936 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:30:09.936 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'DELETE']>
+21:30:09.936 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:30:09.936 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'DELETE']>
+21:30:09.942 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 202, b'Accepted', [(b'date', b'Sun, 04 Oct 2026 01:30:09 GMT'), (b'server', b'uvicorn'), (b'content-length', b'4'), (b'content-type', b'application/json'), (b'vary', b'Origin')])
+21:30:09.943 | INFO    | httpx - HTTP Request: DELETE http://127.0.0.1:4200/api/automations/owned-by/prefect.deployment.f85c7286-7dfc-4dd4-9951-ecad449e97b8 "HTTP/1.1 202 Accepted"
+21:30:09.944 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'DELETE']>
+21:30:09.944 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:30:09.945 | DEBUG   | httpcore.http11 - response_closed.started
+21:30:09.945 | DEBUG   | httpcore.http11 - response_closed.complete
+21:30:09.945 | DEBUG   | httpcore.connection - close.started
+21:30:09.946 | DEBUG   | httpcore.connection - close.complete
+Your deployments are being served and polling for scheduled runs!
+
+               Deployments               
+┌───────────────────────────────────────┐
+│ run-agents/run-agents                 │
+│ candidate-selector/candidate-selector │
+└───────────────────────────────────────┘
+
+To trigger any of these deployments, use the following command:
+
+        $ prefect deployment run [DEPLOYMENT_NAME]
+
+You can also trigger your deployments via the Prefect UI: http://127.0.0.1:4200/deployments
+
+21:30:10.063 | DEBUG   | httpcore.connection - connect_tcp.started host='127.0.0.1' port=4200 local_address=None timeout=60.0 socket_options=None
+21:30:10.064 | DEBUG   | httpcore.connection - connect_tcp.started host='127.0.0.1' port=4200 local_address=None timeout=60.0 socket_options=None
+21:30:10.065 | DEBUG   | httpcore.connection - connect_tcp.complete return_value=<httpcore._backends.anyio.AnyIOStream object at 0x7f7dd765fc50>
+21:30:10.065 | DEBUG   | httpcore.connection - connect_tcp.complete return_value=<httpcore._backends.anyio.AnyIOStream object at 0x7f7dd76c6780>
+21:30:10.066 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'GET']>
+21:30:10.066 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'GET']>
+21:30:10.067 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:30:10.067 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'GET']>
+21:30:10.067 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:30:10.068 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'GET']>
+21:30:10.068 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:30:10.069 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'GET']>
+21:30:10.069 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:30:10.069 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'GET']>
+21:30:10.071 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 422, b'Unprocessable Entity', [(b'date', b'Sun, 04 Oct 2026 01:30:09 GMT'), (b'server', b'uvicorn'), (b'content-length', b'41'), (b'content-type', b'application/json'), (b'vary', b'Origin')])
+21:30:10.071 | INFO    | httpx - HTTP Request: GET http://127.0.0.1:4200/api/csrf-token?client=3151bd9e-bac5-446a-86f6-c2ec482d65ed "HTTP/1.1 422 Unprocessable Entity"
+21:30:10.072 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'GET']>
+21:30:10.072 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 422, b'Unprocessable Entity', [(b'date', b'Sun, 04 Oct 2026 01:30:09 GMT'), (b'server', b'uvicorn'), (b'content-length', b'41'), (b'content-type', b'application/json'), (b'vary', b'Origin')])
+21:30:10.073 | INFO    | httpx - HTTP Request: GET http://127.0.0.1:4200/api/csrf-token?client=3151bd9e-bac5-446a-86f6-c2ec482d65ed "HTTP/1.1 422 Unprocessable Entity"
+21:30:10.073 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'GET']>
+21:30:10.073 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:30:10.073 | DEBUG   | httpcore.http11 - response_closed.started
+21:30:10.074 | DEBUG   | httpcore.http11 - response_closed.complete
+21:30:10.074 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:30:10.074 | DEBUG   | httpcore.http11 - response_closed.started
+21:30:10.075 | DEBUG   | httpcore.http11 - response_closed.complete
+21:30:10.075 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'POST']>
+21:30:10.076 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:30:10.076 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'POST']>
+21:30:10.076 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'POST']>
+21:30:10.076 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:30:10.076 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'POST']>
+21:30:10.076 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:30:10.077 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'POST']>
+21:30:10.077 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:30:10.077 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'POST']>
+21:30:10.087 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 200, b'OK', [(b'date', b'Sun, 04 Oct 2026 01:30:09 GMT'), (b'server', b'uvicorn'), (b'content-length', b'2'), (b'content-type', b'application/json'), (b'vary', b'Origin')])
+21:30:10.088 | INFO    | httpx - HTTP Request: POST http://127.0.0.1:4200/api/flow_runs/filter "HTTP/1.1 200 OK"
+21:30:10.088 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'POST']>
+21:30:10.089 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:30:10.089 | DEBUG   | httpcore.http11 - response_closed.started
+21:30:10.089 | DEBUG   | httpcore.http11 - response_closed.complete
+21:30:10.090 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 200, b'OK', [(b'date', b'Sun, 04 Oct 2026 01:30:09 GMT'), (b'server', b'uvicorn'), (b'content-length', b'2'), (b'content-type', b'application/json'), (b'vary', b'Origin')])
+21:30:10.090 | INFO    | httpx - HTTP Request: POST http://127.0.0.1:4200/api/deployments/get_scheduled_flow_runs "HTTP/1.1 200 OK"
+21:30:10.090 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'POST']>
+21:30:10.090 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:30:10.090 | DEBUG   | httpcore.http11 - response_closed.started
+21:30:10.091 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'POST']>
+21:30:10.091 | DEBUG   | httpcore.http11 - response_closed.complete
+21:30:10.091 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:30:10.091 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'POST']>
+21:30:10.091 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:30:10.091 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'POST']>
+21:30:10.102 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 200, b'OK', [(b'date', b'Sun, 04 Oct 2026 01:30:09 GMT'), (b'server', b'uvicorn'), (b'content-length', b'2'), (b'content-type', b'application/json'), (b'vary', b'Origin')])
+21:30:10.102 | INFO    | httpx - HTTP Request: POST http://127.0.0.1:4200/api/flow_runs/filter "HTTP/1.1 200 OK"
+21:30:10.102 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'POST']>
+21:30:10.103 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:30:10.103 | DEBUG   | httpcore.http11 - response_closed.started
+21:30:10.103 | DEBUG   | httpcore.http11 - response_closed.complete
+21:30:18.544 | DEBUG   | httpcore.connection - close.started
+21:30:18.544 | DEBUG   | httpcore.connection - close.complete
+21:30:18.545 | DEBUG   | httpcore.connection - close.started
+21:30:18.545 | DEBUG   | httpcore.connection - close.complete
+21:30:18.545 | DEBUG   | httpcore.connection - connect_tcp.started host='127.0.0.1' port=4200 local_address=None timeout=60.0 socket_options=None
+21:30:18.546 | DEBUG   | httpcore.connection - connect_tcp.complete return_value=<httpcore._backends.anyio.AnyIOStream object at 0x7f7dd76c6c40>
+21:30:18.547 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'POST']>
+21:30:18.547 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:30:18.547 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'POST']>
+21:30:18.548 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:30:18.548 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'POST']>
+21:30:18.556 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 200, b'OK', [(b'date', b'Sun, 04 Oct 2026 01:30:18 GMT'), (b'server', b'uvicorn'), (b'content-length', b'2'), (b'content-type', b'application/json'), (b'vary', b'Origin')])
+21:30:18.556 | INFO    | httpx - HTTP Request: POST http://127.0.0.1:4200/api/deployments/get_scheduled_flow_runs "HTTP/1.1 200 OK"
+21:30:18.557 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'POST']>
+21:30:18.557 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:30:18.558 | DEBUG   | httpcore.http11 - response_closed.started
+21:30:18.558 | DEBUG   | httpcore.http11 - response_closed.complete
+21:30:26.264 | DEBUG   | httpcore.connection - close.started
+21:30:26.264 | DEBUG   | httpcore.connection - close.complete
+21:30:26.264 | DEBUG   | httpcore.connection - connect_tcp.started host='127.0.0.1' port=4200 local_address=None timeout=60.0 socket_options=None
+21:30:26.265 | DEBUG   | httpcore.connection - connect_tcp.complete return_value=<httpcore._backends.anyio.AnyIOStream object at 0x7f7dd76a2330>
+21:30:26.265 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'POST']>
+21:30:26.265 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:30:26.266 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'POST']>
+21:30:26.266 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:30:26.266 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'POST']>
+21:30:26.277 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 200, b'OK', [(b'date', b'Sun, 04 Oct 2026 01:30:25 GMT'), (b'server', b'uvicorn'), (b'content-length', b'814'), (b'content-type', b'application/json'), (b'vary', b'Accept-Encoding, Origin'), (b'content-encoding', b'gzip')])
+21:30:26.278 | INFO    | httpx - HTTP Request: POST http://127.0.0.1:4200/api/deployments/get_scheduled_flow_runs "HTTP/1.1 200 OK"
+21:30:26.278 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'POST']>
+21:30:26.278 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:30:26.279 | DEBUG   | httpcore.http11 - response_closed.started
+21:30:26.279 | DEBUG   | httpcore.http11 - response_closed.complete
+21:30:26.284 | INFO    | prefect.flow_runs.runner - Runner 'runner-1c8de714-6aaa-4631-b08a-0920c880d949' submitting flow run 'f9983563-2567-49f6-ac4e-94720bfa5553'
+21:30:26.288 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'POST']>
+21:30:26.288 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:30:26.289 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'POST']>
+21:30:26.289 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:30:26.289 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'POST']>
+21:30:26.310 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 201, b'Created', [(b'date', b'Sun, 04 Oct 2026 01:30:25 GMT'), (b'server', b'uvicorn'), (b'content-length', b'423'), (b'content-type', b'application/json'), (b'vary', b'Accept-Encoding, Origin'), (b'content-encoding', b'gzip')])
+21:30:26.311 | INFO    | httpx - HTTP Request: POST http://127.0.0.1:4200/api/flow_runs/f9983563-2567-49f6-ac4e-94720bfa5553/set_state "HTTP/1.1 201 Created"
+21:30:26.311 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'POST']>
+21:30:26.311 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:30:26.311 | DEBUG   | httpcore.http11 - response_closed.started
+21:30:26.311 | DEBUG   | httpcore.http11 - response_closed.complete
+21:30:26.312 | INFO    | prefect.flow_runs.runner - Opening process...
+21:30:26.320 | INFO    | prefect.flow_runs.runner - Completed submission of flow run 'f9983563-2567-49f6-ac4e-94720bfa5553'
+/home/nathaniel/leads/.venv/lib/python3.15/site-packages/pydantic_settings/main.py:480: UserWarning: Config key `pyproject_toml_table_header` is set in model_config but will be ignored because no PyprojectTomlConfigSettingsSource source is configured. To use this config key, add a PyprojectTomlConfigSettingsSource source to the settings sources via the settings_customise_sources hook.
+  cls._settings_warn_unused_config_keys(sources, cls.model_config)
+/home/nathaniel/leads/.venv/lib/python3.15/site-packages/pydantic_settings/main.py:480: UserWarning: Config key `toml_file` is set in model_config but will be ignored because no TomlConfigSettingsSource source is configured. To use this config key, add a TomlConfigSettingsSource source to the settings sources via the settings_customise_sources hook.
+  cls._settings_warn_unused_config_keys(sources, cls.model_config)
+21:30:27.647 | INFO    | Flow run 'lively-pony' - Downloading flow code from storage at '.'
+21:30:27.715 | DEBUG   | httpcore.connection - connect_tcp.started host='127.0.0.1' port=4200 local_address=None timeout=60.0 socket_options=None
+21:30:27.716 | DEBUG   | httpcore.connection - connect_tcp.complete return_value=<httpcore._backends.anyio.AnyIOStream object at 0x7f67311460d0>
+21:30:27.716 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'GET']>
+21:30:27.716 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:30:27.717 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'GET']>
+21:30:27.717 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:30:27.717 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'GET']>
+21:30:27.718 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 200, b'OK', [(b'date', b'Sun, 04 Oct 2026 01:30:27 GMT'), (b'server', b'uvicorn'), (b'content-length', b'7'), (b'content-type', b'application/json'), (b'vary', b'Origin')])
+21:30:27.718 | INFO    | httpx - HTTP Request: GET http://127.0.0.1:4200/api/admin/version "HTTP/1.1 200 OK"
+21:30:27.719 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'GET']>
+21:30:27.719 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:30:27.719 | DEBUG   | httpcore.http11 - response_closed.started
+21:30:27.719 | DEBUG   | httpcore.http11 - response_closed.complete
+21:30:27.721 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'GET']>
+21:30:27.721 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:30:27.721 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'GET']>
+21:30:27.722 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:30:27.722 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'GET']>
+21:30:27.723 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 422, b'Unprocessable Entity', [(b'date', b'Sun, 04 Oct 2026 01:30:27 GMT'), (b'server', b'uvicorn'), (b'content-length', b'41'), (b'content-type', b'application/json'), (b'vary', b'Origin')])
+21:30:27.723 | INFO    | httpx - HTTP Request: GET http://127.0.0.1:4200/api/csrf-token?client=ae728320-20ac-40d6-a689-909c2c0f3880 "HTTP/1.1 422 Unprocessable Entity"
+21:30:27.724 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'GET']>
+21:30:27.724 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:30:27.724 | DEBUG   | httpcore.http11 - response_closed.started
+21:30:27.724 | DEBUG   | httpcore.http11 - response_closed.complete
+/home/nathaniel/leads/.venv/lib/python3.15/site-packages/prefect/client/base.py:239: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.
+  await self._add_csrf_headers(request=request)
+21:30:27.725 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'PATCH']>
+21:30:27.725 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:30:27.725 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'PATCH']>
+21:30:27.725 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:30:27.726 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'PATCH']>
+21:30:27.738 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 204, b'No Content', [(b'date', b'Sun, 04 Oct 2026 01:30:27 GMT'), (b'server', b'uvicorn'), (b'vary', b'Origin')])
+21:30:27.739 | INFO    | httpx - HTTP Request: PATCH http://127.0.0.1:4200/api/flow_runs/f9983563-2567-49f6-ac4e-94720bfa5553 "HTTP/1.1 204 No Content"
+21:30:27.740 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'PATCH']>
+21:30:27.740 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:30:27.740 | DEBUG   | httpcore.http11 - response_closed.started
+21:30:27.740 | DEBUG   | httpcore.http11 - response_closed.complete
+21:30:27.743 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'POST']>
+21:30:27.743 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:30:27.743 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'POST']>
+21:30:27.744 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:30:27.744 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'POST']>
+21:30:27.757 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 201, b'Created', [(b'date', b'Sun, 04 Oct 2026 01:30:27 GMT'), (b'server', b'uvicorn'), (b'content-length', b'409'), (b'content-type', b'application/json'), (b'vary', b'Accept-Encoding, Origin'), (b'content-encoding', b'gzip')])
+21:30:27.757 | INFO    | httpx - HTTP Request: POST http://127.0.0.1:4200/api/flow_runs/f9983563-2567-49f6-ac4e-94720bfa5553/set_state "HTTP/1.1 201 Created"
+21:30:27.757 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'POST']>
+21:30:27.758 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:30:27.758 | DEBUG   | httpcore.http11 - response_closed.started
+21:30:27.758 | DEBUG   | httpcore.http11 - response_closed.complete
+21:30:27.759 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'GET']>
+21:30:27.759 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:30:27.759 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'GET']>
+21:30:27.759 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:30:27.760 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'GET']>
+21:30:27.764 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 200, b'OK', [(b'date', b'Sun, 04 Oct 2026 01:30:27 GMT'), (b'server', b'uvicorn'), (b'content-length', b'845'), (b'content-type', b'application/json'), (b'vary', b'Accept-Encoding, Origin'), (b'content-encoding', b'gzip')])
+21:30:27.764 | INFO    | httpx - HTTP Request: GET http://127.0.0.1:4200/api/flow_runs/f9983563-2567-49f6-ac4e-94720bfa5553 "HTTP/1.1 200 OK"
+21:30:27.764 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'GET']>
+21:30:27.764 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:30:27.765 | DEBUG   | httpcore.http11 - response_closed.started
+21:30:27.765 | DEBUG   | httpcore.http11 - response_closed.complete
+21:30:27.766 | INFO    | Flow run 'lively-pony' - Beginning flow run 'lively-pony' for flow 'run-agents'
+21:30:27.767 | INFO    | Flow run 'lively-pony' - View at http://127.0.0.1:4200/runs/flow-run/f9983563-2567-49f6-ac4e-94720bfa5553
+21:30:27.768 | INFO    | Flow run 'lively-pony' - researching 1 named business(es)
+21:30:28.294 | DEBUG   | httpcore.connection - connect_tcp.started host='127.0.0.1' port=4200 local_address=None timeout=60.0 socket_options=None
+21:30:28.295 | DEBUG   | httpcore.connection - connect_tcp.complete return_value=<httpcore._backends.anyio.AnyIOStream object at 0x7f7dd7595150>
+21:30:28.296 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'GET']>
+21:30:28.296 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:30:28.296 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'GET']>
+21:30:28.297 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:30:28.297 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'GET']>
+21:30:28.298 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 422, b'Unprocessable Entity', [(b'date', b'Sun, 04 Oct 2026 01:30:27 GMT'), (b'server', b'uvicorn'), (b'content-length', b'41'), (b'content-type', b'application/json'), (b'vary', b'Origin')])
+21:30:28.299 | INFO    | httpx - HTTP Request: GET http://127.0.0.1:4200/api/csrf-token?client=81cd85f4-b3f3-4958-a144-d33ac32624e7 "HTTP/1.1 422 Unprocessable Entity"
+21:30:28.299 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'GET']>
+21:30:28.300 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:30:28.300 | DEBUG   | httpcore.http11 - response_closed.started
+21:30:28.300 | DEBUG   | httpcore.http11 - response_closed.complete
+21:30:28.301 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'POST']>
+21:30:28.301 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:30:28.302 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'POST']>
+21:30:28.302 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:30:28.302 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'POST']>
+21:30:28.310 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 201, b'Created', [(b'date', b'Sun, 04 Oct 2026 01:30:27 GMT'), (b'server', b'uvicorn'), (b'content-length', b'4'), (b'content-type', b'application/json'), (b'vary', b'Origin')])
+21:30:28.311 | INFO    | httpx - HTTP Request: POST http://127.0.0.1:4200/api/logs/ "HTTP/1.1 201 Created"
+21:30:28.311 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'POST']>
+21:30:28.311 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:30:28.312 | DEBUG   | httpcore.http11 - response_closed.started
+21:30:28.312 | DEBUG   | httpcore.http11 - response_closed.complete
+21:30:28.738 | INFO    | Flow run 'lively-pony' - selected 1
+21:30:28.755 | DEBUG   | httpcore.connection - connect_tcp.started host='127.0.0.1' port=4200 local_address=None timeout=60.0 socket_options=None
+21:30:28.756 | DEBUG   | httpcore.connection - connect_tcp.complete return_value=<httpcore._backends.sync.SyncStream object at 0x7f6731147ed0>
+21:30:28.756 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'GET']>
+21:30:28.756 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:30:28.756 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'GET']>
+21:30:28.756 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:30:28.757 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'GET']>
+21:30:28.758 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 200, b'OK', [(b'date', b'Sun, 04 Oct 2026 01:30:28 GMT'), (b'server', b'uvicorn'), (b'content-length', b'7'), (b'content-type', b'application/json'), (b'vary', b'Origin')])
+21:30:28.758 | INFO    | httpx - HTTP Request: GET http://127.0.0.1:4200/api/admin/version "HTTP/1.1 200 OK"
+21:30:28.759 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'GET']>
+21:30:28.759 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:30:28.759 | DEBUG   | httpcore.http11 - response_closed.started
+21:30:28.759 | DEBUG   | httpcore.http11 - response_closed.complete
+21:30:28.771 | DEBUG   | httpcore.connection - connect_tcp.started host='127.0.0.1' port=4200 local_address=None timeout=60.0 socket_options=None
+21:30:28.772 | DEBUG   | httpcore.connection - connect_tcp.complete return_value=<httpcore._backends.anyio.AnyIOStream object at 0x7f6730f09810>
+21:30:28.772 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'GET']>
+21:30:28.773 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:30:28.773 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'GET']>
+21:30:28.774 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:30:28.774 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'GET']>
+21:30:28.775 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 422, b'Unprocessable Entity', [(b'date', b'Sun, 04 Oct 2026 01:30:28 GMT'), (b'server', b'uvicorn'), (b'content-length', b'41'), (b'content-type', b'application/json'), (b'vary', b'Origin')])
+21:30:28.776 | INFO    | httpx - HTTP Request: GET http://127.0.0.1:4200/api/csrf-token?client=01b30f27-afed-49a8-ba4a-310e9d0349cb "HTTP/1.1 422 Unprocessable Entity"
+21:30:28.776 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'GET']>
+21:30:28.776 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:30:28.776 | DEBUG   | httpcore.http11 - response_closed.started
+21:30:28.776 | DEBUG   | httpcore.http11 - response_closed.complete
+/home/nathaniel/leads/.venv/lib/python3.15/site-packages/prefect/client/base.py:239: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.
+  await self._add_csrf_headers(request=request)
+21:30:28.777 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'POST']>
+21:30:28.777 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:30:28.777 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'POST']>
+21:30:28.777 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:30:28.777 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'POST']>
+21:30:28.795 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 201, b'Created', [(b'date', b'Sun, 04 Oct 2026 01:30:28 GMT'), (b'server', b'uvicorn'), (b'content-length', b'751'), (b'content-type', b'application/json'), (b'vary', b'Accept-Encoding, Origin'), (b'content-encoding', b'gzip')])
+21:30:28.796 | INFO    | httpx - HTTP Request: POST http://127.0.0.1:4200/api/task_runs/ "HTTP/1.1 201 Created"
+21:30:28.796 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'POST']>
+21:30:28.796 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:30:28.796 | DEBUG   | httpcore.http11 - response_closed.started
+21:30:28.796 | DEBUG   | httpcore.http11 - response_closed.complete
+21:30:28.799 | DEBUG   | httpcore.connection - close.started
+21:30:28.799 | DEBUG   | httpcore.connection - close.complete
+21:30:28.877 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'GET']>
+21:30:28.877 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:30:28.878 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'GET']>
+21:30:28.878 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:30:28.878 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'GET']>
+21:30:28.880 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 422, b'Unprocessable Entity', [(b'date', b'Sun, 04 Oct 2026 01:30:28 GMT'), (b'server', b'uvicorn'), (b'content-length', b'41'), (b'content-type', b'application/json'), (b'vary', b'Origin')])
+21:30:28.880 | INFO    | httpx - HTTP Request: GET http://127.0.0.1:4200/api/csrf-token?client=8b12be83-3be2-447d-9367-c2e520e3221a "HTTP/1.1 422 Unprocessable Entity"
+21:30:28.880 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'GET']>
+21:30:28.881 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:30:28.881 | DEBUG   | httpcore.http11 - response_closed.started
+21:30:28.881 | DEBUG   | httpcore.http11 - response_closed.complete
+/home/nathaniel/leads/.venv/lib/python3.15/site-packages/prefect/client/base.py:458: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.
+  self._add_csrf_headers(request=request)
+21:30:28.882 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'POST']>
+21:30:28.882 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:30:28.883 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'POST']>
+21:30:28.883 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:30:28.883 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'POST']>
+21:30:28.888 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 200, b'OK', [(b'date', b'Sun, 04 Oct 2026 01:30:28 GMT'), (b'server', b'uvicorn'), (b'content-length', b'171'), (b'content-type', b'application/json'), (b'vary', b'Origin')])
+21:30:28.889 | INFO    | httpx - HTTP Request: POST http://127.0.0.1:4200/api/flows/ "HTTP/1.1 200 OK"
+21:30:28.889 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'POST']>
+21:30:28.889 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:30:28.889 | DEBUG   | httpcore.http11 - response_closed.started
+21:30:28.889 | DEBUG   | httpcore.http11 - response_closed.complete
+21:30:28.892 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'POST']>
+21:30:28.892 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:30:28.892 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'POST']>
+21:30:28.893 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:30:28.893 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'POST']>
+21:30:28.916 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 201, b'Created', [(b'date', b'Sun, 04 Oct 2026 01:30:28 GMT'), (b'server', b'uvicorn'), (b'content-length', b'4155'), (b'content-type', b'application/json'), (b'vary', b'Accept-Encoding, Origin'), (b'content-encoding', b'gzip')])
+21:30:28.917 | INFO    | httpx - HTTP Request: POST http://127.0.0.1:4200/api/flow_runs/ "HTTP/1.1 201 Created"
+21:30:28.917 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'POST']>
+21:30:28.917 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:30:28.917 | DEBUG   | httpcore.http11 - response_closed.started
+21:30:28.918 | DEBUG   | httpcore.http11 - response_closed.complete
+21:30:28.920 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'POST']>
+21:30:28.921 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:30:28.921 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'POST']>
+21:30:28.921 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:30:28.921 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'POST']>
+21:30:28.940 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 201, b'Created', [(b'date', b'Sun, 04 Oct 2026 01:30:28 GMT'), (b'server', b'uvicorn'), (b'content-length', b'435'), (b'content-type', b'application/json'), (b'vary', b'Accept-Encoding, Origin'), (b'content-encoding', b'gzip')])
+21:30:28.941 | INFO    | httpx - HTTP Request: POST http://127.0.0.1:4200/api/flow_runs/30a33180-9484-4dc4-987e-3ca2d31c9752/set_state "HTTP/1.1 201 Created"
+21:30:28.941 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'POST']>
+21:30:28.942 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:30:28.942 | DEBUG   | httpcore.http11 - response_closed.started
+21:30:28.942 | DEBUG   | httpcore.http11 - response_closed.complete
+21:30:28.943 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'GET']>
+21:30:28.943 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:30:28.943 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'GET']>
+21:30:28.944 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:30:28.944 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'GET']>
+21:30:28.949 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 200, b'OK', [(b'date', b'Sun, 04 Oct 2026 01:30:28 GMT'), (b'server', b'uvicorn'), (b'content-length', b'4207'), (b'content-type', b'application/json'), (b'vary', b'Accept-Encoding, Origin'), (b'content-encoding', b'gzip')])
+21:30:28.950 | INFO    | httpx - HTTP Request: GET http://127.0.0.1:4200/api/flow_runs/30a33180-9484-4dc4-987e-3ca2d31c9752 "HTTP/1.1 200 OK"
+21:30:28.950 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'GET']>
+21:30:28.950 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:30:28.950 | DEBUG   | httpcore.http11 - response_closed.started
+21:30:28.951 | DEBUG   | httpcore.http11 - response_closed.complete
+21:30:28.952 | INFO    | Flow run 'happy-panda' - Beginning subflow run 'happy-panda' for flow 'research-agent'
+21:30:28.953 | INFO    | Flow run 'happy-panda' - View at http://127.0.0.1:4200/runs/flow-run/30a33180-9484-4dc4-987e-3ca2d31c9752
+21:30:28.957 | DEBUG   | httpcore.connection - connect_tcp.started host='127.0.0.1' port=4000 local_address=None timeout=120.0 socket_options=None
+21:30:28.958 | DEBUG   | httpcore.connection - connect_tcp.complete return_value=<httpcore._backends.sync.SyncStream object at 0x7f6730380910>
+21:30:28.958 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'POST']>
+21:30:28.958 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:30:28.959 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'POST']>
+21:30:28.959 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:30:28.959 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'POST']>
+21:30:29.006 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 401, b'Unauthorized', [(b'date', b'Sun, 04 Oct 2026 01:30:28 GMT'), (b'server', b'uvicorn'), (b'x-litellm-call-id', b'493a0610-8575-4bdf-b904-cfd337855868'), (b'x-litellm-response-cost', b'0'), (b'x-litellm-key-spend', b'402.8614304500001'), (b'x-litellm-timeout', b'6000.0'), (b'x-litellm-adaptive-router-model', b'claude-opus-5'), (b'content-length', b'374'), (b'content-type', b'application/json'), (b'x-frame-options', b'DENY'), (b'content-security-policy', b"frame-ancestors 'none'"), (b'x-content-type-options', b'nosniff')])
+21:30:29.006 | INFO    | httpx - HTTP Request: POST http://127.0.0.1:4000/v1/chat/completions "HTTP/1.1 401 Unauthorized"
+21:30:29.007 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'POST']>
+21:30:29.007 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:30:29.007 | DEBUG   | httpcore.http11 - response_closed.started
+21:30:29.007 | DEBUG   | httpcore.http11 - response_closed.complete
+21:30:29.007 | DEBUG   | httpcore.connection - close.started
+21:30:29.007 | DEBUG   | httpcore.connection - close.complete
+21:30:29.008 | INFO    | Flow run 'happy-panda' - pass 1 failed: LLMTransportError: proxy returned 401 for model 'claude_pro': {"error":{"message":"litellm.AuthenticationError: Missing Anthropic API Key - A call is being made to anthropic but no key is set either in the environment variables or via params. Please set `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` in your environment vars. Received Model Group=claude_pro\nAvailable Model Group Fallbacks=None","type":null,"param":null,"code":"401"}}
+21:30:29.010 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'POST']>
+21:30:29.010 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:30:29.010 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'POST']>
+21:30:29.011 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:30:29.011 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'POST']>
+21:30:29.030 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 201, b'Created', [(b'date', b'Sun, 04 Oct 2026 01:30:28 GMT'), (b'server', b'uvicorn'), (b'content-length', b'438'), (b'content-type', b'application/json'), (b'vary', b'Accept-Encoding, Origin'), (b'content-encoding', b'gzip')])
+21:30:29.031 | INFO    | httpx - HTTP Request: POST http://127.0.0.1:4200/api/flow_runs/30a33180-9484-4dc4-987e-3ca2d31c9752/set_state "HTTP/1.1 201 Created"
+21:30:29.031 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'POST']>
+21:30:29.031 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:30:29.031 | DEBUG   | httpcore.http11 - response_closed.started
+21:30:29.032 | DEBUG   | httpcore.http11 - response_closed.complete
+21:30:29.032 | INFO    | Flow run 'happy-panda' - Finished in state Completed()
+21:30:29.032 | DEBUG   | httpcore.connection - close.started
+21:30:29.033 | DEBUG   | httpcore.connection - close.complete
+21:30:29.033 | INFO    | Flow run 'lively-pony' - selected=1 researched=0 rejected=1 drafted=0 errored=0
+21:30:29.035 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'POST']>
+21:30:29.036 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:30:29.036 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'POST']>
+21:30:29.037 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:30:29.037 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'POST']>
+21:30:29.053 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 201, b'Created', [(b'date', b'Sun, 04 Oct 2026 01:30:28 GMT'), (b'server', b'uvicorn'), (b'content-length', b'414'), (b'content-type', b'application/json'), (b'vary', b'Accept-Encoding, Origin'), (b'content-encoding', b'gzip')])
+21:30:29.054 | INFO    | httpx - HTTP Request: POST http://127.0.0.1:4200/api/flow_runs/f9983563-2567-49f6-ac4e-94720bfa5553/set_state "HTTP/1.1 201 Created"
+21:30:29.054 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'POST']>
+21:30:29.054 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:30:29.055 | DEBUG   | httpcore.http11 - response_closed.started
+21:30:29.055 | DEBUG   | httpcore.http11 - response_closed.complete
+21:30:29.056 | INFO    | Flow run 'lively-pony' - Finished in state Completed()
+21:30:29.057 | DEBUG   | httpcore.connection - close.started
+21:30:29.057 | DEBUG   | httpcore.connection - close.complete
+21:30:29.058 | DEBUG   | httpcore.connection - connect_tcp.started host='127.0.0.1' port=4200 local_address=None timeout=60.0 socket_options=None
+21:30:29.059 | DEBUG   | httpcore.connection - connect_tcp.complete return_value=<httpcore._backends.anyio.AnyIOStream object at 0x7f6731667360>
+21:30:29.059 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'GET']>
+21:30:29.060 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:30:29.060 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'GET']>
+21:30:29.060 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:30:29.060 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'GET']>
+21:30:29.062 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 422, b'Unprocessable Entity', [(b'date', b'Sun, 04 Oct 2026 01:30:28 GMT'), (b'server', b'uvicorn'), (b'content-length', b'41'), (b'content-type', b'application/json'), (b'vary', b'Origin')])
+21:30:29.062 | INFO    | httpx - HTTP Request: GET http://127.0.0.1:4200/api/csrf-token?client=26527258-4087-4b7d-ad6f-d727811ec41c "HTTP/1.1 422 Unprocessable Entity"
+21:30:29.062 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'GET']>
+21:30:29.063 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:30:29.063 | DEBUG   | httpcore.http11 - response_closed.started
+21:30:29.063 | DEBUG   | httpcore.http11 - response_closed.complete
+/home/nathaniel/leads/.venv/lib/python3.15/site-packages/prefect/client/base.py:239: StarletteDeprecationWarning: 'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated. Use 'HTTP_422_UNPROCESSABLE_CONTENT' instead.
+  await self._add_csrf_headers(request=request)
+21:30:29.063 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'POST']>
+21:30:29.064 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:30:29.064 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'POST']>
+21:30:29.064 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:30:29.064 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'POST']>
+21:30:29.072 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 201, b'Created', [(b'date', b'Sun, 04 Oct 2026 01:30:28 GMT'), (b'server', b'uvicorn'), (b'content-length', b'4'), (b'content-type', b'application/json'), (b'vary', b'Origin')])
+21:30:29.072 | INFO    | httpx - HTTP Request: POST http://127.0.0.1:4200/api/logs/ "HTTP/1.1 201 Created"
+21:30:29.073 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'POST']>
+21:30:29.073 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:30:29.073 | DEBUG   | httpcore.http11 - response_closed.started
+21:30:29.073 | DEBUG   | httpcore.http11 - response_closed.complete
+21:30:29.073 | DEBUG   | httpcore.connection - close.started
+21:30:29.073 | DEBUG   | httpcore.connection - close.complete
+21:30:29.297 | INFO    | prefect.flow_runs.runner - Process for flow run 'lively-pony' exited cleanly.
+21:30:29.299 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'GET']>
+21:30:29.299 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:30:29.299 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'GET']>
+21:30:29.299 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:30:29.300 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'GET']>
+21:30:29.305 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 200, b'OK', [(b'date', b'Sun, 04 Oct 2026 01:30:28 GMT'), (b'server', b'uvicorn'), (b'content-length', b'861'), (b'content-type', b'application/json'), (b'vary', b'Accept-Encoding, Origin'), (b'content-encoding', b'gzip')])
+21:30:29.306 | INFO    | httpx - HTTP Request: GET http://127.0.0.1:4200/api/flow_runs/f9983563-2567-49f6-ac4e-94720bfa5553 "HTTP/1.1 200 OK"
+21:30:29.306 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'GET']>
+21:30:29.306 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:30:29.306 | DEBUG   | httpcore.http11 - response_closed.started
+21:30:29.306 | DEBUG   | httpcore.http11 - response_closed.complete
+21:30:30.313 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'POST']>
+21:30:30.314 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:30:30.314 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'POST']>
+21:30:30.315 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:30:30.315 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'POST']>
+21:30:30.328 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 201, b'Created', [(b'date', b'Sun, 04 Oct 2026 01:30:29 GMT'), (b'server', b'uvicorn'), (b'content-length', b'4'), (b'content-type', b'application/json'), (b'vary', b'Origin')])
+21:30:30.328 | INFO    | httpx - HTTP Request: POST http://127.0.0.1:4200/api/logs/ "HTTP/1.1 201 Created"
+21:30:30.329 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'POST']>
+21:30:30.329 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:30:30.330 | DEBUG   | httpcore.http11 - response_closed.started
+21:30:30.330 | DEBUG   | httpcore.http11 - response_closed.complete
+21:30:30.821 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'POST']>
+21:30:30.822 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:30:30.822 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'POST']>
+21:30:30.822 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:30:30.822 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'POST']>
+21:30:30.829 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 200, b'OK', [(b'date', b'Sun, 04 Oct 2026 01:30:30 GMT'), (b'server', b'uvicorn'), (b'content-length', b'2'), (b'content-type', b'application/json'), (b'vary', b'Origin')])
+21:30:30.829 | INFO    | httpx - HTTP Request: POST http://127.0.0.1:4200/api/flow_runs/filter "HTTP/1.1 200 OK"
+21:30:30.829 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'POST']>
+21:30:30.829 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:30:30.829 | DEBUG   | httpcore.http11 - response_closed.started
+21:30:30.830 | DEBUG   | httpcore.http11 - response_closed.complete
+21:30:30.830 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'POST']>
+21:30:30.831 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:30:30.831 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'POST']>
+21:30:30.831 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:30:30.831 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'POST']>
+21:30:30.836 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 200, b'OK', [(b'date', b'Sun, 04 Oct 2026 01:30:30 GMT'), (b'server', b'uvicorn'), (b'content-length', b'2'), (b'content-type', b'application/json'), (b'vary', b'Origin')])
+21:30:30.836 | INFO    | httpx - HTTP Request: POST http://127.0.0.1:4200/api/flow_runs/filter "HTTP/1.1 200 OK"
+21:30:30.837 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'POST']>
+21:30:30.837 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:30:30.837 | DEBUG   | httpcore.http11 - response_closed.started
+21:30:30.837 | DEBUG   | httpcore.http11 - response_closed.complete
+21:30:36.090 | DEBUG   | httpcore.connection - close.started
+21:30:36.090 | DEBUG   | httpcore.connection - close.complete
+21:30:36.091 | DEBUG   | httpcore.connection - connect_tcp.started host='127.0.0.1' port=4200 local_address=None timeout=60.0 socket_options=None
+21:30:36.091 | DEBUG   | httpcore.connection - connect_tcp.complete return_value=<httpcore._backends.anyio.AnyIOStream object at 0x7f7dd7595bf0>
+21:30:36.091 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'POST']>
+21:30:36.092 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:30:36.092 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'POST']>
+21:30:36.092 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:30:36.092 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'POST']>
+21:30:36.101 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 200, b'OK', [(b'date', b'Sun, 04 Oct 2026 01:30:35 GMT'), (b'server', b'uvicorn'), (b'content-length', b'2'), (b'content-type', b'application/json'), (b'vary', b'Origin')])
+21:30:36.102 | INFO    | httpx - HTTP Request: POST http://127.0.0.1:4200/api/deployments/get_scheduled_flow_runs "HTTP/1.1 200 OK"
+21:30:36.102 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'POST']>
+21:30:36.103 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:30:36.103 | DEBUG   | httpcore.http11 - response_closed.started
+21:30:36.103 | DEBUG   | httpcore.http11 - response_closed.complete
+21:30:46.784 | DEBUG   | httpcore.connection - close.started
+21:30:46.784 | DEBUG   | httpcore.connection - close.complete
+21:30:46.784 | DEBUG   | httpcore.connection - connect_tcp.started host='127.0.0.1' port=4200 local_address=None timeout=60.0 socket_options=None
+21:30:46.785 | DEBUG   | httpcore.connection - connect_tcp.complete return_value=<httpcore._backends.anyio.AnyIOStream object at 0x7f7dd752e150>
+21:30:46.785 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'POST']>
+21:30:46.786 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:30:46.786 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'POST']>
+21:30:46.786 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:30:46.786 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'POST']>
+21:30:46.794 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 200, b'OK', [(b'date', b'Sun, 04 Oct 2026 01:30:46 GMT'), (b'server', b'uvicorn'), (b'content-length', b'2'), (b'content-type', b'application/json'), (b'vary', b'Origin')])
+21:30:46.794 | INFO    | httpx - HTTP Request: POST http://127.0.0.1:4200/api/deployments/get_scheduled_flow_runs "HTTP/1.1 200 OK"
+21:30:46.794 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'POST']>
+21:30:46.794 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:30:46.795 | DEBUG   | httpcore.http11 - response_closed.started
+21:30:46.795 | DEBUG   | httpcore.http11 - response_closed.complete
+21:30:52.996 | DEBUG   | httpcore.connection - close.started
+21:30:52.996 | DEBUG   | httpcore.connection - close.complete
+21:30:52.997 | DEBUG   | httpcore.connection - connect_tcp.started host='127.0.0.1' port=4200 local_address=None timeout=60.0 socket_options=None
+21:30:52.997 | DEBUG   | httpcore.connection - connect_tcp.complete return_value=<httpcore._backends.anyio.AnyIOStream object at 0x7f7dd752f250>
+21:30:52.998 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'POST']>
+21:30:52.998 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:30:52.998 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'POST']>
+21:30:52.998 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:30:52.998 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'POST']>
+21:30:53.004 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 200, b'OK', [(b'date', b'Sun, 04 Oct 2026 01:30:52 GMT'), (b'server', b'uvicorn'), (b'content-length', b'2'), (b'content-type', b'application/json'), (b'vary', b'Origin')])
+21:30:53.004 | INFO    | httpx - HTTP Request: POST http://127.0.0.1:4200/api/flow_runs/filter "HTTP/1.1 200 OK"
+21:30:53.005 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'POST']>
+21:30:53.005 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:30:53.005 | DEBUG   | httpcore.http11 - response_closed.started
+21:30:53.006 | DEBUG   | httpcore.http11 - response_closed.complete
+21:30:53.006 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'POST']>
+21:30:53.006 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:30:53.007 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'POST']>
+21:30:53.007 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:30:53.007 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'POST']>
+21:30:53.013 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 200, b'OK', [(b'date', b'Sun, 04 Oct 2026 01:30:52 GMT'), (b'server', b'uvicorn'), (b'content-length', b'2'), (b'content-type', b'application/json'), (b'vary', b'Origin')])
+21:30:53.014 | INFO    | httpx - HTTP Request: POST http://127.0.0.1:4200/api/flow_runs/filter "HTTP/1.1 200 OK"
+21:30:53.014 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'POST']>
+21:30:53.015 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:30:53.015 | DEBUG   | httpcore.http11 - response_closed.started
+21:30:53.015 | DEBUG   | httpcore.http11 - response_closed.complete
+21:30:55.304 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'POST']>
+21:30:55.304 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:30:55.305 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'POST']>
+21:30:55.305 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:30:55.306 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'POST']>
+21:30:55.312 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 200, b'OK', [(b'date', b'Sun, 04 Oct 2026 01:30:54 GMT'), (b'server', b'uvicorn'), (b'content-length', b'2'), (b'content-type', b'application/json'), (b'vary', b'Origin')])
+21:30:55.313 | INFO    | httpx - HTTP Request: POST http://127.0.0.1:4200/api/deployments/get_scheduled_flow_runs "HTTP/1.1 200 OK"
+21:30:55.313 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'POST']>
+21:30:55.313 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:30:55.313 | DEBUG   | httpcore.http11 - response_closed.started
+21:30:55.313 | DEBUG   | httpcore.http11 - response_closed.complete
+21:31:06.439 | DEBUG   | httpcore.connection - close.started
+21:31:06.439 | DEBUG   | httpcore.connection - close.complete
+21:31:06.440 | DEBUG   | httpcore.connection - connect_tcp.started host='127.0.0.1' port=4200 local_address=None timeout=60.0 socket_options=None
+21:31:06.440 | DEBUG   | httpcore.connection - connect_tcp.complete return_value=<httpcore._backends.anyio.AnyIOStream object at 0x7f7dd75af110>
+21:31:06.440 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'POST']>
+21:31:06.441 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:31:06.441 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'POST']>
+21:31:06.441 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:31:06.441 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'POST']>
+21:31:06.448 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 200, b'OK', [(b'date', b'Sun, 04 Oct 2026 01:31:05 GMT'), (b'server', b'uvicorn'), (b'content-length', b'2'), (b'content-type', b'application/json'), (b'vary', b'Origin')])
+21:31:06.448 | INFO    | httpx - HTTP Request: POST http://127.0.0.1:4200/api/deployments/get_scheduled_flow_runs "HTTP/1.1 200 OK"
+21:31:06.448 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'POST']>
+21:31:06.448 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:31:06.448 | DEBUG   | httpcore.http11 - response_closed.started
+21:31:06.449 | DEBUG   | httpcore.http11 - response_closed.complete
+21:31:14.316 | DEBUG   | httpcore.connection - close.started
+21:31:14.316 | DEBUG   | httpcore.connection - close.complete
+21:31:14.316 | DEBUG   | httpcore.connection - connect_tcp.started host='127.0.0.1' port=4200 local_address=None timeout=60.0 socket_options=None
+21:31:14.317 | DEBUG   | httpcore.connection - connect_tcp.complete return_value=<httpcore._backends.anyio.AnyIOStream object at 0x7f7dd75d0410>
+21:31:14.317 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'POST']>
+21:31:14.318 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:31:14.318 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'POST']>
+21:31:14.318 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:31:14.318 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'POST']>
+21:31:14.323 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 200, b'OK', [(b'date', b'Sun, 04 Oct 2026 01:31:13 GMT'), (b'server', b'uvicorn'), (b'content-length', b'2'), (b'content-type', b'application/json'), (b'vary', b'Origin')])
+21:31:14.324 | INFO    | httpx - HTTP Request: POST http://127.0.0.1:4200/api/flow_runs/filter "HTTP/1.1 200 OK"
+21:31:14.324 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'POST']>
+21:31:14.324 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:31:14.324 | DEBUG   | httpcore.http11 - response_closed.started
+21:31:14.325 | DEBUG   | httpcore.http11 - response_closed.complete
+21:31:14.325 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'POST']>
+21:31:14.326 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:31:14.326 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'POST']>
+21:31:14.326 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:31:14.327 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'POST']>
+21:31:14.331 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 200, b'OK', [(b'date', b'Sun, 04 Oct 2026 01:31:13 GMT'), (b'server', b'uvicorn'), (b'content-length', b'2'), (b'content-type', b'application/json'), (b'vary', b'Origin')])
+21:31:14.332 | INFO    | httpx - HTTP Request: POST http://127.0.0.1:4200/api/flow_runs/filter "HTTP/1.1 200 OK"
+21:31:14.332 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'POST']>
+21:31:14.332 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:31:14.332 | DEBUG   | httpcore.http11 - response_closed.started
+21:31:14.332 | DEBUG   | httpcore.http11 - response_closed.complete
+21:31:15.045 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'POST']>
+21:31:15.045 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:31:15.046 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'POST']>
+21:31:15.046 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:31:15.046 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'POST']>
+21:31:15.053 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 200, b'OK', [(b'date', b'Sun, 04 Oct 2026 01:31:14 GMT'), (b'server', b'uvicorn'), (b'content-length', b'2'), (b'content-type', b'application/json'), (b'vary', b'Origin')])
+21:31:15.054 | INFO    | httpx - HTTP Request: POST http://127.0.0.1:4200/api/deployments/get_scheduled_flow_runs "HTTP/1.1 200 OK"
+21:31:15.054 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'POST']>
+21:31:15.054 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:31:15.054 | DEBUG   | httpcore.http11 - response_closed.started
+21:31:15.054 | DEBUG   | httpcore.http11 - response_closed.complete
+21:31:23.525 | DEBUG   | httpcore.connection - close.started
+21:31:23.525 | DEBUG   | httpcore.connection - close.complete
+21:31:23.526 | DEBUG   | httpcore.connection - connect_tcp.started host='127.0.0.1' port=4200 local_address=None timeout=60.0 socket_options=None
+21:31:23.526 | DEBUG   | httpcore.connection - connect_tcp.complete return_value=<httpcore._backends.anyio.AnyIOStream object at 0x7f7dd756f150>
+21:31:23.526 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'POST']>
+21:31:23.527 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:31:23.527 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'POST']>
+21:31:23.527 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:31:23.527 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'POST']>
+21:31:23.535 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 200, b'OK', [(b'date', b'Sun, 04 Oct 2026 01:31:22 GMT'), (b'server', b'uvicorn'), (b'content-length', b'2'), (b'content-type', b'application/json'), (b'vary', b'Origin')])
+21:31:23.535 | INFO    | httpx - HTTP Request: POST http://127.0.0.1:4200/api/deployments/get_scheduled_flow_runs "HTTP/1.1 200 OK"
+21:31:23.536 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'POST']>
+21:31:23.536 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:31:23.536 | DEBUG   | httpcore.http11 - response_closed.started
+21:31:23.537 | DEBUG   | httpcore.http11 - response_closed.complete
+21:31:34.788 | DEBUG   | httpcore.connection - close.started
+21:31:34.789 | DEBUG   | httpcore.connection - close.complete
+21:31:34.789 | DEBUG   | httpcore.connection - connect_tcp.started host='127.0.0.1' port=4200 local_address=None timeout=60.0 socket_options=None
+21:31:34.789 | DEBUG   | httpcore.connection - connect_tcp.complete return_value=<httpcore._backends.anyio.AnyIOStream object at 0x7f7dd756e270>
+21:31:34.790 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'POST']>
+21:31:34.790 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:31:34.790 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'POST']>
+21:31:34.790 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:31:34.791 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'POST']>
+21:31:34.796 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 200, b'OK', [(b'date', b'Sun, 04 Oct 2026 01:31:33 GMT'), (b'server', b'uvicorn'), (b'content-length', b'2'), (b'content-type', b'application/json'), (b'vary', b'Origin')])
+21:31:34.796 | INFO    | httpx - HTTP Request: POST http://127.0.0.1:4200/api/deployments/get_scheduled_flow_runs "HTTP/1.1 200 OK"
+21:31:34.797 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'POST']>
+21:31:34.797 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:31:34.797 | DEBUG   | httpcore.http11 - response_closed.started
+21:31:34.797 | DEBUG   | httpcore.http11 - response_closed.complete
+21:31:35.448 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'POST']>
+21:31:35.448 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:31:35.448 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'POST']>
+21:31:35.448 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:31:35.449 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'POST']>
+21:31:35.455 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 200, b'OK', [(b'date', b'Sun, 04 Oct 2026 01:31:34 GMT'), (b'server', b'uvicorn'), (b'content-length', b'2'), (b'content-type', b'application/json'), (b'vary', b'Origin')])
+21:31:35.456 | INFO    | httpx - HTTP Request: POST http://127.0.0.1:4200/api/flow_runs/filter "HTTP/1.1 200 OK"
+21:31:35.456 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'POST']>
+21:31:35.457 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:31:35.457 | DEBUG   | httpcore.http11 - response_closed.started
+21:31:35.457 | DEBUG   | httpcore.http11 - response_closed.complete
+21:31:35.458 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'POST']>
+21:31:35.458 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:31:35.459 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'POST']>
+21:31:35.459 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:31:35.459 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'POST']>
+21:31:35.465 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 200, b'OK', [(b'date', b'Sun, 04 Oct 2026 01:31:34 GMT'), (b'server', b'uvicorn'), (b'content-length', b'2'), (b'content-type', b'application/json'), (b'vary', b'Origin')])
+21:31:35.465 | INFO    | httpx - HTTP Request: POST http://127.0.0.1:4200/api/flow_runs/filter "HTTP/1.1 200 OK"
+21:31:35.465 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'POST']>
+21:31:35.465 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:31:35.466 | DEBUG   | httpcore.http11 - response_closed.started
+21:31:35.466 | DEBUG   | httpcore.http11 - response_closed.complete
+21:31:44.197 | DEBUG   | httpcore.connection - close.started
+21:31:44.197 | DEBUG   | httpcore.connection - close.complete
+21:31:44.197 | DEBUG   | httpcore.connection - connect_tcp.started host='127.0.0.1' port=4200 local_address=None timeout=60.0 socket_options=None
+21:31:44.198 | DEBUG   | httpcore.connection - connect_tcp.complete return_value=<httpcore._backends.anyio.AnyIOStream object at 0x7f7dd76b3ba0>
+21:31:44.198 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'POST']>
+21:31:44.199 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:31:44.199 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'POST']>
+21:31:44.199 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:31:44.199 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'POST']>
+21:31:44.206 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 200, b'OK', [(b'date', b'Sun, 04 Oct 2026 01:31:44 GMT'), (b'server', b'uvicorn'), (b'content-length', b'2'), (b'content-type', b'application/json'), (b'vary', b'Origin')])
+21:31:44.207 | INFO    | httpx - HTTP Request: POST http://127.0.0.1:4200/api/deployments/get_scheduled_flow_runs "HTTP/1.1 200 OK"
+21:31:44.207 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'POST']>
+21:31:44.207 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:31:44.207 | DEBUG   | httpcore.http11 - response_closed.started
+21:31:44.208 | DEBUG   | httpcore.http11 - response_closed.complete
+21:31:56.037 | DEBUG   | httpcore.connection - close.started
+21:31:56.038 | DEBUG   | httpcore.connection - close.complete
+21:31:56.038 | DEBUG   | httpcore.connection - connect_tcp.started host='127.0.0.1' port=4200 local_address=None timeout=60.0 socket_options=None
+21:31:56.039 | DEBUG   | httpcore.connection - connect_tcp.complete return_value=<httpcore._backends.anyio.AnyIOStream object at 0x7f7dd764ea50>
+21:31:56.039 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'POST']>
+21:31:56.039 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:31:56.039 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'POST']>
+21:31:56.040 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:31:56.040 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'POST']>
+21:31:56.047 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 200, b'OK', [(b'date', b'Sun, 04 Oct 2026 01:31:55 GMT'), (b'server', b'uvicorn'), (b'content-length', b'2'), (b'content-type', b'application/json'), (b'vary', b'Origin')])
+21:31:56.048 | INFO    | httpx - HTTP Request: POST http://127.0.0.1:4200/api/flow_runs/filter "HTTP/1.1 200 OK"
+21:31:56.048 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'POST']>
+21:31:56.048 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:31:56.049 | DEBUG   | httpcore.http11 - response_closed.started
+21:31:56.049 | DEBUG   | httpcore.http11 - response_closed.complete
+21:31:56.049 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'POST']>
+21:31:56.050 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:31:56.050 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'POST']>
+21:31:56.050 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:31:56.050 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'POST']>
+21:31:56.056 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 200, b'OK', [(b'date', b'Sun, 04 Oct 2026 01:31:55 GMT'), (b'server', b'uvicorn'), (b'content-length', b'2'), (b'content-type', b'application/json'), (b'vary', b'Origin')])
+21:31:56.056 | INFO    | httpx - HTTP Request: POST http://127.0.0.1:4200/api/flow_runs/filter "HTTP/1.1 200 OK"
+21:31:56.056 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'POST']>
+21:31:56.056 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:31:56.057 | DEBUG   | httpcore.http11 - response_closed.started
+21:31:56.057 | DEBUG   | httpcore.http11 - response_closed.complete
+21:31:56.408 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'POST']>
+21:31:56.408 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:31:56.408 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'POST']>
+21:31:56.409 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:31:56.409 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'POST']>
+21:31:56.417 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 200, b'OK', [(b'date', b'Sun, 04 Oct 2026 01:31:56 GMT'), (b'server', b'uvicorn'), (b'content-length', b'2'), (b'content-type', b'application/json'), (b'vary', b'Origin')])
+21:31:56.417 | INFO    | httpx - HTTP Request: POST http://127.0.0.1:4200/api/deployments/get_scheduled_flow_runs "HTTP/1.1 200 OK"
+21:31:56.417 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'POST']>
+21:31:56.417 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:31:56.417 | DEBUG   | httpcore.http11 - response_closed.started
+21:31:56.418 | DEBUG   | httpcore.http11 - response_closed.complete
+21:32:04.227 | DEBUG   | httpcore.connection - close.started
+21:32:04.227 | DEBUG   | httpcore.connection - close.complete
+21:32:04.228 | DEBUG   | httpcore.connection - connect_tcp.started host='127.0.0.1' port=4200 local_address=None timeout=60.0 socket_options=None
+21:32:04.228 | DEBUG   | httpcore.connection - connect_tcp.complete return_value=<httpcore._backends.anyio.AnyIOStream object at 0x7f7dd764e450>
+21:32:04.228 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'POST']>
+21:32:04.229 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:32:04.229 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'POST']>
+21:32:04.229 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:32:04.229 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'POST']>
+21:32:04.236 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 200, b'OK', [(b'date', b'Sun, 04 Oct 2026 01:32:04 GMT'), (b'server', b'uvicorn'), (b'content-length', b'2'), (b'content-type', b'application/json'), (b'vary', b'Origin')])
+21:32:04.236 | INFO    | httpx - HTTP Request: POST http://127.0.0.1:4200/api/deployments/get_scheduled_flow_runs "HTTP/1.1 200 OK"
+21:32:04.236 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'POST']>
+21:32:04.236 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:32:04.236 | DEBUG   | httpcore.http11 - response_closed.started
+21:32:04.237 | DEBUG   | httpcore.http11 - response_closed.complete
+21:32:11.172 | DEBUG   | httpcore.connection - close.started
+21:32:11.172 | DEBUG   | httpcore.connection - close.complete
+21:32:11.172 | DEBUG   | httpcore.connection - connect_tcp.started host='127.0.0.1' port=4200 local_address=None timeout=60.0 socket_options=None
+21:32:11.173 | DEBUG   | httpcore.connection - connect_tcp.complete return_value=<httpcore._backends.anyio.AnyIOStream object at 0x7f7dd9158e10>
+21:32:11.173 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'POST']>
+21:32:11.173 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:32:11.174 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'POST']>
+21:32:11.174 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:32:11.174 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'POST']>
+21:32:11.179 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 200, b'OK', [(b'date', b'Sun, 04 Oct 2026 01:32:10 GMT'), (b'server', b'uvicorn'), (b'content-length', b'2'), (b'content-type', b'application/json'), (b'vary', b'Origin')])
+21:32:11.180 | INFO    | httpx - HTTP Request: POST http://127.0.0.1:4200/api/flow_runs/filter "HTTP/1.1 200 OK"
+21:32:11.180 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'POST']>
+21:32:11.181 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:32:11.181 | DEBUG   | httpcore.http11 - response_closed.started
+21:32:11.181 | DEBUG   | httpcore.http11 - response_closed.complete
+21:32:11.182 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'POST']>
+21:32:11.183 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:32:11.183 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'POST']>
+21:32:11.184 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:32:11.184 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'POST']>
+21:32:11.190 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 200, b'OK', [(b'date', b'Sun, 04 Oct 2026 01:32:10 GMT'), (b'server', b'uvicorn'), (b'content-length', b'2'), (b'content-type', b'application/json'), (b'vary', b'Origin')])
+21:32:11.190 | INFO    | httpx - HTTP Request: POST http://127.0.0.1:4200/api/flow_runs/filter "HTTP/1.1 200 OK"
+21:32:11.191 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'POST']>
+21:32:11.191 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:32:11.191 | DEBUG   | httpcore.http11 - response_closed.started
+21:32:11.192 | DEBUG   | httpcore.http11 - response_closed.complete
+21:32:14.943 | DEBUG   | httpcore.http11 - send_request_headers.started request=<Request [b'POST']>
+21:32:14.944 | DEBUG   | httpcore.http11 - send_request_headers.complete
+21:32:14.944 | DEBUG   | httpcore.http11 - send_request_body.started request=<Request [b'POST']>
+21:32:14.945 | DEBUG   | httpcore.http11 - send_request_body.complete
+21:32:14.945 | DEBUG   | httpcore.http11 - receive_response_headers.started request=<Request [b'POST']>
+21:32:14.954 | DEBUG   | httpcore.http11 - receive_response_headers.complete return_value=(b'HTTP/1.1', 200, b'OK', [(b'date', b'Sun, 04 Oct 2026 01:32:14 GMT'), (b'server', b'uvicorn'), (b'content-length', b'2'), (b'content-type', b'application/json'), (b'vary', b'Origin')])
+21:32:14.955 | INFO    | httpx - HTTP Request: POST http://127.0.0.1:4200/api/deployments/get_scheduled_flow_runs "HTTP/1.1 200 OK"
+21:32:14.955 | DEBUG   | httpcore.http11 - receive_response_body.started request=<Request [b'POST']>
+21:32:14.956 | DEBUG   | httpcore.http11 - receive_response_body.complete
+21:32:14.956 | DEBUG   | httpcore.http11 - response_closed.started
+21:32:14.956 | DEBUG   | httpcore.http11 - response_closed.complete
