@@ -15,6 +15,7 @@ from typing import Any, Optional
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from prefect import flow
+from prefect.variables import Variable
 
 from flow.fetch import fetch_html
 from flow.llm import LLMSchemaError, LLMTransportError, complete_structured
@@ -69,6 +70,18 @@ def build_research_prompt(
     return '\n'.join(parts)
 
 
+def _set_research_output(result: dict, business_id: str) -> dict:
+    """Store research output as a Prefect variable and return it."""
+    var_name = f'research-agent-output-{business_id}'
+    try:
+        Variable.set(var_name, result, overwrite=True)
+    except Exception as e:
+        # Variable storage is optional; don't fail the flow if it's unavailable
+        # (e.g., during unit tests with ephemeral servers).
+        print(f'Note: could not persist output variable {var_name}: {e}')
+    return result
+
+
 @flow(log_prints=True)
 def research_agent(
     business: dict,
@@ -77,6 +90,7 @@ def research_agent(
     offer: Optional[str] = None,
 ) -> dict:
     """Research one business, escalating once if confidence is low."""
+    business_id = business.get('id', 'unknown')
     prompt = build_research_prompt(
         business, verified_emails, crawl_excerpt, offer=offer)
 
@@ -85,21 +99,24 @@ def research_agent(
                                     system=SYSTEM_PROMPT)
     except (LLMSchemaError, LLMTransportError) as exc:
         print(f'pass 1 failed: {type(exc).__name__}: {exc}')
-        return {'status': 'rejected', 'reason': 'llm_schema_failure',
-                'research': None, 'passes': 1}
+        result = {'status': 'rejected', 'reason': 'llm_schema_failure',
+                  'research': None, 'passes': 1}
+        return _set_research_output(result, business_id)
 
     print(f'pass 1 confidence {first.confidence} '
           f'(threshold {CONFIDENCE_THRESHOLD})')
 
     if first.confidence >= CONFIDENCE_THRESHOLD:
-        return {'status': 'researched', 'research': first.model_dump(mode='json'),
-                'passes': 1}
+        result = {'status': 'researched', 'research': first.model_dump(mode='json'),
+                  'passes': 1}
+        return _set_research_output(result, business_id)
 
     if not first.next_url_to_check:
         print('below threshold and no next_url_to_check; nothing to escalate')
-        return {'status': 'rejected',
-                'reason': 'low_confidence_no_escalation_url',
-                'research': first.model_dump(mode='json'), 'passes': 1}
+        result = {'status': 'rejected',
+                  'reason': 'low_confidence_no_escalation_url',
+                  'research': first.model_dump(mode='json'), 'passes': 1}
+        return _set_research_output(result, business_id)
 
     print(f'escalating: fetching {first.next_url_to_check}')
     extra = fetch_html(first.next_url_to_check)
@@ -113,15 +130,18 @@ def research_agent(
                                      system=SYSTEM_PROMPT)
     except (LLMSchemaError, LLMTransportError) as exc:
         print(f'pass 2 failed: {type(exc).__name__}: {exc}')
-        return {'status': 'rejected', 'reason': 'llm_schema_failure',
-                'research': first.model_dump(mode='json'), 'passes': 2}
+        result = {'status': 'rejected', 'reason': 'llm_schema_failure',
+                  'research': first.model_dump(mode='json'), 'passes': 2}
+        return _set_research_output(result, business_id)
 
     print(f'pass 2 confidence {second.confidence}')
 
     if second.confidence >= CONFIDENCE_THRESHOLD:
-        return {'status': 'researched',
-                'research': second.model_dump(mode='json'), 'passes': 2}
+        result = {'status': 'researched',
+                  'research': second.model_dump(mode='json'), 'passes': 2}
+        return _set_research_output(result, business_id)
 
-    return {'status': 'rejected',
-            'reason': 'low_confidence_after_two_passes',
-            'research': second.model_dump(mode='json'), 'passes': 2}
+    result = {'status': 'rejected',
+              'reason': 'low_confidence_after_two_passes',
+              'research': second.model_dump(mode='json'), 'passes': 2}
+    return _set_research_output(result, business_id)
