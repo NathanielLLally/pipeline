@@ -12,6 +12,8 @@ No `instructor` -- see spec section 3.2.
 
 import json
 import os
+import pathlib
+import time
 from typing import Any, Optional, Type
 
 import httpx
@@ -43,6 +45,51 @@ LITELLM_AUTH_HEADER = os.environ.get(
 # Read at call time, not import time, so it can be switched on without an
 # import-order dance.
 _REDACT = ('authorization', 'x-litellm-api-key', 'x-api-key', 'api-key')
+
+
+# LiteLLM needs TWO credentials and they carry different things:
+#   x-litellm-api-key  authenticates us to the proxy
+#   Authorization      carries the Claude OAuth token the proxy forwards
+#                      upstream to Anthropic
+# Verified live: both together -> 200; the OAuth token alone -> rejected by the
+# proxy; the proxy key alone -> "Missing Anthropic API Key". This is why
+# Claude Code is configured with ANTHROPIC_CUSTOM_HEADERS: Authorization is
+# already spoken for.
+#
+# The token is read per request, not cached, so a refresh performed by Claude
+# Code is picked up without restarting a long-lived serving process.
+DEFAULT_OAUTH_CREDENTIALS = str(
+    pathlib.Path.home() / '.claude' / '.credentials.json'
+)
+
+
+def _oauth_credentials() -> dict:
+    """The claudeAiOauth block, or {} if unreadable for any reason."""
+    path = pathlib.Path(
+        os.environ.get('CLAUDE_OAUTH_CREDENTIALS')
+        or DEFAULT_OAUTH_CREDENTIALS
+    ).expanduser()
+    try:
+        block = json.loads(path.read_text()).get('claudeAiOauth')
+    except (OSError, ValueError):
+        # Absent or malformed is a normal state, not an exception: a proxy may
+        # hold the credential itself, in which case we send no Authorization.
+        return {}
+    return block if isinstance(block, dict) else {}
+
+
+def oauth_access_token() -> Optional[str]:
+    """The Claude OAuth access token, or None if there isn't one."""
+    token = _oauth_credentials().get('accessToken')
+    return token if isinstance(token, str) and token else None
+
+
+def oauth_expires_in_seconds() -> Optional[int]:
+    """Seconds until the token expires; negative if already expired."""
+    expires_at = _oauth_credentials().get('expiresAt')
+    if not isinstance(expires_at, (int, float)):
+        return None
+    return int(expires_at / 1000 - time.time())
 
 
 def auth_header_name() -> str:
@@ -117,6 +164,16 @@ def _request(messages: list, schema_model: Type[BaseModel]) -> str:
     key = os.environ.get('LITELLM_API_KEY')
     if key:
         headers[auth_header_name()] = f'Bearer {key}'
+
+    token = oauth_access_token()
+    if token:
+        headers['Authorization'] = f'Bearer {token}'
+        remaining = oauth_expires_in_seconds()
+        if remaining is not None and remaining <= 0:
+            # Worth saying plainly: an expired token produces a 401 that looks
+            # identical to a misconfiguration.
+            print(f'WARNING: Claude OAuth token expired {-remaining}s ago; '
+                  'refresh it (the proxy will reject this request)')
 
     body = {
         'model': MODEL,
