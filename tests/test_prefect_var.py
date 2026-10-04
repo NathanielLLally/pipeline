@@ -14,9 +14,10 @@ This test suite covers:
 
 import json
 from datetime import datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
+from pydantic import ValidationError
 
 from prefect.variables import Variable
 from flow.schemas import ResearchOutput, DraftingOutput, VerifiedEmail
@@ -24,12 +25,14 @@ from flow.schemas import ResearchOutput, DraftingOutput, VerifiedEmail
 
 # Mock data scaffolded from the schemas
 
-VERIFIED_EMAIL = {
-    'email': 'owner@happytails.example',
-    'verified_at': datetime.now(),
-    'source': 'website',
-    'mx_server': 'mail.happytails.example',
-}
+# Dumped with mode='json' deliberately -- see TestDatetimeRoundTrip for why a
+# raw datetime must never be handed to Variable.set.
+VERIFIED_EMAIL = VerifiedEmail(
+    email='owner@happytails.example',
+    verified_at=datetime(2026, 10, 4, 12, 30),
+    source='website',
+    mx_server='mail.happytails.example',
+).model_dump(mode='json')
 
 RESEARCH_OUTPUT = {
     'business_name': 'Happy Tails Dog Training',
@@ -86,14 +89,15 @@ DRAFT_RESULT = {
 
 
 def _pretty_json(data: dict) -> str:
-    """Pretty-print JSON data for logging and verification."""
-    # Convert datetime objects to ISO strings for JSON serialization
-    def serialize(obj):
-        if isinstance(obj, datetime):
-            return obj.isoformat()
-        raise TypeError(f"Type {type(obj)} not serializable")
+    """
+    Pretty-print a variable payload.
 
-    return json.dumps(data, indent=2, default=serialize)
+    No `default=` hook on purpose: anything that json.dumps cannot serialize
+    here is also something Variable.set would mangle rather than reject (a
+    datetime silently becomes a float timestamp), so raising on it is the
+    useful behavior. Callers dump models with `model_dump(mode='json')`.
+    """
+    return json.dumps(data, indent=2)
 
 
 class TestBasicVariableLIFecycle:
@@ -239,6 +243,39 @@ class TestErrorHandlingAndEdgeCases:
         assert retrieved['status'] == 'researched'
 
 
+class TestDatetimeRoundTrip:
+    """
+    Variable storage is JSON, so datetimes need dumping before they go in.
+
+    Verified against the local Prefect server, not assumed: a raw datetime is
+    accepted and comes back a float, which is the dangerous case -- nothing
+    raises, the type just quietly changes under you.
+    """
+
+    def test_a_raw_datetime_comes_back_as_a_float(self):
+        Variable.set('probe_raw_datetime',
+                     {'verified_at': datetime(2026, 10, 4, 12, 30)},
+                     overwrite=True)
+
+        retrieved = Variable.get('probe_raw_datetime')
+
+        assert isinstance(retrieved['verified_at'], float)
+
+    def test_a_json_dumped_model_round_trips_intact(self):
+        Variable.set('probe_verified_email', VERIFIED_EMAIL, overwrite=True)
+
+        retrieved = Variable.get('probe_verified_email')
+
+        assert retrieved['verified_at'] == '2026-10-04T12:30:00'
+        assert VerifiedEmail.model_validate(retrieved).verified_at \
+            == datetime(2026, 10, 4, 12, 30)
+
+    def test_pretty_print_refuses_an_undumped_datetime(self):
+        """Better a TypeError in a test than a float in the database."""
+        with pytest.raises(TypeError):
+            _pretty_json({'verified_at': datetime(2026, 10, 4, 12, 30)})
+
+
 class TestPrettyPrintedOutput:
     """Test formatting of structured data for logging and debugging."""
 
@@ -309,35 +346,51 @@ class TestPrettyPrintedOutput:
 class TestSchemaValidation:
     """Test that stored data matches schema expectations."""
 
-    def test_research_output_matches_schema(self):
-        """Stored research output validates against ResearchOutput schema."""
+    def test_research_output_survives_a_roundtrip_as_the_model(self):
+        """
+        The round-tripped dict re-validates as ResearchOutput.
+
+        Asserting through the model rather than on dict keys is the point: it
+        catches a field the storage layer coerced or dropped, which a
+        `'confidence' in data` check would pass straight over.
+        """
         var_name = "research_agent_output_biz_1"
         Variable.set(var_name, FLOW_RESULT, overwrite=True)
 
         retrieved = Variable.get(var_name)
 
-        # The stored 'research' field should be parseable as ResearchOutput
-        research_data = retrieved['research']
-        # Manually validate key fields exist
-        assert 'business_name' in research_data
-        assert 'confidence' in research_data
-        assert 0.0 <= research_data['confidence'] <= 1.0
-        assert research_data['inferred_tone'] in (
-            'clinical', 'warm', 'premium', 'casual', 'sparse'
-        )
+        research = ResearchOutput.model_validate(retrieved['research'])
+        assert research.business_name == 'Happy Tails Dog Training'
+        assert research.confidence == 0.92
+        assert research.inferred_tone == 'warm'
+        assert research.pain_signals == RESEARCH_OUTPUT['pain_signals']
 
-    def test_draft_output_matches_schema(self):
-        """Stored draft output validates against DraftingOutput schema."""
+    def test_draft_output_survives_a_roundtrip_as_the_model(self):
+        """The round-tripped dict re-validates as DraftingOutput."""
         var_name = "drafting_agent_output_biz_1"
         Variable.set(var_name, DRAFT_RESULT, overwrite=True)
 
         retrieved = Variable.get(var_name)
 
-        draft_data = retrieved['draft']
-        assert len(draft_data['selected_emails']) >= 1
-        assert 'subject' in draft_data
-        assert 'body' in draft_data
-        assert 'rationale' in draft_data
-        assert isinstance(draft_data['subject'], str)
-        assert len(draft_data['subject']) > 0
+        draft = DraftingOutput.model_validate(retrieved['draft'])
+        assert draft.selected_emails == DRAFT_OUTPUT['selected_emails']
+        assert draft.subject == 'Ready-to-train dog leads for Happy Tails'
+
+    def test_a_stored_draft_with_a_placeholder_fails_validation(self):
+        """
+        The placeholder guard still bites after a storage round-trip.
+
+        Round-tripping through Variable storage must not become a way for
+        '[Your Name]' to reach a prospect: the validator is the thing standing
+        between the model's unfinished copy and a real send.
+        """
+        var_name = "drafting_agent_output_placeholder"
+        bad = dict(DRAFT_RESULT,
+                   draft=dict(DRAFT_OUTPUT, body='Hi [Owner Name], ...'))
+        Variable.set(var_name, bad, overwrite=True)
+
+        retrieved = Variable.get(var_name)
+
+        with pytest.raises(ValidationError, match='unfilled placeholder'):
+            DraftingOutput.model_validate(retrieved['draft'])
 
