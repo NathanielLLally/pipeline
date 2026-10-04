@@ -62,6 +62,35 @@ class TestEmitWarmblyEvent:
                 os.environ['WARMBLY_API_TOKEN'] = original_token
 
 
+# Patch the flow to run its function without creating Prefect flow runs during tests
+# This prevents accumulating test runs in the Prefect server
+@pytest.fixture(autouse=True)
+def no_prefect_flow_runs():
+    """
+    Prevent actual Prefect flow runs during unit tests.
+
+    The warmbly_integration_test flow is decorated with @flow, which creates
+    a run in Prefect every time it's called. During unit testing, we want to
+    test the function logic without cluttering the Prefect UI with test runs.
+
+    This fixture patches the flow to call its underlying function directly.
+    """
+    # Save the original flow object
+    original_flow = warmbly_integration_test
+
+    # Replace the flow-decorated function with its underlying function
+    # warmbly_integration_test.fn is the undecorated function inside the @flow
+    with patch.object(
+        warmbly_integration_test, '__wrapped__', warmbly_integration_test.fn
+    ):
+        # Also patch the function reference so calls use .fn directly
+        with patch(
+            'flow.warmbly_integration_test.warmbly_integration_test',
+            side_effect=warmbly_integration_test.fn
+        ):
+            yield
+
+
 class TestWarmblyIntegrationFlow:
     """Test the main integration flow."""
 
