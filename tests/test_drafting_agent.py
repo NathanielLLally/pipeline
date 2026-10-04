@@ -124,3 +124,31 @@ class TestLLMFailuresStillReject:
 
         assert result['status'] == 'rejected'
         assert result['reason'] == 'llm_schema_failure'
+
+
+class TestOfferContext:
+    """Without the offer, the agent invents what we sell -- and gets it wrong.
+
+    The first live run produced a content-marketing pitch because neither
+    prompt said what the offer was. Spec 2.1 lists offer context as an input
+    to this stage.
+    """
+
+    def test_prompt_states_the_offer(self):
+        prompt = build_drafting_prompt(RESEARCH, EMAILS, 'default',
+                                       offer='we send you live dog-owner leads')
+
+        assert 'we send you live dog-owner leads' in prompt
+
+    def test_prompt_states_the_goal_is_an_interest_reply(self):
+        prompt = build_drafting_prompt(RESEARCH, EMAILS, 'default',
+                                       offer='x')
+
+        assert 'reply' in prompt.lower()
+
+    def test_falls_back_to_the_configured_default_offer(self):
+        from flow.offer import DEFAULT_OFFER
+
+        prompt = build_drafting_prompt(RESEARCH, EMAILS)
+
+        assert DEFAULT_OFFER in prompt

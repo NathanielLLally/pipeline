@@ -10,9 +10,10 @@ interpreter.
 """
 
 from datetime import datetime
+import re
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 REJECTION_REASONS = (
     'no_verified_emails',
@@ -40,8 +41,64 @@ class ResearchOutput(BaseModel):
     next_url_to_check: Optional[str] = None
 
 
+# A placeholder is a token the model left for a human to fill: [Your Name],
+# {{first_name}}, <COMPANY>. Distinguishing it from a real bracketed aside in
+# prose ("[the services page especially]") needs more than a regex: the
+# discriminator is that placeholders are short and either Title Case or
+# snake/UPPER case, while asides are lowercase running text.
+_BRACKETED = re.compile(r'\[([^\]\n]{1,60})\]'
+                        r'|\{\{([^}\n]{1,60})\}\}'
+                        r'|\{([^}\n]{1,60})\}'
+                        r'|<([^>\n]{1,60})>')
+
+
+def _looks_like_placeholder(token: str) -> bool:
+    """True for 'Your Name' or 'first_name', false for a prose aside."""
+    token = token.strip()
+    if not token:
+        return False
+
+    words = token.split()
+    if len(words) > 3:
+        return False
+    if '_' in token and token.replace('_', '').isalnum():
+        return True
+    if token.isupper():
+        return True
+    return all(w[:1].isupper() for w in words)
+
+
+def find_placeholder(value: str) -> Optional[str]:
+    """Return the first unfilled placeholder in `value`, or None."""
+    for match in _BRACKETED.finditer(value):
+        token = next(g for g in match.groups() if g is not None)
+        if _looks_like_placeholder(token):
+            return match.group(0)
+    return None
+
+
 class DraftingOutput(BaseModel):
     selected_emails: List[str] = Field(min_length=1)
     subject: str
     body: str
     rationale: str
+
+    @field_validator('subject', 'body')
+    @classmethod
+    def no_placeholders(cls, value: str) -> str:
+        """
+        Reject copy the model left unfinished.
+
+        Raising here rather than checking downstream is deliberate: the
+        validation-retry loop in flow.llm re-asks the model with this error
+        attached, so the model fixes its own draft instead of the pipeline
+        forwarding '[Your Name]' to a prospect.
+        """
+        found = find_placeholder(value)
+        if found:
+            raise ValueError(
+                f'unfilled placeholder {found!r}: write finished '
+                'copy, and do not sign off with a name -- the sending system '
+                'adds the signature'
+            )
+        return value

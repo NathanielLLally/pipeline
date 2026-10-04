@@ -41,6 +41,7 @@ async def run_agents(
     batch_size: Optional[int] = None,
     business_ids: Optional[List[str]] = None,
     template_slug: str = 'default',
+    offer: Optional[str] = None,
 ) -> dict:
     """Select businesses, research each, and draft for the ones that pass."""
     if business_ids:
@@ -81,7 +82,7 @@ async def run_agents(
             # Subflow: its own flow run, retryable on its own. The crawl text
             # goes through whole -- no truncation anywhere in this path.
             researched = research_agent(
-                business, emails, candidate['crawl_excerpt'])
+                business, emails, candidate['crawl_excerpt'], offer)
         except Exception as exc:
             # One bad business must not cost the other 49 in the batch.
             print(f"research errored for {business.get('business_name')}: "
@@ -104,7 +105,7 @@ async def run_agents(
 
         try:
             drafted = drafting_agent(
-                researched['research'], emails, template_slug)
+                researched['research'], emails, template_slug, offer)
         except Exception as exc:
             print(f"drafting errored for {business.get('business_name')}: "
                   f"{type(exc).__name__}: {exc}")

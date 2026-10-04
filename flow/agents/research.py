@@ -18,6 +18,7 @@ from prefect import flow
 
 from flow.fetch import fetch_html
 from flow.llm import LLMSchemaError, LLMTransportError, complete_structured
+from flow.offer import resolve_offer
 from flow.schemas import ResearchOutput
 
 CONFIDENCE_THRESHOLD = float(
@@ -37,11 +38,14 @@ def build_research_prompt(
     verified_emails: list,
     crawl_excerpt: str,
     extra_context: str = '',
+    offer: Optional[str] = None,
 ) -> str:
     """Assemble the research prompt. Pure, so it can be asserted on."""
     pool = ', '.join(e['email'] for e in verified_emails) or '(none)'
 
     parts = [
+        f"What we are offering them: {resolve_offer(offer)}",
+        '',
         f"Business: {business.get('business_name')}",
         f"Website: {business.get('website')}",
         f"Verified email pool: {pool}",
@@ -67,9 +71,11 @@ def research_agent(
     business: dict,
     verified_emails: list,
     crawl_excerpt: str = '',
+    offer: Optional[str] = None,
 ) -> dict:
     """Research one business, escalating once if confidence is low."""
-    prompt = build_research_prompt(business, verified_emails, crawl_excerpt)
+    prompt = build_research_prompt(
+        business, verified_emails, crawl_excerpt, offer=offer)
 
     try:
         first = complete_structured(prompt, ResearchOutput,
@@ -96,7 +102,8 @@ def research_agent(
     extra = fetch_html(first.next_url_to_check)
 
     second_prompt = build_research_prompt(
-        business, verified_emails, crawl_excerpt, extra_context=extra or '',
+        business, verified_emails, crawl_excerpt,
+        extra_context=extra or '', offer=offer,
     )
     try:
         second = complete_structured(second_prompt, ResearchOutput,

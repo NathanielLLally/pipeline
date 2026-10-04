@@ -52,3 +52,40 @@ class TestDraftingOutput:
         with pytest.raises(ValidationError):
             DraftingOutput(selected_emails=[], subject="s", body="b",
                            rationale="r")
+
+
+class TestNoPlaceholders:
+    """A draft containing [Your Name] is not a finished email.
+
+    Rejecting it in the schema means complete_structured's retry loop re-asks
+    the model with the validation error attached, rather than the pipeline
+    passing an obviously unfinished draft downstream.
+    """
+
+    def _draft(self, **over):
+        base = dict(selected_emails=['a@b.com'], subject='Hello',
+                    body='Noticed you take bookings by phone only.',
+                    rationale='booking friction')
+        base.update(over)
+        return base
+
+    def test_accepts_finished_copy(self):
+        assert DraftingOutput(**self._draft()).subject == 'Hello'
+
+    def test_rejects_a_placeholder_in_the_body(self):
+        with pytest.raises(ValidationError):
+            DraftingOutput(**self._draft(body='Hi there,\n\nBest,\n[Your Name]'))
+
+    def test_rejects_a_placeholder_in_the_subject(self):
+        with pytest.raises(ValidationError):
+            DraftingOutput(**self._draft(subject='A note for [Business]'))
+
+    def test_rejects_curly_brace_placeholders_too(self):
+        with pytest.raises(ValidationError):
+            DraftingOutput(**self._draft(body='Hi {{first_name}}, quick note.'))
+
+    def test_tolerates_incidental_brackets(self):
+        """Real prose occasionally brackets an aside; do not reject that."""
+        body = ('Noticed your site [the services page especially] leans on '
+                'phone bookings.')
+        assert DraftingOutput(**self._draft(body=body)).body == body

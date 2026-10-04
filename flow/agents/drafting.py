@@ -15,9 +15,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
+from typing import Any, Dict, Optional
+
 from prefect import flow
 
 from flow.llm import LLMSchemaError, LLMTransportError, complete_structured
+from flow.offer import OUTREACH_GOAL, resolve_offer
 from flow.schemas import DraftingOutput
 
 SYSTEM_PROMPT = (
@@ -31,11 +34,16 @@ def build_drafting_prompt(
     research: dict,
     verified_emails: list,
     template_slug: str = 'default',
+    offer: Optional[str] = None,
 ) -> str:
     """Assemble the drafting prompt. Pure, so it can be asserted on."""
     pool = ', '.join(e['email'] for e in verified_emails) or '(none)'
 
     return '\n'.join([
+        f"What we are offering them: {resolve_offer(offer)}",
+        '',
+        OUTREACH_GOAL,
+        '',
         f"Business: {research.get('business_name')}",
         f"Tone observed on their site: {research.get('inferred_tone')}",
         f"Why this matters to them: {research.get('personalization_hook')}",
@@ -56,10 +64,12 @@ def drafting_agent(
     research: dict,
     verified_emails: list,
     template_slug: str = 'default',
+    offer: Optional[str] = None,
 ) -> dict:
     """Draft one outreach email for a researched business."""
     pool = {e['email'] for e in verified_emails}
-    prompt = build_drafting_prompt(research, verified_emails, template_slug)
+    prompt = build_drafting_prompt(
+        research, verified_emails, template_slug, offer)
 
     try:
         draft = complete_structured(prompt, DraftingOutput,
