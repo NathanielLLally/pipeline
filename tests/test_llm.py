@@ -227,3 +227,60 @@ class TestProxyAuthHeader:
             complete_structured("describe", ResearchOutput)
 
         assert 'x-litellm-api-key' not in post.call_args.kwargs['headers']
+
+
+class TestRequestDebugLogging:
+    """httpx/httpcore never log request headers at any level.
+
+    Verified: with httpcore at DEBUG, zero log lines contain the header name
+    or the token -- it logs `send_request_headers.started request=<Request>`,
+    the object, not its contents. Response headers are logged in full, request
+    headers never are. So seeing the outbound auth header requires printing it
+    ourselves.
+    """
+
+    def test_quiet_unless_enabled(self, monkeypatch, capsys):
+        monkeypatch.delenv('LLM_DEBUG', raising=False)
+        monkeypatch.setenv('LITELLM_API_KEY', 'sk-secret-value-here')
+        with patch('flow.llm.httpx.post', return_value=_reply(json.dumps(VALID))):
+            complete_structured("describe", ResearchOutput)
+
+        assert 'x-litellm-api-key' not in capsys.readouterr().out
+
+    def test_shows_the_header_name_and_model(self, monkeypatch, capsys):
+        monkeypatch.setenv('LLM_DEBUG', '1')
+        monkeypatch.setenv('LITELLM_API_KEY', 'sk-secret-value-here')
+        with patch('flow.llm.httpx.post', return_value=_reply(json.dumps(VALID))):
+            complete_structured("describe", ResearchOutput)
+
+        out = capsys.readouterr().out
+        assert 'x-litellm-api-key' in out
+        assert MODEL in out
+
+    def test_never_prints_the_whole_key(self, monkeypatch, capsys):
+        """The point is to confirm the header is right, not to leak it."""
+        monkeypatch.setenv('LLM_DEBUG', '1')
+        monkeypatch.setenv('LITELLM_API_KEY', 'sk-secret-value-here')
+        with patch('flow.llm.httpx.post', return_value=_reply(json.dumps(VALID))):
+            complete_structured("describe", ResearchOutput)
+
+        assert 'sk-secret-value-here' not in capsys.readouterr().out
+
+    def test_shows_enough_to_diagnose_the_header(self, monkeypatch, capsys):
+        """Bearer prefix and length are what distinguish the failure modes."""
+        monkeypatch.setenv('LLM_DEBUG', '1')
+        monkeypatch.setenv('LITELLM_API_KEY', 'sk-secret-value-here')
+        with patch('flow.llm.httpx.post', return_value=_reply(json.dumps(VALID))):
+            complete_structured("describe", ResearchOutput)
+
+        out = capsys.readouterr().out
+        assert 'Bearer' in out
+        assert 'len ' in out
+
+    def test_reports_a_missing_key_rather_than_omitting_the_line(self, monkeypatch, capsys):
+        monkeypatch.setenv('LLM_DEBUG', '1')
+        monkeypatch.delenv('LITELLM_API_KEY', raising=False)
+        with patch('flow.llm.httpx.post', return_value=_reply(json.dumps(VALID))):
+            complete_structured("describe", ResearchOutput)
+
+        assert 'LITELLM_API_KEY' in capsys.readouterr().out

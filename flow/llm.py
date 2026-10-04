@@ -31,6 +31,50 @@ LITELLM_AUTH_HEADER = os.environ.get(
 )
 
 
+# Request-level debug, off unless LLM_DEBUG is truthy.
+#
+# httpx and httpcore never log request headers at any level -- httpcore emits
+# `send_request_headers.started request=<Request [b'POST']>`, the object, not
+# its contents. It logs RESPONSE headers in full, which makes the omission
+# easy to mistake for a configuration problem. Verified: with httpcore at
+# DEBUG, zero log lines contain the header name or the token. So seeing the
+# outbound auth header means printing it here.
+#
+# Read at call time, not import time, so it can be switched on without an
+# import-order dance.
+_REDACT = ('authorization', 'x-litellm-api-key', 'x-api-key', 'api-key')
+
+
+def auth_header_name() -> str:
+    """Which header carries the proxy key. Read per call, so it can be
+    changed without restarting a long-lived serving process."""
+    return os.environ.get('LITELLM_AUTH_HEADER') or LITELLM_AUTH_HEADER
+
+
+def _debug_enabled() -> bool:
+    return os.environ.get('LLM_DEBUG', '').strip().lower() in (
+        '1', 'true', 'yes', 'on'
+    )
+
+
+def _safe_headers(headers: dict) -> dict:
+    """Headers with credentials shown as prefix, suffix and length only.
+
+    Enough to tell apart the failure modes that matter -- wrong header name,
+    missing `Bearer ` prefix, empty or truncated value -- without writing a
+    credential into a log.
+    """
+    safe = {}
+    for name, value in headers.items():
+        if name.lower() in _REDACT and len(value) > 18:
+            safe[name] = f'{value[:11]}\u2026{value[-4:]} (len {len(value)})'
+        elif name.lower() in _REDACT:
+            safe[name] = f'<short value, len {len(value)}>'
+        else:
+            safe[name] = value
+    return safe
+
+
 class LLMTransportError(RuntimeError):
     """The proxy could not be reached, refused us, or timed out."""
 
@@ -72,9 +116,7 @@ def _request(messages: list, schema_model: Type[BaseModel]) -> str:
     headers = {'Content-Type': 'application/json'}
     key = os.environ.get('LITELLM_API_KEY')
     if key:
-        headers[os.environ.get('LITELLM_AUTH_HEADER', LITELLM_AUTH_HEADER)] = (
-            f'Bearer {key}'
-        )
+        headers[auth_header_name()] = f'Bearer {key}'
 
     body = {
         'model': MODEL,
@@ -88,6 +130,12 @@ def _request(messages: list, schema_model: Type[BaseModel]) -> str:
             },
         },
     }
+
+    if _debug_enabled():
+        if not key:
+            print('LLM_DEBUG: LITELLM_API_KEY is NOT set; sending no auth header')
+        print(f'LLM_DEBUG: POST {PROXY_URL}/v1/chat/completions '
+              f'model={MODEL!r} headers={_safe_headers(headers)}')
 
     try:
         response = httpx.post(
