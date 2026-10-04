@@ -8,3 +8,4 @@ phase2-logs
 # Python bytecode
 __pycache__/
 *.pyc
+unknown-*.json
