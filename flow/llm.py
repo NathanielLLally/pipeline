@@ -51,6 +51,27 @@ def auth_header_name() -> str:
     return os.environ.get('LITELLM_AUTH_HEADER') or LITELLM_AUTH_HEADER
 
 
+def resolve_model(agent_env_var: Optional[str] = None) -> str:
+    """
+    Resolve the model to use for an LLM call. Read per call, so agents
+    can select their own model without restarting a long-lived serving
+    process.
+
+    Args:
+        agent_env_var: Name of an agent-specific env var (e.g. 'ANALYSIS_MODEL',
+                       'DRAFTING_MODEL'). If set and not null/empty, takes
+                       precedence over LLM_MODEL.
+
+    Returns:
+        The model name to use.
+    """
+    if agent_env_var:
+        agent_model = os.environ.get(agent_env_var, '').strip()
+        if agent_model:
+            return agent_model
+    return os.environ.get('LLM_MODEL', MODEL)
+
+
 def _debug_enabled() -> bool:
     return os.environ.get('LLM_DEBUG', '').strip().lower() in (
         '1', 'true', 'yes', 'on'
@@ -112,14 +133,29 @@ def strict_json_schema(schema_model: Type[BaseModel]) -> dict:
     return _strictify(schema_model.model_json_schema())
 
 
-def _request(messages: list, schema_model: Type[BaseModel]) -> str:
+def _request(
+    messages: list,
+    schema_model: Type[BaseModel],
+    model: Optional[str] = None,
+) -> str:
+    """
+    Make a request to the LLM proxy for a structured response.
+
+    Args:
+        messages: List of message dicts with 'role' and 'content'.
+        schema_model: Pydantic model to validate the response against.
+        model: Model name to use. If not provided, resolve_model() determines it.
+    """
+    if not model:
+        model = resolve_model()
+
     headers = {'Content-Type': 'application/json'}
     key = os.environ.get('LITELLM_API_KEY')
     if key:
         headers[auth_header_name()] = f'Bearer {key}'
 
     body = {
-        'model': MODEL,
+        'model': model,
         'messages': messages,
         'response_format': {
             'type': 'json_schema',
@@ -135,7 +171,7 @@ def _request(messages: list, schema_model: Type[BaseModel]) -> str:
         if not key:
             print('LLM_DEBUG: LITELLM_API_KEY is NOT set; sending no auth header')
         print(f'LLM_DEBUG: POST {PROXY_URL}/v1/chat/completions '
-              f'model={MODEL!r} headers={_safe_headers(headers)}')
+              f'model={model!r} headers={_safe_headers(headers)}')
 
     try:
         response = httpx.post(
@@ -151,11 +187,11 @@ def _request(messages: list, schema_model: Type[BaseModel]) -> str:
         # reason -- one model can 401 while another on the same key works.
         raise LLMTransportError(
             f'proxy returned {exc.response.status_code} for model '
-            f'{MODEL!r}: {exc.response.text[:400]}'
+            f'{model!r}: {exc.response.text[:400]}'
         ) from exc
     except httpx.HTTPError as exc:
         raise LLMTransportError(
-            f'{type(exc).__name__} calling proxy for model {MODEL!r}: {exc}'
+            f'{type(exc).__name__} calling proxy for model {model!r}: {exc}'
         ) from exc
 
     return response.json()['choices'][0]['message']['content']
@@ -166,6 +202,8 @@ def complete_structured(
     schema_model: Type[BaseModel],
     system: Optional[str] = None,
     max_attempts: int = 2,
+    model: Optional[str] = None,
+    agent_model_env: Optional[str] = None,
 ) -> Any:
     """
     Ask the model for an instance of schema_model and validate it.
@@ -173,7 +211,24 @@ def complete_structured(
     On a validation failure the model is asked again with its own errors
     attached, up to max_attempts. Bounded deliberately: an unbounded retry
     against a model that cannot produce the shape spends money forever.
+
+    Args:
+        prompt: The user prompt to send.
+        schema_model: Pydantic model to validate the response against.
+        system: Optional system prompt.
+        max_attempts: Max retries on validation failure (default: 2).
+        model: Explicit model name. If provided, takes precedence over
+               agent_model_env and environment defaults.
+        agent_model_env: Name of an agent-specific env var (e.g. 'ANALYSIS_MODEL').
+                         Used only if model is not explicitly provided.
+
+    Returns:
+        An instance of schema_model.
     """
+    # Determine which model to use
+    if not model:
+        model = resolve_model(agent_model_env)
+
     messages = []
     if system:
         messages.append({'role': 'system', 'content': system})
@@ -181,7 +236,7 @@ def complete_structured(
 
     last_error = None
     for attempt in range(1, max_attempts + 1):
-        content = _request(messages, schema_model)
+        content = _request(messages, schema_model, model=model)
 
         try:
             return schema_model.model_validate_json(content)

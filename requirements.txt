@@ -12,6 +12,11 @@
 # Orchestration
 prefect==3.2.15
 
+# flow/artifacts.py: transliterate a business_id/business_name into a Prefect
+# Variable name (lowercase/numbers/underscores only). Already a transitive
+# dep of prefect; pinned directly now that flow code imports it too.
+python-slugify==8.0.4
+
 # Warmbly REST/realtime SDK (pulls in websockets for the gateway)
 warmbly==0.3.0
 

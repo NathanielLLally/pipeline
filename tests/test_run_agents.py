@@ -10,7 +10,7 @@ this level is the sequencing, the skip decisions, and the accounting.
 """
 
 import asyncio
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -165,6 +165,127 @@ class TestAccounting:
         research.assert_not_called()
         assert result['selected'] == 0
         assert result['outcomes'] == []
+
+
+class TestArtifactTagging:
+    """
+    Each stage must run under tags(business_id, stage).
+
+    artifacts.artifact_filename() names every file from the ambient flow run
+    tags and falls back to 'unknown-{suffix}.json' when there are none. So
+    without a tags() wrapper here, every business in the batch writes to the
+    same two files and overwrites the last one -- the artifacts are produced,
+    but only the final business survives on disk.
+    """
+
+    @staticmethod
+    def _tag_capturing(return_value):
+        """A subflow stand-in that records the tags ambient at call time."""
+        seen = []
+
+        def record(*args, **kwargs):
+            from prefect.context import TagsContext
+            seen.append(set(TagsContext.get().current_tags))
+            return return_value
+
+        return MagicMock(side_effect=record), seen
+
+    def test_research_runs_tagged_with_business_id_and_stage(self):
+        research, seen = self._tag_capturing(RESEARCHED)
+        with patch('flow.run_agents.fetch_candidates',
+                   new_callable=AsyncMock, return_value=[CANDIDATE]), \
+             patch('flow.run_agents.research_agent', research), \
+             patch('flow.run_agents.drafting_agent', return_value=DRAFTED), \
+             patch('flow.run_agents.analysis_agent',
+                   return_value={'status': 'analyzed', 'analysis': {}}):
+            _run()
+
+        assert seen == [{'biz-1', 'research'}]
+
+    def test_drafting_runs_tagged_with_business_id_and_stage(self):
+        drafting, seen = self._tag_capturing(DRAFTED)
+        with patch('flow.run_agents.fetch_candidates',
+                   new_callable=AsyncMock, return_value=[CANDIDATE]), \
+             patch('flow.run_agents.research_agent', return_value=RESEARCHED), \
+             patch('flow.run_agents.drafting_agent', drafting), \
+             patch('flow.run_agents.analysis_agent',
+                   return_value={'status': 'analyzed', 'analysis': {}}):
+            _run()
+
+        assert seen == [{'biz-1', 'drafting'}]
+
+    def test_analysis_runs_tagged_with_business_id_and_stage(self):
+        analysis, seen = self._tag_capturing(
+            {'status': 'analyzed', 'analysis': {}})
+        with patch('flow.run_agents.fetch_candidates',
+                   new_callable=AsyncMock, return_value=[CANDIDATE]), \
+             patch('flow.run_agents.research_agent', return_value=RESEARCHED), \
+             patch('flow.run_agents.drafting_agent', return_value=DRAFTED), \
+             patch('flow.run_agents.analysis_agent', analysis):
+            _run()
+
+        assert seen == [{'biz-1', 'analysis'}]
+
+    def test_each_business_gets_its_own_tag_so_artifacts_do_not_collide(self):
+        """Three businesses must produce three distinct artifact name sets."""
+        candidates = [dict(CANDIDATE, business={'id': f'b{i}',
+                                                'business_name': f'n{i}'})
+                      for i in range(3)]
+        research, seen = self._tag_capturing(RESEARCHED)
+        with patch('flow.run_agents.fetch_candidates',
+                   new_callable=AsyncMock, return_value=candidates), \
+             patch('flow.run_agents.research_agent', research), \
+             patch('flow.run_agents.drafting_agent', return_value=DRAFTED), \
+             patch('flow.run_agents.analysis_agent',
+                   return_value={'status': 'analyzed', 'analysis': {}}):
+            _run()
+
+        assert seen == [{'b0', 'research'}, {'b1', 'research'},
+                        {'b2', 'research'}]
+
+    def test_tags_do_not_leak_past_the_business(self):
+        """A stage's tags must not still be ambient on the next business."""
+        candidates = [dict(CANDIDATE, business={'id': f'b{i}',
+                                                'business_name': f'n{i}'})
+                      for i in range(2)]
+        research, seen = self._tag_capturing(RESEARCHED)
+        with patch('flow.run_agents.fetch_candidates',
+                   new_callable=AsyncMock, return_value=candidates), \
+             patch('flow.run_agents.research_agent', research), \
+             patch('flow.run_agents.drafting_agent', return_value=DRAFTED), \
+             patch('flow.run_agents.analysis_agent',
+                   return_value={'status': 'analyzed', 'analysis': {}}):
+            _run()
+
+        assert 'b0' not in seen[1]
+        assert 'drafting' not in seen[1]
+        assert 'analysis' not in seen[1]
+
+    def test_tagging_survives_a_stage_raising(self):
+        """An errored business must not leave its tags on the next one."""
+        candidates = [dict(CANDIDATE, business={'id': f'b{i}',
+                                                'business_name': f'n{i}'})
+                      for i in range(2)]
+        seen = []
+
+        def record(*args, **kwargs):
+            from prefect.context import TagsContext
+            seen.append(set(TagsContext.get().current_tags))
+            if len(seen) == 1:
+                raise RuntimeError('boom')
+            return RESEARCHED
+
+        with patch('flow.run_agents.fetch_candidates',
+                   new_callable=AsyncMock, return_value=candidates), \
+             patch('flow.run_agents.research_agent',
+                   MagicMock(side_effect=record)), \
+             patch('flow.run_agents.drafting_agent', return_value=DRAFTED), \
+             patch('flow.run_agents.analysis_agent',
+                   return_value={'status': 'analyzed', 'analysis': {}}):
+            result = _run()
+
+        assert result['errored'] == 1
+        assert seen[1] == {'b1', 'research'}
 
 
 class TestFailureIsolation:

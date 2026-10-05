@@ -1,0 +1,15 @@
+{
+  "research": {
+    "business_name": "Happy Tails",
+    "confidence": 0.9
+  },
+  "draft": {
+    "subject": "s",
+    "body": "b"
+  },
+  "business": {
+    "id": "biz-1",
+    "business_name": "Happy Tails",
+    "website": "https://happytails.example"
+  }
+}

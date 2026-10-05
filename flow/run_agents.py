@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from prefect import flow
+from prefect import flow, tags
 
 from flow.agents.analysis import analysis_agent
 from flow.agents.drafting import drafting_agent
@@ -79,11 +79,21 @@ async def run_agents(
             'draft_status': None,
         }
 
+        # The subflows name their artifacts from the ambient flow run tags
+        # (flow/artifacts.py: artifact_filename). Untagged, every stage of
+        # every business writes to 'unknown-input.json'/'unknown-output.json'
+        # and overwrites whatever ran before it, so a 50-business batch leaves
+        # two files behind. Tagging the call site -- which is what Prefect
+        # reads, not the callee -- gives each one
+        # '{business_id}-{stage}-{input|output}.json'.
+        stage_tags = (str(business.get('id') or 'unknown'),)
+
         try:
             # Subflow: its own flow run, retryable on its own. The crawl text
             # goes through whole -- no truncation anywhere in this path.
-            researched = research_agent(
-                business, emails, candidate['crawl_excerpt'], offer)
+            with tags(*stage_tags, 'research'):
+                researched = research_agent(
+                    business, emails, candidate['crawl_excerpt'], offer)
         except Exception as exc:
             # One bad business must not cost the other 49 in the batch.
             print(f"research errored for {business.get('business_name')}: "
@@ -105,8 +115,9 @@ async def run_agents(
         counts['researched'] += 1
 
         try:
-            drafted = drafting_agent(
-                researched['research'], emails, template_slug, offer)
+            with tags(*stage_tags, 'drafting'):
+                drafted = drafting_agent(
+                    researched['research'], emails, template_slug, offer)
         except Exception as exc:
             print(f"drafting errored for {business.get('business_name')}: "
                   f"{type(exc).__name__}: {exc}")
@@ -125,11 +136,12 @@ async def run_agents(
 
             # Analyze the draft email for quality metrics
             try:
-                analyzed = analysis_agent(
-                    research=researched['research'],
-                    draft=drafted['draft'],
-                    business=business
-                )
+                with tags(*stage_tags, 'analysis'):
+                    analyzed = analysis_agent(
+                        research=researched['research'],
+                        draft=drafted['draft'],
+                        business=business
+                    )
             except Exception as exc:
                 print(f"analysis errored for {business.get('business_name')}: "
                       f"{type(exc).__name__}: {exc}")

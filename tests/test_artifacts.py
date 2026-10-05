@@ -10,7 +10,44 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from flow.artifacts import artifact_filename, read_artifact, write_artifact
+from flow.artifacts import (
+    artifact_filename,
+    read_artifact,
+    variable_safe_name,
+    write_artifact,
+)
+
+
+class TestVariableSafeName:
+    """Prefect Variable names allow only lowercase letters, numbers and
+    underscores -- a raw UUID business_id ('94cc25a6-c778-...') fails
+    VariableCreate's validator because of its dashes. slugify transliterates
+    non-ASCII too, not just dashes, so names stay valid regardless of what a
+    business_id or business_name happens to contain.
+    """
+
+    def test_dashes_become_underscores(self):
+        name = variable_safe_name('research_agent_output_94cc25a6-c778-4156')
+        assert name == 'research_agent_output_94cc25a6_c778_4156'
+
+    def test_result_contains_only_lowercase_alnum_and_underscore(self):
+        import re
+
+        name = variable_safe_name('Research-Agent_Output-Biz#1')
+        assert re.fullmatch(r'[a-z0-9_]+', name)
+
+    def test_uppercase_is_lowercased(self):
+        assert variable_safe_name('ACME-Corp') == 'acme_corp'
+
+    def test_unicode_is_transliterated_not_dropped(self):
+        name = variable_safe_name('research_output_Café_Münich')
+        assert name == 'research_output_cafe_munich'
+
+    def test_plain_uuid_round_trips_safely(self):
+        uuid = '94cc25a6-c778-4156-a21c-7a4f0620503f'
+        name = variable_safe_name(f'research_agent_output_{uuid}')
+        assert '-' not in name
+        assert name == 'research_agent_output_94cc25a6_c778_4156_a21c_7a4f0620503f'
 
 
 class TestArtifactFilename:
@@ -45,6 +82,32 @@ class TestArtifactFilename:
         """Custom suffix instead of input/output"""
         with patch('flow.artifacts.flow_run.tags', ['biz-1']):
             assert artifact_filename('metadata') == 'biz-1-metadata.json'
+
+    def test_name_is_stable_regardless_of_tag_order(self):
+        """
+        Prefect stores run tags in a set, so flow_run.tags arrives in
+        arbitrary order (prefect.context.tags does current_tags.union(...),
+        and FlowRunContext carries that set through to flow_run.tags). If the
+        filename followed that order, the same business+stage would land in
+        'biz-1-research-output.json' on one run and
+        'research-biz-1-output.json' on the next, which defeats the replay
+        and audit uses this module exists for.
+        """
+        with patch('flow.artifacts.flow_run.tags', ['research', 'biz-1']):
+            one = artifact_filename('output')
+        with patch('flow.artifacts.flow_run.tags', ['biz-1', 'research']):
+            two = artifact_filename('output')
+
+        assert one == two
+
+    def test_name_is_stable_when_tags_arrive_as_a_set(self):
+        """A set is what Prefect actually hands over at runtime."""
+        names = set()
+        for _ in range(10):
+            with patch('flow.artifacts.flow_run.tags', {'biz-1', 'research'}):
+                names.add(artifact_filename('output'))
+
+        assert names == {'biz-1-research-output.json'}
 
 
 class TestWriteArtifact:

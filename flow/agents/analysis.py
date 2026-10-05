@@ -32,7 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from prefect import flow
 
-from flow.artifacts import read_artifact, write_artifact
+from flow.artifacts import read_artifact, variable_safe_name, write_artifact
 from flow.llm import LLMSchemaError, LLMTransportError, complete_structured
 from flow.schemas import DraftAnalysisOutput
 
@@ -108,7 +108,7 @@ def build_analysis_prompt(
 
 def _set_analysis_output(result: dict, business_id: str) -> dict:
     """Store analysis output as a Prefect variable and return it."""
-    var_name = f'analysis_agent_output_{business_id}'
+    var_name = variable_safe_name(f'analysis_agent_output_{business_id}')
     try:
         from prefect.variables import Variable
         Variable.set(var_name, result, overwrite=True)
@@ -169,7 +169,9 @@ def analysis_agent(
 
     try:
         analysis = complete_structured(
-            prompt, DraftAnalysisOutput, system=SYSTEM_PROMPT
+            prompt, DraftAnalysisOutput,
+            system=SYSTEM_PROMPT,
+            agent_model_env='ANALYSIS_MODEL'
         )
     except (LLMSchemaError, LLMTransportError) as exc:
         print(f'analysis failed for {business_name}: {type(exc).__name__}: {exc}')

@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from prefect import flow
 from prefect.variables import Variable
 
-from flow.artifacts import read_artifact, write_artifact
+from flow.artifacts import read_artifact, variable_safe_name, write_artifact
 from flow.fetch import fetch_html
 from flow.llm import LLMSchemaError, LLMTransportError, complete_structured
 from flow.offer import resolve_offer
@@ -77,7 +77,7 @@ def build_research_prompt(
 
 def _set_research_output(result: dict, business_id: str) -> dict:
     """Store research output as a Prefect variable and return it."""
-    var_name = f'research_agent_output_{business_id}'
+    var_name = variable_safe_name(f'research_agent_output_{business_id}')
     try:
         Variable.set(var_name, result, overwrite=True)
     except Exception as e:
@@ -141,7 +141,8 @@ def research_agent(
 
     try:
         first = complete_structured(prompt, ResearchOutput,
-                                    system=SYSTEM_PROMPT)
+                                    system=SYSTEM_PROMPT,
+                                    agent_model_env='RESEARCH_MODEL')
     except (LLMSchemaError, LLMTransportError) as exc:
         print(f'pass 1 failed: {type(exc).__name__}: {exc}')
         result = {'status': 'rejected', 'reason': 'llm_schema_failure',
@@ -178,7 +179,8 @@ def research_agent(
     )
     try:
         second = complete_structured(second_prompt, ResearchOutput,
-                                     system=SYSTEM_PROMPT)
+                                     system=SYSTEM_PROMPT,
+                                     agent_model_env='RESEARCH_MODEL')
     except (LLMSchemaError, LLMTransportError) as exc:
         print(f'pass 2 failed: {type(exc).__name__}: {exc}')
         result = {'status': 'rejected', 'reason': 'llm_schema_failure',
