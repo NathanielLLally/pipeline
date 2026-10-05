@@ -13,6 +13,7 @@ One long-running flow run owns two connections on one event loop:
       /auth             `warmbly auth login --web` device flow; the approval
                         link is relayed to the invoker
       /list             Prefect flows and their deployments
+      /reload           reconnect the event feed with the current credential
       /<group> [args]   one command per `warmbly` CLI command group, discovered
                         from `warmbly --help` at startup and piped to the CLI
 
@@ -29,10 +30,20 @@ Environment:
   WARMBLY_ORG_ID                             required (gateway)
   WARMBLY_API_URL                            /auth derives --hostname from it
   BATCHDRAFT_DEPLOYMENT                      optional
+  WARMBLY_EVENT_INTENTS                      optional; comma-separated event
+                                             families (EMAIL,CAMPAIGN,...) to
+                                             forward; unset forwards all
   WARMBLY_REQUEST_TIMEOUT                    CLI command timeout, seconds
 
 The bot runs the CLI as whatever user the Prefect worker runs as, so /auth
 signs in that user's ~/.config/warmbly, which the piped commands then use.
+
+Reloading: the event feed takes its token from `warmbly auth token` (the CLI's
+active sign-in), falling back to WARMBLY_API_TOKEN. A successful /auth, the
+/reload command, or SIGHUP to the process reconnects the feed with whatever
+token is active then and re-resolves the org name, without restarting the
+flow run. SIGHUP needs the handler is installed at import, on the main thread, so it works both run
+directly and as a served deployment; the flow run logs the PID to signal.
 """
 
 import asyncio
@@ -42,6 +53,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -72,7 +84,7 @@ MAX_CHUNKS = 5
 EXCLUDED_GROUPS = frozenset(
     {'auth', 'browse', 'completion', 'help', 'upgrade', 'events', 'warmbly'})
 # Names this module registers itself.
-RESERVED_NAMES = frozenset({'batchdraft', 'auth', 'list'})
+RESERVED_NAMES = frozenset({'batchdraft', 'auth', 'list', 'reload'})
 
 _GROUP_LINE = re.compile(r'^  ([a-z][a-z0-9-]*)\s+\S')
 _DEVICE_CODE = re.compile(r'Your code:\s*(\S+)')
@@ -91,6 +103,7 @@ class BotConfig:
     org_id: str
     batchdraft_deployment: str
     warmbly_api_url: Optional[str]
+    event_intents: Optional[List[str]] = None
 
     @classmethod
     def from_env(cls) -> 'BotConfig':
@@ -114,10 +127,18 @@ class BotConfig:
             batchdraft_deployment=os.environ.get(
                 'BATCHDRAFT_DEPLOYMENT') or DEFAULT_BATCHDRAFT_DEPLOYMENT,
             warmbly_api_url=os.environ.get('WARMBLY_API_URL') or None,
+            event_intents=parse_intents(
+                os.environ.get('WARMBLY_EVENT_INTENTS')),
         )
 
 
 # -- pure helpers ------------------------------------------------------------
+
+def parse_intents(raw: Optional[str]) -> Optional[List[str]]:
+    """'email, Campaign' -> ['EMAIL', 'CAMPAIGN']; blank -> None (no filter)."""
+    tokens = [t.strip().upper() for t in (raw or '').split(',') if t.strip()]
+    return tokens or None
+
 
 def gateway_base_url(url: str) -> str:
     """AsyncGatewayClient appends /socket/websocket itself."""
@@ -233,11 +254,15 @@ def format_announcement(cfg: 'BotConfig', cli_groups: List[str],
         '**Warmbly bot online.**\n'
         f'Posting every Warmbly event from **{org_name or cfg.org_id}** to '
         f'<#{cfg.event_channel_id}>. Commands are for the '
-        f'`{cfg.admin_role}` role.\n\n'
+        f'`{cfg.admin_role}` role.\n'
+        + (f'Event families: {", ".join(cfg.event_intents)}.\n'
+           if cfg.event_intents else '')
+        + '\n'
         f'`/batchdraft [n]` select, research and draft a batch '
         f'(default {DEFAULT_BATCH}) via `{cfg.batchdraft_deployment}`\n'
         '`/auth` sign the Warmbly CLI in\n'
         '`/list` Prefect flows and deployments\n'
+        '`/reload` reconnect the event feed with the current sign-in\n'
     )
     names = [g for g in cli_groups if g not in RESERVED_NAMES]
     if not names:
@@ -405,11 +430,14 @@ def register_event_handlers(
     publish: Callable[[str], Awaitable[None]],
     display: Optional[EventDisplayFilter] = None,
 ) -> None:
-    """Forward every named gateway event; the SDK has no wildcard handler."""
+    """Forward every named business event; the SDK has no wildcard handler."""
     from warmbly.gateway import GatewayEvent
 
+    # Business events are UPPER_CASE. The lowercase values (presence_state,
+    # presence_diff, rate_limited, resumed, resume_failed) are transport
+    # frames: presence is dashboard users coming and going.
     names = sorted({v for k, v in vars(GatewayEvent).items()
-                    if k.isupper() and isinstance(v, str)})
+                    if k.isupper() and isinstance(v, str) and v.isupper()})
     display = display or EventDisplayFilter()
     for name in names:
         async def handler(topic: str, payload: Any, _name: str = name) -> None:
@@ -440,7 +468,8 @@ async def _send_output(interaction: Any, text: str, ephemeral: bool) -> None:
         await interaction.followup.send(part, ephemeral=ephemeral)
 
 
-def build_client(cfg: BotConfig, cli_groups: List[str]) -> Any:
+def build_client(cfg: BotConfig, cli_groups: List[str],
+                 reloader: Optional['Reloader'] = None) -> Any:
     import discord
     from discord import app_commands
 
@@ -483,12 +512,25 @@ def build_client(cfg: BotConfig, cli_groups: List[str]) -> Any:
                 f'Approve this sign-in: {url}{suffix}. '
                 'The code expires in 10 minutes.', ephemeral=True)
 
-        ok, out = await auth_login(auth_hostname(cfg.warmbly_api_url),
-                                   on_prompt, api_url=cfg.warmbly_api_url)
+        ok, out = await login_and_reload(
+            auth_hostname(cfg.warmbly_api_url), on_prompt,
+            reloader or Reloader(), cfg.warmbly_api_url)
         await interaction.followup.send(
-            ('Signed in.' if ok else 'Sign-in failed.')
+            ('Signed in; reconnecting the event feed with the new sign-in.'
+             if ok else 'Sign-in failed.')
             + (f'\n{chunk_output(out)[0]}' if out else ''),
             ephemeral=True)
+
+    @tree.command(name='reload',
+                  description='Reconnect the event feed with the current sign-in')
+    async def reload_cmd(interaction: discord.Interaction):
+        if reloader is None:
+            await interaction.response.send_message(
+                'Reload is not wired up in this process.', ephemeral=True)
+            return
+        reloader.request(f'/reload by {interaction.user}')
+        await interaction.response.send_message(
+            'Reconnecting the event feed.', ephemeral=True)
 
     @tree.command(name='list', description='Prefect flows and deployments')
     async def list_cmd(interaction: discord.Interaction):
@@ -529,26 +571,140 @@ def build_client(cfg: BotConfig, cli_groups: List[str]) -> Any:
     return client
 
 
-async def _event_feed(client: Any, cfg: BotConfig, announcement: str,
-                      display: EventDisplayFilter) -> None:
-    from warmbly.gateway import AsyncGatewayClient
+class Reloader:
+    """A reload request that any thread or signal handler may raise."""
 
-    # One sender keeps events in arrival order; handlers run as separate tasks.
-    queue: asyncio.Queue = asyncio.Queue()
-    gw = AsyncGatewayClient(token=cfg.warmbly_token,
-                            base_url=gateway_base_url(cfg.gateway_url))
-    register_event_handlers(gw, queue.put, display)
+    def __init__(self) -> None:
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._event: Optional[asyncio.Event] = None
+        self._reason = ''
 
-    sender_task = asyncio.create_task(
-        run_sender(client, cfg, queue, announcement))
+    def attach(self, loop: asyncio.AbstractEventLoop) -> None:
+        self._loop = loop
+        self._event = asyncio.Event()
+
+    def request(self, reason: str) -> None:
+        if self._loop is None or self._event is None:
+            return
+        self._reason = reason
+        # call_soon_threadsafe: SIGHUP lands on the main thread, while a
+        # served flow runs its event loop on another one.
+        self._loop.call_soon_threadsafe(self._event.set)
+
+    async def wait(self) -> str:
+        await self._event.wait()
+        self._event.clear()
+        return self._reason
+
+
+def install_sighup(reloader: Any) -> bool:
     try:
-        await gw.connect()
-        await gw.subscribe(f'org:{cfg.org_id}')
-        print(f'subscribed to org:{cfg.org_id}')
-        await gw.run_forever()
-    finally:
-        sender_task.cancel()
-        await gw.close()
+        signal.signal(signal.SIGHUP,
+                      lambda signum, frame: reloader.request('SIGHUP'))
+    except ValueError:
+        # signal.signal is main-thread only.
+        return False
+    return True
+
+
+# Installed at import, which Prefect does on the main thread of the flow run's
+# process. The async flow body itself then runs on Prefect's
+# RunSyncEventLoopThread, where signal.signal would be refused; the flow
+# attaches its loop to this reloader instead.
+RELOADER = Reloader()
+_SIGHUP_INSTALLED = install_sighup(RELOADER)
+
+
+async def active_warmbly_token(fallback: str) -> str:
+    """The CLI's signed-in token (what /auth just wrote), else the env token."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            WARMBLY_BIN, 'auth', 'token', stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+        out, _ = await asyncio.wait_for(proc.communicate(), CLI_TIMEOUT)
+    except (OSError, asyncio.TimeoutError):
+        return fallback
+    token = out.decode(errors='replace').strip()
+    return token if proc.returncode == 0 and token else fallback
+
+
+async def login_and_reload(
+    hostname: str,
+    on_prompt: Callable[[str, Optional[str]], Awaitable[None]],
+    reloader: Any,
+    api_url: Optional[str],
+) -> Tuple[bool, str]:
+    ok, out = await auth_login(hostname, on_prompt, api_url=api_url)
+    if ok:
+        reloader.request('/auth')
+    return ok, out
+
+
+async def _connect_gateway(gw: Any, cfg: BotConfig) -> None:
+    await gw.connect()
+    # Intents filter on the server; they do not stop presence frames.
+    await gw.subscribe(f'org:{cfg.org_id}', intents=cfg.event_intents)
+    print(f'subscribed to org:{cfg.org_id} '
+          f'intents={cfg.event_intents or "all"}')
+    await gw.run_forever()
+
+
+async def _backoff(reloader: 'Reloader', delay: float) -> None:
+    """Sleep before retrying, but a reload request (e.g. /auth) ends it now."""
+    try:
+        reason = await asyncio.wait_for(reloader.wait(), delay)
+        print(f'retrying now ({reason})')
+    except asyncio.TimeoutError:
+        pass
+
+
+async def run_gateway(
+    cfg: BotConfig,
+    queue: asyncio.Queue,
+    reloader: Reloader,
+    refresh: Callable[[], Awaitable[Tuple[str, EventDisplayFilter]]],
+    gateway_factory: Optional[Callable[..., Any]] = None,
+    retry_delay: float = 30.0,
+) -> None:
+    """
+    One gateway connection per generation; a reload request ends the current
+    one and starts the next with a freshly read token and org name.
+    """
+    if gateway_factory is None:
+        from warmbly.gateway import AsyncGatewayClient
+
+        def gateway_factory(token, base_url):
+            return AsyncGatewayClient(token=token, base_url=base_url)
+
+    while True:
+        try:
+            token, display = await refresh()
+        except Exception as exc:
+            print(f'reload failed: {type(exc).__name__}: {exc}; '
+                  f'retrying in {retry_delay:g}s')
+            await _backoff(reloader, retry_delay)
+            continue
+
+        gw = gateway_factory(token, gateway_base_url(cfg.gateway_url))
+        register_event_handlers(gw, queue.put, display)
+        connection = asyncio.create_task(_connect_gateway(gw, cfg))
+        reload_wait = asyncio.create_task(reloader.wait())
+        try:
+            done, _ = await asyncio.wait(
+                {connection, reload_wait}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            reload_wait.cancel()
+            connection.cancel()
+            await gw.close()
+        if reload_wait in done and not reload_wait.cancelled():
+            print(f'reloading event feed ({reload_wait.result()})')
+            continue
+        # The connection ended on its own: the SDK supervises reconnects, so
+        # this is a fatal error (e.g. a revoked token). Retry, as a reload.
+        exc = connection.exception() if not connection.cancelled() else None
+        print(f'gateway stopped: {type(exc).__name__ if exc else "closed"}: '
+              f'{exc}; retrying in {retry_delay:g}s')
+        await _backoff(reloader, retry_delay)
 
 
 @flow(log_prints=True)
@@ -557,16 +713,35 @@ async def discord_bot() -> None:
     cfg = BotConfig.from_env()
     groups = parse_cli_groups(await _cli_help())
     print(f'warmbly command groups: {", ".join(groups)}')
-    org_names = await fetch_org_names(cfg.warmbly_api_url, cfg.warmbly_token)
-    org_name = org_names.get(cfg.org_id)
-    print(f'org {cfg.org_id} -> {org_name or "(name unresolved)"}')
-    client = build_client(cfg, groups)
+
+    reloader = RELOADER
+    reloader.attach(asyncio.get_running_loop())
+    print(f'reload: /reload, successful /auth'
+          + (f', or kill -HUP {os.getpid()}' if _SIGHUP_INSTALLED else ''))
+
+    async def refresh() -> Tuple[str, EventDisplayFilter]:
+        token = await active_warmbly_token(cfg.warmbly_token)
+        source = 'env' if token == cfg.warmbly_token else 'warmbly auth'
+        names = await fetch_org_names(cfg.warmbly_api_url, token)
+        print(f'credential from {source}; org {cfg.org_id} -> '
+              f'{names.get(cfg.org_id) or "(name unresolved)"}')
+        return token, EventDisplayFilter(names)
+
+    # Resolved once for the announcement; reloads re-resolve per generation.
+    first_token = await active_warmbly_token(cfg.warmbly_token)
+    org_name = (await fetch_org_names(cfg.warmbly_api_url, first_token)
+                ).get(cfg.org_id)
+
+    # The queue and sender outlive gateway generations, so a reload neither
+    # re-announces nor drops events already queued.
+    queue: asyncio.Queue = asyncio.Queue()
+    client = build_client(cfg, groups, reloader=reloader)
     async with client:
         await asyncio.gather(
             client.start(cfg.discord_token),
-            _event_feed(client, cfg,
-                        format_announcement(cfg, groups, org_name),
-                        EventDisplayFilter(org_names)))
+            run_sender(client, cfg, queue,
+                       format_announcement(cfg, groups, org_name)),
+            run_gateway(cfg, queue, reloader, refresh))
 
 
 if __name__ == '__main__':

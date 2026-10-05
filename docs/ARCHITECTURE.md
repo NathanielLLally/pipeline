@@ -740,7 +740,17 @@ between a discord.py client and the Warmbly `AsyncGatewayClient`.
 - **Event feed.** The flow subscribes to `org:$WARMBLY_ORG_ID` on
   `$WARMBLY_WEBSOCKET_URL`. The `/socket/websocket` suffix is stripped because the SDK
   appends it. The SDK has no wildcard handler, so the bot registers one handler per
-  `GatewayEvent` constant. Events that are not named in the SDK are **not** forwarded.
+  `GatewayEvent` constant whose value is UPPER_CASE (53 business events). The
+  lowercase constants (`presence_state`, `presence_diff`, `rate_limited`, `resumed`,
+  `resume_failed`) are transport frames and are deliberately **not** forwarded:
+  presence is people opening and closing the CRM dashboard, and an API-key client
+  joining does not generate it (verified 2026-10-05). Events that are not named in
+  the SDK are not forwarded either.
+- **Event families.** Optional `$WARMBLY_EVENT_INTENTS`, e.g. `EMAIL,CAMPAIGN,MEETING`,
+  is passed as `intents` on the `org:` subscribe. The server keeps an event if any
+  token is a substring of its upper-cased name. There is no exclusion syntax. Unset
+  means everything. Intents do not filter presence frames, which is why those are
+  dropped client-side.
   Every event is posted to `$DISCORD_EVENT_CHANNEL_ID` in arrival order through a
   single queue.
 - **Display filter.** `EventDisplayFilter` sits between the gateway handlers and the
@@ -772,6 +782,23 @@ between a discord.py client and the Warmbly `AsyncGatewayClient`.
   ephemeral. `auth`, `browse`, `completion`, `help`, `upgrade` and `events` are
   excluded.
 - **`/list`** shows Prefect flows and their deployments from `get_client()`.
+- **Reload without restart.** The event feed's credential is
+  `warmbly auth token` (the CLI's active sign-in), falling back to
+  `$WARMBLY_API_TOKEN`. A successful `/auth`, the `/reload` command, or `SIGHUP`
+  closes the current gateway connection and opens a new one with whatever token is
+  active at that moment, and re-resolves the org name. The Discord connection,
+  the event queue and the announcement are untouched, so events already queued are
+  not lost and the bot does not re-announce. A reload request also cuts short the
+  30s retry wait after a fatal gateway error (e.g. a revoked key), so `/auth` fixes
+  a dead feed immediately.
+- **SIGHUP under Prefect.** A served run is its own `python -m prefect.engine`
+  process. It imports the flow module on the **main thread**, but an *async* flow body
+  runs on Prefect's `RunSyncEventLoopThread` via `run_coro_as_sync`, where
+  `signal.signal` raises ValueError. The handler is therefore installed at import
+  time on a module-level `RELOADER`, and the flow attaches its event loop to it;
+  delivery uses `call_soon_threadsafe`. The run logs `kill -HUP <pid>` at startup.
+  Prefect itself handles only SIGTERM, in the runner parent, so it does not claim
+  SIGHUP (verified against prefect 3.2.15, 2026-10-05).
 - **Announcement.** When Discord is ready, the bot posts an introduction to the
   channel listing the event source, the built-in commands and the CLI commands. It
   goes out once per flow run, before any queued events; automatic reconnects do not
@@ -801,3 +828,29 @@ deployment, it puts the entrypoint's directory first on the import path. A file
 package`. The unit tests passed anyway because they import the module as
 `flow.discord_bot`. The file is now `flow/warmbly_contacts.py`, and
 `tests/test_discord_bot.py::TestDeploymentImportPath` reproduces that path layout.
+
+## LLM call timeouts (2026-10-05)
+
+Every agent's LLM call goes through `flow/llm.py::_request`. It has two timeouts:
+
+- `LLM_REQUEST_TIMEOUT` (default 120s) is httpx's own timeout. It bounds each
+  connect and socket read, **not the whole call**. A proxy that accepts a request and
+  then trickles bytes, or never answers, can keep a call open indefinitely.
+- `LLM_CALL_TIMEOUT` (default 180s) caps the whole call. `httpx.post` runs on a
+  **daemon** thread and the caller waits at most this long. When the cap is hit, the
+  call raises `LLMTransportError` ("no reply from proxy … within LLM_CALL_TIMEOUT"),
+  which the agents already handle; it is not retried. A daemon thread is used rather
+  than a `ThreadPoolExecutor` because an executor's worker blocks interpreter exit
+  until the stuck request ends (measured: 20s vs 0.5s).
+
+How this was found: commit 22f8636 added `analysis_agent` to `run_agents` without
+updating `tests/test_run_agents.py`. Nine tests then sent real requests to the
+LiteLLM proxy on :4000, and the full suite hung indefinitely. The test file now has
+an autouse fixture that stubs `analysis_agent`. The suite passes with
+`LITELLM_BASE_URL=http://127.0.0.1:9`, which proves no unit test reaches the proxy.
+Those runs also overwrote the tracked `analysis-*-output.json` files.
+
+Do not `importlib.reload(flow.llm)` inside the test session. A reload creates new
+`LLMTransportError`/`LLMSchemaError` classes, and agents that imported the old ones
+stop catching them in every later test. Read module-level settings in a subprocess
+instead.

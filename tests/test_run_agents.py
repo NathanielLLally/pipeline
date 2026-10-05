@@ -32,6 +32,19 @@ DRAFTED = {'status': 'drafted', 'draft': {'subject': 's', 'body': 'b'},
            'outside_known_pool': []}
 
 
+@pytest.fixture(autouse=True)
+def _no_live_analysis():
+    """
+    Every drafted business now goes on to analysis_agent, which calls the LLM
+    proxy. Tests that predate that stage patch research and drafting only, so
+    without this they reach the live proxy and hang the suite. Tests about
+    analysis patch it again inside the test, which takes precedence.
+    """
+    with patch('flow.run_agents.analysis_agent',
+               return_value={'status': 'analyzed', 'analysis': {}}):
+        yield
+
+
 def _run(**kwargs):
     return asyncio.run(run_agents.fn(**kwargs))
 

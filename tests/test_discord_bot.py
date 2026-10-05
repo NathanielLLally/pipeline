@@ -47,6 +47,10 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+async def _block():
+    await asyncio.sleep(3600)
+
+
 def make_cfg(**overrides):
     values = dict(
         discord_token='t', channel_id=1, event_channel_id=2, guild_id=None,
@@ -202,17 +206,26 @@ class TestGatewayWiring:
             'wss://ws.example.com/socket/websocket') == 'wss://ws.example.com'
         assert bot.gateway_base_url('wss://ws.example.com/') == 'wss://ws.example.com'
 
-    def test_every_gateway_event_is_published(self):
-        from warmbly.gateway import GatewayEvent
+    def _registered(self):
         gw = MagicMock()
         registered = []
         gw.on_event.side_effect = lambda name: (
             lambda handler: registered.append(name) or handler)
         bot.register_event_handlers(gw, AsyncMock())
+        return set(registered)
 
-        names = {v for k, v in vars(GatewayEvent).items()
-                 if k.isupper() and isinstance(v, str)}
-        assert names <= set(registered)
+    def test_every_business_event_is_published(self):
+        from warmbly.gateway import GatewayEvent
+        business = {v for k, v in vars(GatewayEvent).items()
+                    if k.isupper() and isinstance(v, str) and v.isupper()}
+        assert business <= self._registered()
+
+    def test_control_frames_are_not_published(self):
+        """Presence, rate-limit and resume frames are transport, not CRM events."""
+        registered = self._registered()
+        for frame in ('presence_state', 'presence_diff', 'rate_limited',
+                      'resumed', 'resume_failed'):
+            assert frame not in registered
 
     def test_handler_publishes_formatted_event(self):
         gw = MagicMock()
@@ -570,3 +583,281 @@ class TestAnnouncementUsesOrgName:
     def test_falls_back_to_the_id(self):
         msg = bot.format_announcement(make_cfg(org_id=ORG_ID), [])
         assert ORG_ID in msg
+
+
+class TestEventIntents:
+    def _env(self, monkeypatch, **extra):
+        base = {'DISCORD_BOT_TOKEN': 't', 'DISCORD_CHANNEL_ID': '1',
+                'DISCORD_EVENT_CHANNEL_ID': '2', 'DISCORD_ADMIN_ROLE': 'r',
+                'WARMBLY_API_TOKEN': 'w', 'WARMBLY_WEBSOCKET_URL': 'wss://h',
+                'WARMBLY_ORG_ID': 'o'}
+        base.update(extra)
+        for k, v in base.items():
+            monkeypatch.setenv(k, v)
+
+    def test_unset_means_no_server_side_filter(self, monkeypatch):
+        self._env(monkeypatch)
+        monkeypatch.delenv('WARMBLY_EVENT_INTENTS', raising=False)
+        assert bot.BotConfig.from_env().event_intents is None
+
+    def test_comma_list_is_parsed_and_upper_cased(self, monkeypatch):
+        self._env(monkeypatch, WARMBLY_EVENT_INTENTS=' email, Campaign ,,')
+        assert bot.BotConfig.from_env().event_intents == ['EMAIL', 'CAMPAIGN']
+
+    def test_blank_value_means_no_filter(self, monkeypatch):
+        self._env(monkeypatch, WARMBLY_EVENT_INTENTS='  ')
+        assert bot.BotConfig.from_env().event_intents is None
+
+    def test_intents_are_passed_to_subscribe(self):
+        gw = MagicMock()
+        gw.connect = AsyncMock()
+        gw.subscribe = AsyncMock()
+        gw.run_forever = AsyncMock(side_effect=_block)
+        gw.close = AsyncMock()
+
+        async def go():
+            reloader = bot.Reloader()
+            reloader.attach(asyncio.get_running_loop())
+            refresh = AsyncMock(return_value=('tok', bot.EventDisplayFilter()))
+            task = asyncio.create_task(bot.run_gateway(
+                make_cfg(event_intents=['EMAIL']), asyncio.Queue(), reloader,
+                refresh, gateway_factory=lambda token, base_url: gw))
+            await asyncio.sleep(0.05)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        _run(go())
+        assert gw.subscribe.await_args.kwargs['intents'] == ['EMAIL']
+
+    def test_announcement_names_the_filter(self):
+        msg = bot.format_announcement(make_cfg(event_intents=['EMAIL', 'MEETING']), [])
+        assert 'EMAIL' in msg and 'MEETING' in msg
+
+
+class TestActiveToken:
+    def _proc(self, out, code=0):
+        proc = MagicMock()
+        proc.communicate = AsyncMock(return_value=(out, b''))
+        proc.returncode = code
+        return proc
+
+    def test_prefers_the_cli_signed_in_token(self):
+        with patch('flow.discord_bot.asyncio.create_subprocess_exec',
+                   new=AsyncMock(return_value=self._proc(b'wmbly_cli\n'))) as ex:
+            token = _run(bot.active_warmbly_token('wmbly_env'))
+        assert token == 'wmbly_cli'
+        assert ex.await_args.args[1:3] == ('auth', 'token')
+
+    def test_falls_back_to_env_token_when_cli_has_none(self):
+        with patch('flow.discord_bot.asyncio.create_subprocess_exec',
+                   new=AsyncMock(return_value=self._proc(b'', code=1))):
+            assert _run(bot.active_warmbly_token('wmbly_env')) == 'wmbly_env'
+
+    def test_falls_back_when_cli_is_missing(self):
+        with patch('flow.discord_bot.asyncio.create_subprocess_exec',
+                   new=AsyncMock(side_effect=FileNotFoundError)):
+            assert _run(bot.active_warmbly_token('wmbly_env')) == 'wmbly_env'
+
+
+class TestReloader:
+    def test_request_wakes_the_waiter(self):
+        async def go():
+            r = bot.Reloader()
+            r.attach(asyncio.get_running_loop())
+            waiter = asyncio.create_task(r.wait())
+            await asyncio.sleep(0)
+            assert not waiter.done()
+            r.request('test')
+            return await asyncio.wait_for(waiter, 1)
+        assert _run(go()) == 'test'
+
+    def test_request_from_another_thread_is_safe(self):
+        import threading
+
+        async def go():
+            r = bot.Reloader()
+            r.attach(asyncio.get_running_loop())
+            threading.Thread(target=r.request, args=('SIGHUP',)).start()
+            return await asyncio.wait_for(r.wait(), 2)
+        assert _run(go()) == 'SIGHUP'
+
+    def test_request_before_attach_is_ignored(self):
+        bot.Reloader().request('early')
+
+    def test_sighup_handler_requests_reload(self):
+        import signal
+        r = MagicMock()
+        installed = {}
+        with patch('flow.discord_bot.signal.signal',
+                   side_effect=lambda sig, h: installed.setdefault(sig, h)):
+            assert bot.install_sighup(r) is True
+        installed[signal.SIGHUP](signal.SIGHUP, None)
+        r.request.assert_called_once_with('SIGHUP')
+
+    def test_sighup_off_the_main_thread_degrades_quietly(self):
+        r = MagicMock()
+        with patch('flow.discord_bot.signal.signal',
+                   side_effect=ValueError('main thread only')):
+            assert bot.install_sighup(r) is False
+
+
+class TestFeedReloads:
+    def test_reload_reconnects_with_a_fresh_token(self):
+        """The gateway is rebuilt per generation with the current token."""
+        tokens = iter(['tok-1', 'tok-2'])
+        built = []
+
+        def make_gw(token, base_url):
+            gw = MagicMock()
+            gw.connect = AsyncMock()
+            gw.subscribe = AsyncMock()
+            gw.close = AsyncMock()
+            gw.run_forever = AsyncMock(side_effect=_block)
+            built.append((token, gw))
+            return gw
+
+        async def go():
+            reloader = bot.Reloader()
+            reloader.attach(asyncio.get_running_loop())
+            display = bot.EventDisplayFilter()
+            refresh = AsyncMock(side_effect=lambda: (next(tokens), display))
+            feed = asyncio.create_task(bot.run_gateway(
+                make_cfg(), asyncio.Queue(), reloader, refresh,
+                gateway_factory=make_gw))
+            await asyncio.sleep(0.05)
+            reloader.request('test')
+            await asyncio.sleep(0.05)
+            feed.cancel()
+            try:
+                await feed
+            except asyncio.CancelledError:
+                pass
+
+        _run(go())
+        assert [t for t, _ in built] == ['tok-1', 'tok-2']
+        built[0][1].close.assert_awaited()
+        built[1][1].close.assert_awaited()
+
+    def test_failed_refresh_keeps_retrying_instead_of_dying(self):
+        attempts = []
+
+        async def refresh():
+            attempts.append(1)
+            raise RuntimeError('api down')
+
+        async def go():
+            reloader = bot.Reloader()
+            reloader.attach(asyncio.get_running_loop())
+            feed = asyncio.create_task(bot.run_gateway(
+                make_cfg(), asyncio.Queue(), reloader, refresh,
+                gateway_factory=MagicMock(), retry_delay=0.01))
+            await asyncio.sleep(0.08)
+            feed.cancel()
+            try:
+                await feed
+            except asyncio.CancelledError:
+                pass
+
+        _run(go())
+        assert len(attempts) >= 2
+
+
+class TestAuthTriggersReload:
+    def test_successful_login_requests_a_reload(self):
+        reloader = MagicMock()
+        with patch('flow.discord_bot.auth_login',
+                   new=AsyncMock(return_value=(True, 'Signed in'))):
+            ok, _ = _run(bot.login_and_reload('h', AsyncMock(), reloader, 'https://api.h'))
+        assert ok
+        reloader.request.assert_called_once_with('/auth')
+
+    def test_failed_login_does_not_reload(self):
+        reloader = MagicMock()
+        with patch('flow.discord_bot.auth_login',
+                   new=AsyncMock(return_value=(False, 'expired'))):
+            _run(bot.login_and_reload('h', AsyncMock(), reloader, 'https://api.h'))
+        reloader.request.assert_not_called()
+
+
+class TestReloadCommand:
+    def test_reload_is_a_built_in_command(self):
+        client = bot.build_client(make_cfg(), ['campaign'], reloader=bot.Reloader())
+        names = {c.name for c in client.bot_tree.get_commands()}
+        assert 'reload' in names
+        assert 'reload' in bot.RESERVED_NAMES
+
+    def test_announcement_lists_reload(self):
+        assert '/reload' in bot.format_announcement(make_cfg(), [])
+
+
+class TestReloadDuringBackoff:
+    def test_reload_cuts_the_retry_wait_short(self):
+        """After a fatal gateway error, /reload must not wait out the backoff."""
+        built = []
+
+        def make_gw(token, base_url):
+            gw = MagicMock()
+            gw.connect = AsyncMock(side_effect=RuntimeError('401 revoked')
+                                   if not built else None)
+            gw.subscribe = AsyncMock()
+            gw.close = AsyncMock()
+            gw.run_forever = AsyncMock(side_effect=_block)
+            built.append(token)
+            return gw
+
+        async def go():
+            reloader = bot.Reloader()
+            reloader.attach(asyncio.get_running_loop())
+            refresh = AsyncMock(return_value=('tok', bot.EventDisplayFilter()))
+            task = asyncio.create_task(bot.run_gateway(
+                make_cfg(), asyncio.Queue(), reloader, refresh,
+                gateway_factory=make_gw, retry_delay=3600))
+            await asyncio.sleep(0.05)
+            reloader.request('/auth')
+            await asyncio.sleep(0.05)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        _run(go())
+        assert len(built) == 2
+
+
+class TestSighupUnderPrefectRunner:
+    def test_sighup_reaches_a_flow_running_off_the_main_thread(self):
+        """
+        Prefect runs an async flow on its RunSyncEventLoopThread, where
+        signal.signal is refused. The handler installed at import (main thread)
+        must still reach the loop the flow attached.
+        """
+        import os
+        import signal
+        import threading
+
+        assert bot.install_sighup(bot.RELOADER) is True  # main thread, as at import
+        result = {}
+
+        def flow_thread():
+            async def go():
+                bot.RELOADER.attach(asyncio.get_running_loop())
+                result['ready'].set()
+                result['reason'] = await asyncio.wait_for(bot.RELOADER.wait(), 5)
+            asyncio.run(go())
+
+        result['ready'] = threading.Event()
+        t = threading.Thread(target=flow_thread, name='RunSyncEventLoopThread')
+        t.start()
+        assert result['ready'].wait(5)
+        os.kill(os.getpid(), signal.SIGHUP)
+        t.join(5)
+        assert result.get('reason') == 'SIGHUP'
+
+    def test_module_installs_sighup_on_import(self):
+        import signal
+        handler = signal.getsignal(signal.SIGHUP)
+        assert callable(handler) and handler not in (signal.SIG_DFL, signal.SIG_IGN)

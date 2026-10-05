@@ -12,6 +12,8 @@ No `instructor` -- see spec section 3.2.
 
 import json
 import os
+import threading
+from concurrent.futures import TimeoutError as FutureTimeout
 from typing import Any, Optional, Type
 
 import httpx
@@ -20,6 +22,10 @@ from pydantic import BaseModel, ValidationError
 PROXY_URL = os.environ.get('LITELLM_BASE_URL', 'http://127.0.0.1:4000')
 MODEL = os.environ.get('LLM_MODEL', 'gpt-4o-mini')
 REQUEST_TIMEOUT = float(os.environ.get('LLM_REQUEST_TIMEOUT', '120'))
+# httpx's timeout bounds each socket read, not the call, so a proxy that
+# trickles bytes or holds the connection open can outlast it indefinitely.
+# This caps the whole call.
+CALL_TIMEOUT = float(os.environ.get('LLM_CALL_TIMEOUT', '180'))
 
 # The proxy key goes in its own header, not Authorization. LiteLLM reserves
 # Authorization for the UPSTREAM provider credential and passes it through, so
@@ -133,6 +139,33 @@ def strict_json_schema(schema_model: Type[BaseModel]) -> dict:
     return _strictify(schema_model.model_json_schema())
 
 
+def _post_with_deadline(url: str, **kwargs: Any) -> httpx.Response:
+    """
+    httpx.post, abandoned after CALL_TIMEOUT.
+
+    The call runs on a daemon thread: the caller is released at the deadline,
+    and an abandoned call cannot hold the process open at exit (a
+    ThreadPoolExecutor worker would, until the stuck request ended).
+    """
+    outcome: dict = {}
+    done = threading.Event()
+
+    def call() -> None:
+        try:
+            outcome['response'] = httpx.post(url, **kwargs)
+        except BaseException as exc:
+            outcome['error'] = exc
+        finally:
+            done.set()
+
+    threading.Thread(target=call, name='llm-call', daemon=True).start()
+    if not done.wait(CALL_TIMEOUT):
+        raise FutureTimeout()
+    if 'error' in outcome:
+        raise outcome['error']
+    return outcome['response']
+
+
 def _request(
     messages: list,
     schema_model: Type[BaseModel],
@@ -174,7 +207,7 @@ def _request(
               f'model={model!r} headers={_safe_headers(headers)}')
 
     try:
-        response = httpx.post(
+        response = _post_with_deadline(
             f'{PROXY_URL}/v1/chat/completions',
             json=body, headers=headers, timeout=REQUEST_TIMEOUT,
         )
@@ -192,6 +225,11 @@ def _request(
     except httpx.HTTPError as exc:
         raise LLMTransportError(
             f'{type(exc).__name__} calling proxy for model {model!r}: {exc}'
+        ) from exc
+    except FutureTimeout as exc:
+        raise LLMTransportError(
+            f'no reply from proxy for model {model!r} within '
+            f'LLM_CALL_TIMEOUT={CALL_TIMEOUT:g}s'
         ) from exc
 
     return response.json()['choices'][0]['message']['content']

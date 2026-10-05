@@ -292,3 +292,71 @@ class TestRequestDebugLogging:
             complete_structured("describe", ResearchOutput)
 
         assert 'LITELLM_API_KEY' in capsys.readouterr().out
+
+
+class TestWholeCallDeadline:
+    """
+    httpx's timeout bounds each socket read, not the call: a proxy that
+    trickles bytes, or never answers after accepting, can hold a call open far
+    past LLM_REQUEST_TIMEOUT. LLM_CALL_TIMEOUT caps the whole call.
+    """
+
+    def _hang(self, *args, **kwargs):
+        import threading
+        threading.Event().wait(30)
+        return _reply(json.dumps(VALID))
+
+    def test_a_hung_call_is_cut_off_at_the_deadline(self, monkeypatch):
+        import time
+        monkeypatch.setattr('flow.llm.CALL_TIMEOUT', 0.2)
+        started = time.monotonic()
+        with patch('flow.llm.httpx.post', side_effect=self._hang):
+            with pytest.raises(LLMTransportError) as exc:
+                complete_structured("describe", ResearchOutput)
+        assert time.monotonic() - started < 5
+        assert 'LLM_CALL_TIMEOUT' in str(exc.value)
+
+    def test_a_timed_out_call_is_not_retried(self, monkeypatch):
+        """A stuck proxy stays stuck; retrying doubles the wait."""
+        monkeypatch.setattr('flow.llm.CALL_TIMEOUT', 0.2)
+        with patch('flow.llm.httpx.post', side_effect=self._hang) as post:
+            with pytest.raises(LLMTransportError):
+                complete_structured("describe", ResearchOutput, max_attempts=3)
+        assert post.call_count == 1
+
+    def test_a_fast_call_is_unaffected(self, monkeypatch):
+        monkeypatch.setattr('flow.llm.CALL_TIMEOUT', 5)
+        with patch('flow.llm.httpx.post', return_value=_reply(json.dumps(VALID))):
+            result = complete_structured("describe", ResearchOutput)
+        assert result.business_name == "Happy Tails"
+
+    def test_errors_inside_the_call_still_surface_as_before(self, monkeypatch):
+        monkeypatch.setattr('flow.llm.CALL_TIMEOUT', 5)
+        with patch('flow.llm.httpx.post',
+                   side_effect=httpx.ConnectError("refused")):
+            with pytest.raises(LLMTransportError) as exc:
+                complete_structured("describe", ResearchOutput)
+        assert 'ConnectError' in str(exc.value)
+
+    def test_deadline_defaults_and_reads_env(self):
+        """
+        Checked in a subprocess: reloading flow.llm here would mint new
+        LLMTransportError classes, and agents that imported the old ones
+        would stop catching them for the rest of the session.
+        """
+        import os
+        import subprocess
+        import sys
+
+        def read(env_value):
+            env = {k: v for k, v in os.environ.items() if k != 'LLM_CALL_TIMEOUT'}
+            if env_value is not None:
+                env['LLM_CALL_TIMEOUT'] = env_value
+            out = subprocess.run(
+                [sys.executable, '-c',
+                 'import flow.llm as m; print(m.CALL_TIMEOUT)'],
+                capture_output=True, text=True, env=env)
+            return float(out.stdout.strip().splitlines()[-1])
+
+        assert read(None) == 180.0
+        assert read('42') == 42.0
