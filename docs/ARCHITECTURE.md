@@ -758,6 +758,10 @@ between a discord.py client and the Warmbly `AsyncGatewayClient`.
   ephemeral. `auth`, `browse`, `completion`, `help`, `upgrade` and `events` are
   excluded.
 - **`/list`** shows Prefect flows and their deployments from `get_client()`.
+- **Announcement.** When Discord is ready, the bot posts an introduction to the
+  channel listing the event source, the built-in commands and the CLI commands. It
+  goes out once per flow run, before any queued events; automatic reconnects do not
+  repeat it. If the post fails, the error is logged and the event feed keeps running.
 - **Permissions.** Every command defaults to members with Manage Server. Server
   admins can widen this under Server Settings > Integrations.
 - **Env vars.** These already existed: `WARMBLY_API_TOKEN`, `WARMBLY_WEBSOCKET_URL`,

@@ -170,6 +170,51 @@ def format_event(event: str, topic: str, payload: Any) -> str:
     return f'{head}```json\n{body}\n```'
 
 
+def format_announcement(cfg: 'BotConfig', cli_groups: List[str]) -> str:
+    head = (
+        '**Warmbly bot online.**\n'
+        f'Posting every Warmbly event from `org:{cfg.org_id}` here.\n\n'
+        f'`/batchdraft [n]` select, research and draft a batch '
+        f'(default {DEFAULT_BATCH}) via `{cfg.batchdraft_deployment}`\n'
+        '`/auth` sign the Warmbly CLI in\n'
+        '`/list` Prefect flows and deployments\n'
+    )
+    names = [g for g in cli_groups if g not in RESERVED_NAMES]
+    if not names:
+        return head
+    intro = '\nWarmbly CLI, as `/<command> args:...`: '
+    room = DISCORD_MESSAGE_LIMIT - len(head) - len(intro)
+    listed = ''
+    for i, name in enumerate(names):
+        item = f'`/{name}`' if i == 0 else f' `/{name}`'
+        more = f' … and {len(names) - i} more'
+        if len(listed) + len(item) + len(more) > room:
+            listed += more
+            break
+        listed += item
+    return head + intro + listed
+
+
+async def post_to_channel(
+    client: Any, channel_id: int, queue: 'asyncio.Queue', announcement: str
+) -> None:
+    """Announce once, then post queued events in arrival order."""
+    await client.wait_until_ready()
+    channel = (client.get_channel(channel_id)
+               or await client.fetch_channel(channel_id))
+    # Once per flow run: discord.py reconnects without re-running this.
+    try:
+        await channel.send(announcement)
+    except Exception as exc:
+        print(f'could not post announcement: {type(exc).__name__}: {exc}')
+    while True:
+        message = await queue.get()
+        try:
+            await channel.send(message)
+        except Exception as exc:
+            print(f'could not post event: {type(exc).__name__}: {exc}')
+
+
 # -- command logic -----------------------------------------------------------
 
 async def run_cli(group: str, args: str) -> Tuple[int, str]:
@@ -403,7 +448,8 @@ def build_client(cfg: BotConfig, cli_groups: List[str]) -> Any:
     return client
 
 
-async def _event_feed(client: Any, cfg: BotConfig) -> None:
+async def _event_feed(client: Any, cfg: BotConfig,
+                      announcement: str) -> None:
     from warmbly.gateway import AsyncGatewayClient
 
     # One sender keeps events in arrival order; handlers run as separate tasks.
@@ -412,18 +458,8 @@ async def _event_feed(client: Any, cfg: BotConfig) -> None:
                             base_url=gateway_base_url(cfg.gateway_url))
     register_event_handlers(gw, queue.put)
 
-    async def sender() -> None:
-        await client.wait_until_ready()
-        channel = (client.get_channel(cfg.channel_id)
-                   or await client.fetch_channel(cfg.channel_id))
-        while True:
-            message = await queue.get()
-            try:
-                await channel.send(message)
-            except Exception as exc:
-                print(f'could not post event: {type(exc).__name__}: {exc}')
-
-    sender_task = asyncio.create_task(sender())
+    sender_task = asyncio.create_task(
+        post_to_channel(client, cfg.channel_id, queue, announcement))
     try:
         await gw.connect()
         await gw.subscribe(f'org:{cfg.org_id}')
@@ -442,8 +478,9 @@ async def discord_bot() -> None:
     print(f'warmbly command groups: {", ".join(groups)}')
     client = build_client(cfg, groups)
     async with client:
-        await asyncio.gather(client.start(cfg.discord_token),
-                             _event_feed(client, cfg))
+        await asyncio.gather(
+            client.start(cfg.discord_token),
+            _event_feed(client, cfg, format_announcement(cfg, groups)))
 
 
 if __name__ == '__main__':

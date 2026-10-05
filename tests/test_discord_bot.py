@@ -310,3 +310,87 @@ class TestDeploymentImportPath:
              str(flow_dir)],
             capture_output=True, text=True)
         assert result.returncode == 0, result.stderr
+
+
+class TestAnnouncement:
+    GROUPS = ['campaign', 'contact', 'status']
+
+    def _cfg(self):
+        return bot.BotConfig('t', 1, None, 'w', 'wss://h', 'org-9',
+                             'run-agents/run-agents', 'https://api.h')
+
+    def test_names_the_built_in_commands(self):
+        msg = bot.format_announcement(self._cfg(), self.GROUPS)
+        for cmd in ('/batchdraft', '/auth', '/list'):
+            assert cmd in msg
+
+    def test_names_the_batch_default_and_target_deployment(self):
+        msg = bot.format_announcement(self._cfg(), self.GROUPS)
+        assert str(bot.DEFAULT_BATCH) in msg
+        assert 'run-agents/run-agents' in msg
+
+    def test_lists_the_piped_cli_commands(self):
+        msg = bot.format_announcement(self._cfg(), self.GROUPS)
+        assert '/campaign' in msg and '/status' in msg
+
+    def test_says_where_events_come_from(self):
+        msg = bot.format_announcement(self._cfg(), self.GROUPS)
+        assert 'org:org-9' in msg
+
+    def test_fits_discord_message_limit_with_many_groups(self):
+        groups = [f'group-{i:03d}' for i in range(200)]
+        msg = bot.format_announcement(self._cfg(), groups)
+        assert len(msg) <= bot.DISCORD_MESSAGE_LIMIT
+
+
+class TestSenderAnnouncesFirst:
+    def test_announcement_precedes_queued_events(self):
+        sent = []
+        channel = MagicMock()
+
+        async def send(message):
+            sent.append(message)
+            if len(sent) == 2:
+                raise asyncio.CancelledError
+        channel.send = send
+
+        client = MagicMock()
+        client.wait_until_ready = AsyncMock()
+        client.get_channel.return_value = channel
+
+        async def go():
+            queue = asyncio.Queue()
+            await queue.put('event-1')
+            try:
+                await bot.post_to_channel(client, 1, queue, 'hello')
+            except asyncio.CancelledError:
+                pass
+
+        _run(go())
+        assert sent == ['hello', 'event-1']
+
+    def test_failed_announcement_does_not_stop_the_feed(self):
+        sent = []
+        channel = MagicMock()
+
+        async def send(message):
+            if message == 'hello':
+                raise RuntimeError('missing permissions')
+            sent.append(message)
+            raise asyncio.CancelledError
+        channel.send = send
+
+        client = MagicMock()
+        client.wait_until_ready = AsyncMock()
+        client.get_channel.return_value = channel
+
+        async def go():
+            queue = asyncio.Queue()
+            await queue.put('event-1')
+            try:
+                await bot.post_to_channel(client, 1, queue, 'hello')
+            except asyncio.CancelledError:
+                pass
+
+        _run(go())
+        assert sent == ['event-1']
