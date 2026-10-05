@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from prefect import flow
 
+from flow.agents.analysis import analysis_agent
 from flow.agents.drafting import drafting_agent
 from flow.agents.research import research_agent
 from flow.agents.selector import (
@@ -66,7 +67,7 @@ async def run_agents(
     print(f'selected {len(candidates)}')
 
     outcomes: List[Dict[str, Any]] = []
-    counts = {'researched': 0, 'rejected': 0, 'drafted': 0, 'errored': 0}
+    counts = {'researched': 0, 'rejected': 0, 'drafted': 0, 'analyzed': 0, 'errored': 0}
 
     for candidate in candidates:
         business = candidate['business']
@@ -116,16 +117,37 @@ async def run_agents(
             continue
 
         outcome['draft_status'] = drafted['status']
+        outcome['analysis_status'] = None
         if drafted['status'] == 'drafted':
             counts['drafted'] += 1
             outcome['draft'] = drafted['draft']
             outcome['outside_known_pool'] = drafted.get('outside_known_pool', [])
 
+            # Analyze the draft email for quality metrics
+            try:
+                analyzed = analysis_agent(
+                    research=researched['research'],
+                    draft=drafted['draft'],
+                    business=business
+                )
+            except Exception as exc:
+                print(f"analysis errored for {business.get('business_name')}: "
+                      f"{type(exc).__name__}: {exc}")
+                outcome['analysis_status'] = 'error'
+                outcome['analysis_error'] = f'{type(exc).__name__}: {exc}'
+                outcomes.append(outcome)
+                continue
+
+            outcome['analysis_status'] = analyzed.get('status')
+            if analyzed.get('status') == 'analyzed':
+                counts['analyzed'] += 1
+                outcome['analysis'] = analyzed.get('analysis')
+
         outcomes.append(outcome)
 
     print(f"selected={len(candidates)} researched={counts['researched']} "
           f"rejected={counts['rejected']} drafted={counts['drafted']} "
-          f"errored={counts['errored']}")
+          f"analyzed={counts['analyzed']} errored={counts['errored']}")
 
     return {
         'selected': len(candidates),

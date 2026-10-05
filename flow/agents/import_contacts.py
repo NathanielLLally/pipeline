@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from prefect import flow
 
 from flow.artifacts import read_artifact, write_artifact
-from flow.warmbly import (
+from flow.warmbly_contacts import (
     build_contact_payloads,
     contact_idempotency_key,
     create_contacts,

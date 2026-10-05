@@ -121,3 +121,86 @@ class DraftingOutput(BaseModel):
                 'adds the signature'
             )
         return value
+
+
+class DraftAnalysisOutput(BaseModel):
+    """Analysis metrics for a draft email on a 0-10 scale."""
+
+    personalization_score: float = Field(
+        ge=0.0, le=10.0,
+        description="How specifically tailored is the content to THIS business? "
+                    "0=completely generic/could send to anyone, 10=obviously unique to this business"
+    )
+    personalization_rationale: str = Field(
+        description="Why the personalization score: what specific details make it unique or generic?"
+    )
+
+    pain_points_score: float = Field(
+        ge=0.0, le=10.0,
+        description="How well does it address the business's specific pain points? "
+                    "0=misses the mark entirely, 10=perfectly articulates their exact problem"
+    )
+    pain_points_rationale: str = Field(
+        description="Which pain points are addressed and how well? Any gaps or misses?"
+    )
+
+    call_to_action_score: float = Field(
+        ge=0.0, le=10.0,
+        description="How compelling is the hook/CTA? Does it create urgency or desire? "
+                    "0=no hook/reason to respond, 10=recipient feels compelled to reply immediately"
+    )
+    call_to_action_rationale: str = Field(
+        description="Analyze the CTA mechanism: what creates urgency or appeal? Is it compelling?"
+    )
+
+    business_relevance_score: float = Field(
+        ge=0.0, le=10.0,
+        description="How relevant is the offer/solution to THIS business type? "
+                    "0=irrelevant to their model, 10=perfect fit for their business"
+    )
+    business_relevance_rationale: str = Field(
+        description="Is the offer a strong fit for this business model and revenue stream?"
+    )
+
+    authenticity_score: float = Field(
+        ge=0.0, le=10.0,
+        description="Does this sound like a real person or a template? "
+                    "0=obvious form letter, 10=genuine, conversational, specific voice"
+    )
+    authenticity_rationale: str = Field(
+        description="Does the writing feel authentic and human, or templated and robotic?"
+    )
+
+    clarity_score: float = Field(
+        ge=0.0, le=10.0,
+        description="How clear and easy to understand? "
+                    "0=confusing/hard to parse, 10=crystal clear what is being offered"
+    )
+    clarity_rationale: str = Field(
+        description="Is the message easy to understand? Any confusing or unclear sections?"
+    )
+
+    trust_signals_score: float = Field(
+        ge=0.0, le=10.0,
+        description="Does it include credibility/trust signals? "
+                    "0=no trust elements, 10=includes strong proof points or credibility indicators"
+    )
+    trust_signals_rationale: str = Field(
+        description="What trust signals or credibility elements are present (or missing)?"
+    )
+
+    overall_quality_score: float = Field(
+        ge=0.0, le=10.0,
+        description="Overall quality and likely response rate potential. "
+                    "0=likely to be deleted immediately, 10=likely to get a response"
+    )
+    overall_quality_rationale: str = Field(
+        description="Summary: is this a strong outreach? What's the likelihood it gets a positive response?"
+    )
+
+    key_strengths: List[str] = Field(
+        description="Top 2-3 things this draft does well"
+    )
+    improvement_areas: List[str] = Field(
+        description="Top 2-3 things that could be improved"
+    )

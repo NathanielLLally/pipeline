@@ -1,0 +1,42 @@
+# Direct dependencies of the Python code in this repo, pinned to the versions
+# installed in .venv and passing the unit suite (Python 3.15.0rc1).
+#
+#   python -m venv .venv && .venv/bin/pip install -r requirements.txt
+#
+# Not listed on purpose:
+#   litellm   flow/llm.py talks to the LiteLLM proxy over httpx, not the package
+#   perl      scripts/mxCheck.pl is run as a subprocess; system dependency
+#   warmbly CLI  the Go binary at ~/.local/bin/warmbly, used by flow/discord_bot.py,
+#             is not the `warmbly` Python SDK below
+
+# Orchestration
+prefect==3.2.15
+
+# Warmbly REST/realtime SDK (pulls in websockets for the gateway)
+warmbly==0.3.0
+
+# Discord bot (flow/discord_bot.py)
+discord.py==2.7.1
+
+# Database
+asyncpg==0.31.0
+
+# HTTP
+httpx==0.28.1
+requests==2.34.2
+
+# Webhook endpoint (flow/warmbly_http_endpoint.py)
+fastapi==0.141.1
+uvicorn==0.54.0
+pydantic==2.13.5
+
+# scripts/run_perl_json_cli.py
+jsonargparse==4.52.0
+
+# workflows/ (PyWorkflow + Celery scaffold) is left out: pyworkflow-engine
+# 0.4.0 needs click>=8.4.2 and prefect 3.2.15 needs click<8.2, so both cannot
+# be installed together. Resolve which orchestrator stays before adding it back.
+# pyworkflow-engine==0.4.0
+
+# Tests
+pytest==9.1.1

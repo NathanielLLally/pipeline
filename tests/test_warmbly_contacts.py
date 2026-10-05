@@ -23,7 +23,7 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 
-from flow.warmbly import (
+from flow.warmbly_contacts import (
     CONTACTS_PATH,
     build_contact_payloads,
     create_contacts,
@@ -164,7 +164,7 @@ class TestCreateContacts:
         monkeypatch.setenv('WARMBLY_API_TOKEN', 'wb-token')
         payloads = build_contact_payloads(BUSINESS, RESEARCH, DRAFT)
 
-        with patch('flow.warmbly.httpx.post',
+        with patch('flow.warmbly_contacts.httpx.post',
                    return_value=self._ok(payloads)) as post:
             create_contacts(payloads)
 
@@ -175,7 +175,7 @@ class TestCreateContacts:
         monkeypatch.setenv('WARMBLY_API_TOKEN', 'wb-token')
         payloads = build_contact_payloads(BUSINESS, RESEARCH, DRAFT)
 
-        with patch('flow.warmbly.httpx.post',
+        with patch('flow.warmbly_contacts.httpx.post',
                    return_value=self._ok(payloads)) as post:
             create_contacts(payloads)
 
@@ -186,7 +186,7 @@ class TestCreateContacts:
         monkeypatch.setenv('WARMBLY_API_TOKEN', 'wb-token')
         payloads = build_contact_payloads(BUSINESS, RESEARCH, DRAFT)
 
-        with patch('flow.warmbly.httpx.post',
+        with patch('flow.warmbly_contacts.httpx.post',
                    return_value=self._ok(payloads)) as post:
             create_contacts(payloads, idempotency_key='leads-biz-1')
 
@@ -197,7 +197,7 @@ class TestCreateContacts:
         monkeypatch.setenv('WARMBLY_API_TOKEN', 'wb-token')
         payloads = build_contact_payloads(BUSINESS, RESEARCH, DRAFT)
 
-        with patch('flow.warmbly.httpx.post', return_value=self._ok(payloads)):
+        with patch('flow.warmbly_contacts.httpx.post', return_value=self._ok(payloads)):
             created = create_contacts(payloads)
 
         assert created[0]['id'] == 'id-0'
@@ -213,7 +213,7 @@ class TestCreateContacts:
         monkeypatch.setenv('WARMBLY_API_TOKEN', 'wb-token')
         monkeypatch.setenv('WARMBLY_API_URL', 'https://api.example.test')
 
-        with patch('flow.warmbly.httpx.post') as post:
+        with patch('flow.warmbly_contacts.httpx.post') as post:
             assert create_contacts([]) == []
 
         post.assert_not_called()

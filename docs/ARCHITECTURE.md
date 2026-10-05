@@ -730,3 +730,50 @@ runnable, pausable and rate-limitable in the UI, which is the point of splitting
 
 **Verified locally only.** Deployments are created, tested and ready; nothing is
 deployed to `accurateleadinfo.com` yet.
+
+## Discord bot: Warmbly event feed + slash commands (2026-10-04)
+
+`flow/discord_bot.py` holds the async flow `discord-bot`, served by
+`flow/serve_discord_bot.py`. A single long-running flow run shares one event loop
+between a discord.py client and the Warmbly `AsyncGatewayClient`.
+
+- **Event feed.** The flow subscribes to `org:$WARMBLY_ORG_ID` on
+  `$WARMBLY_WEBSOCKET_URL`. The `/socket/websocket` suffix is stripped because the SDK
+  appends it. The SDK has no wildcard handler, so the bot registers one handler per
+  `GatewayEvent` constant. Events that are not named in the SDK are **not** forwarded.
+  Every event is posted to `$DISCORD_CHANNEL_ID` in arrival order through a single
+  queue.
+- **`/batchdraft [n]`** calls `run_deployment($BATCHDRAFT_DEPLOYMENT, batch_size=n or 50,
+  timeout=0, as_subflow=False)`. The default deployment is `run-agents/run-agents`, and
+  `serve_agents.py` registers it only when `SERVE_RUN_AGENTS=1`.
+- **`/auth`** runs `warmbly auth login --web --force --hostname <host> --api-url
+  $WARMBLY_API_URL`. The host is `$WARMBLY_API_URL` with the `api.` prefix removed. The
+  CLI uses an OAuth **device flow**: it prints `Your code:` and `Approve at: <url>`,
+  then polls for up to 10 minutes. The bot sends that URL to the invoker as an
+  ephemeral message. Credentials go to `~/.config/warmbly/hosts.yml` of the user the
+  worker runs as.
+- **`/<group> args`** registers one slash command per `warmbly` command group, parsed
+  from `warmbly --help` at startup (30 groups as of CLI 2026-10). `args` is
+  shlex-split, the command runs with no shell and stdin closed, and output is
+  ephemeral. `auth`, `browse`, `completion`, `help`, `upgrade` and `events` are
+  excluded.
+- **`/list`** shows Prefect flows and their deployments from `get_client()`.
+- **Permissions.** Every command defaults to members with Manage Server. Server
+  admins can widen this under Server Settings > Integrations.
+- **Env vars.** These already existed: `WARMBLY_API_TOKEN`, `WARMBLY_WEBSOCKET_URL`,
+  `WARMBLY_ORG_ID`, `WARMBLY_API_URL`. These are new: `DISCORD_BOT_TOKEN`,
+  `DISCORD_CHANNEL_ID`, optional `DISCORD_GUILD_ID` (instant guild sync; global sync
+  can take up to an hour to appear) and optional `BATCHDRAFT_DEPLOYMENT`.
+- **Unverified.** The bot has not connected to Discord, because no bot token exists
+  yet. The gateway feed is still subject to the realtime UUID bug in the private
+  notes: JOIN succeeded, but whether broadcasts arrive afterwards was never confirmed.
+  `concurrency_limit=1` is passed to `to_deployment`, but it has not been checked
+  against `serve()`.
+
+**Do not name a file in `flow/` after a package it imports.** When Prefect runs a
+deployment, it puts the entrypoint's directory first on the import path. A file
+`flow/warmbly.py` therefore shadowed the `warmbly` SDK, and the first served
+`discord-bot` run failed with `No module named 'warmbly.gateway'; 'warmbly' is not a
+package`. The unit tests passed anyway because they import the module as
+`flow.discord_bot`. The file is now `flow/warmbly_contacts.py`, and
+`tests/test_discord_bot.py::TestDeploymentImportPath` reproduces that path layout.
