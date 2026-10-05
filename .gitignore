@@ -9,3 +9,5 @@ phase2-logs
 __pycache__/
 *.pyc
 unknown-*.json
+*output.json
+*input.json
