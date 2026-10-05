@@ -47,6 +47,16 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+def make_cfg(**overrides):
+    values = dict(
+        discord_token='t', channel_id=1, event_channel_id=2, guild_id=None,
+        admin_role='CRMadmin', warmbly_token='w', gateway_url='wss://h',
+        org_id='o', batchdraft_deployment='run-agents/run-agents',
+        warmbly_api_url='https://api.h')
+    values.update(overrides)
+    return bot.BotConfig(**values)
+
+
 class TestCliGroupDiscovery:
     def test_parses_command_groups_from_help(self):
         groups = bot.parse_cli_groups(HELP)
@@ -186,21 +196,6 @@ class TestAuthDevicePrompt:
         assert ok is False and 'expired' in out
 
 
-class TestEventFormatting:
-    def test_names_event_and_topic(self):
-        msg = bot.format_event('EMAIL_REPLIED', 'org:1', {'contact_id': 'c1'})
-        assert 'EMAIL_REPLIED' in msg and 'org:1' in msg and 'c1' in msg
-
-    def test_fits_discord_message_limit(self):
-        msg = bot.format_event('CONTACTS_RELOAD', 'org:1',
-                               {'blob': 'x' * 10_000})
-        assert len(msg) <= bot.DISCORD_MESSAGE_LIMIT
-
-    def test_non_json_values_do_not_raise(self):
-        from datetime import datetime
-        bot.format_event('X', 't', {'at': datetime(2026, 1, 1)})
-
-
 class TestGatewayWiring:
     def test_base_url_strips_socket_path(self):
         assert bot.gateway_base_url(
@@ -269,6 +264,7 @@ class TestChunking:
 class TestConfig:
     def test_required_vars_are_named_when_missing(self, monkeypatch):
         for k in ('DISCORD_BOT_TOKEN', 'DISCORD_CHANNEL_ID',
+                  'DISCORD_EVENT_CHANNEL_ID', 'DISCORD_ADMIN_ROLE',
                   'WARMBLY_API_TOKEN', 'WARMBLY_WEBSOCKET_URL',
                   'WARMBLY_ORG_ID'):
             monkeypatch.delenv(k, raising=False)
@@ -276,9 +272,14 @@ class TestConfig:
             bot.BotConfig.from_env()
         assert 'DISCORD_BOT_TOKEN' in str(exc.value)
         assert 'WARMBLY_ORG_ID' in str(exc.value)
+        # Fail closed: without a role every member could run every command.
+        assert 'DISCORD_ADMIN_ROLE' in str(exc.value)
+        assert 'DISCORD_EVENT_CHANNEL_ID' in str(exc.value)
 
     def test_batchdraft_deployment_default(self, monkeypatch):
         for k, v in {'DISCORD_BOT_TOKEN': 't', 'DISCORD_CHANNEL_ID': '1',
+                     'DISCORD_EVENT_CHANNEL_ID': '2',
+                     'DISCORD_ADMIN_ROLE': 'CRMadmin',
                      'WARMBLY_API_TOKEN': 'w', 'WARMBLY_WEBSOCKET_URL': 'wss://h',
                      'WARMBLY_ORG_ID': 'o'}.items():
             monkeypatch.setenv(k, v)
@@ -287,6 +288,8 @@ class TestConfig:
         cfg = bot.BotConfig.from_env()
         assert cfg.batchdraft_deployment == 'run-agents/run-agents'
         assert cfg.channel_id == 1
+        assert cfg.event_channel_id == 2
+        assert cfg.admin_role == 'CRMadmin'
         assert cfg.guild_id is None
 
 
@@ -316,8 +319,7 @@ class TestAnnouncement:
     GROUPS = ['campaign', 'contact', 'status']
 
     def _cfg(self):
-        return bot.BotConfig('t', 1, None, 'w', 'wss://h', 'org-9',
-                             'run-agents/run-agents', 'https://api.h')
+        return make_cfg(org_id='org-9')
 
     def test_names_the_built_in_commands(self):
         msg = bot.format_announcement(self._cfg(), self.GROUPS)
@@ -335,7 +337,7 @@ class TestAnnouncement:
 
     def test_says_where_events_come_from(self):
         msg = bot.format_announcement(self._cfg(), self.GROUPS)
-        assert 'org:org-9' in msg
+        assert 'org-9' in msg
 
     def test_fits_discord_message_limit_with_many_groups(self):
         groups = [f'group-{i:03d}' for i in range(200)]
@@ -343,54 +345,228 @@ class TestAnnouncement:
         assert len(msg) <= bot.DISCORD_MESSAGE_LIMIT
 
 
-class TestSenderAnnouncesFirst:
-    def test_announcement_precedes_queued_events(self):
-        sent = []
+class TestSender:
+    def _client(self, channels):
+        client = MagicMock()
+        client.wait_until_ready = AsyncMock()
+        client.get_channel.side_effect = channels.get
+        return client
+
+    def _channel(self, log, name, fail_on=None):
         channel = MagicMock()
 
         async def send(message):
-            sent.append(message)
-            if len(sent) == 2:
+            if message == fail_on:
+                raise RuntimeError('missing permissions')
+            log.append((name, message))
+            if name == 'events':
                 raise asyncio.CancelledError
         channel.send = send
+        return channel
 
-        client = MagicMock()
-        client.wait_until_ready = AsyncMock()
-        client.get_channel.return_value = channel
-
+    def _go(self, client, announcement='hello'):
         async def go():
             queue = asyncio.Queue()
             await queue.put('event-1')
             try:
-                await bot.post_to_channel(client, 1, queue, 'hello')
+                await bot.run_sender(client, make_cfg(), queue, announcement)
             except asyncio.CancelledError:
                 pass
-
         _run(go())
-        assert sent == ['hello', 'event-1']
+
+    def test_announces_in_command_channel_and_feeds_event_channel(self):
+        log = []
+        client = self._client({1: self._channel(log, 'commands'),
+                               2: self._channel(log, 'events')})
+        self._go(client)
+        assert log == [('commands', 'hello'), ('events', 'event-1')]
 
     def test_failed_announcement_does_not_stop_the_feed(self):
-        sent = []
-        channel = MagicMock()
+        log = []
+        client = self._client({
+            1: self._channel(log, 'commands', fail_on='hello'),
+            2: self._channel(log, 'events')})
+        self._go(client)
+        assert log == [('events', 'event-1')]
 
-        async def send(message):
-            if message == 'hello':
-                raise RuntimeError('missing permissions')
-            sent.append(message)
-            raise asyncio.CancelledError
-        channel.send = send
 
-        client = MagicMock()
-        client.wait_until_ready = AsyncMock()
-        client.get_channel.return_value = channel
+def member(*role_names):
+    return SimpleNamespace(roles=[SimpleNamespace(name=n) for n in role_names])
 
-        async def go():
-            queue = asyncio.Queue()
-            await queue.put('event-1')
-            try:
-                await bot.post_to_channel(client, 1, queue, 'hello')
-            except asyncio.CancelledError:
-                pass
 
-        _run(go())
-        assert sent == ['event-1']
+class TestRoleGate:
+    def test_member_with_role_is_allowed(self):
+        assert bot.has_role(member('everyone', 'CRMadmin'), 'CRMadmin')
+
+    def test_member_without_role_is_refused(self):
+        assert not bot.has_role(member('everyone', 'Mods'), 'CRMadmin')
+
+    def test_role_name_must_match_exactly(self):
+        assert not bot.has_role(member('crmadmin'), 'CRMadmin')
+        assert not bot.has_role(member('CRMadmin2'), 'CRMadmin')
+
+    def test_dm_user_has_no_roles_and_is_refused(self):
+        assert not bot.has_role(SimpleNamespace(name='someone'), 'CRMadmin')
+
+    def test_refused_user_gets_a_private_reply(self):
+        interaction = MagicMock()
+        interaction.user = member('everyone')
+        interaction.response.is_done.return_value = False
+        interaction.response.send_message = AsyncMock()
+
+        allowed = _run(bot.check_role(interaction, 'CRMadmin'))
+
+        assert allowed is False
+        kwargs = interaction.response.send_message.await_args.kwargs
+        args = interaction.response.send_message.await_args.args
+        assert kwargs['ephemeral'] is True
+        assert 'CRMadmin' in args[0]
+
+    def test_allowed_user_gets_no_reply_from_the_gate(self):
+        interaction = MagicMock()
+        interaction.user = member('CRMadmin')
+        interaction.response.send_message = AsyncMock()
+        assert _run(bot.check_role(interaction, 'CRMadmin')) is True
+        interaction.response.send_message.assert_not_awaited()
+
+
+class TestTreeEnforcesRole:
+    def test_every_command_is_gated_by_the_tree(self):
+        groups = ['campaign', 'status']
+        client = bot.build_client(make_cfg(), groups)
+        tree = client.bot_tree
+        names = {c.name for c in tree.get_commands()}
+        assert {'batchdraft', 'auth', 'list', 'campaign', 'status'} <= names
+
+        interaction = MagicMock()
+        interaction.user = member('everyone')
+        interaction.response.is_done.return_value = False
+        interaction.response.send_message = AsyncMock()
+        assert _run(tree.interaction_check(interaction)) is False
+
+        interaction.user = member('CRMadmin')
+        assert _run(tree.interaction_check(interaction)) is True
+
+    def test_commands_are_not_hidden_behind_manage_server(self):
+        """CRMadmin members without Manage Server must still see them."""
+        client = bot.build_client(make_cfg(), ['campaign'])
+        for command in client.bot_tree.get_commands():
+            assert command.default_permissions is None, command.name
+
+
+class TestAnnouncementMentionsAccess:
+    def test_names_the_role_and_links_the_event_channel(self):
+        msg = bot.format_announcement(make_cfg(event_channel_id=42), [])
+        assert 'CRMadmin' in msg
+        assert '<#42>' in msg
+
+
+ORG_ID = '00e33e77-6d57-4e2f-a0cd-e0bc66afd774'
+ORG_NAME = 'Happy Tails Paw Care'
+
+
+class TestFetchOrgName:
+    def _response(self, status, body):
+        import httpx
+        return httpx.Response(status, json=body,
+                              request=httpx.Request('GET', 'https://h/v1/me'))
+
+    def test_reads_name_from_me(self):
+        body = {'organization_id': ORG_ID, 'organization_name': ORG_NAME}
+        get = AsyncMock(return_value=self._response(200, body))
+        with patch('flow.discord_bot.httpx.AsyncClient') as cls:
+            cls.return_value.__aenter__.return_value.get = get
+            names = _run(bot.fetch_org_names('https://api.h/', 'tok'))
+        assert names == {ORG_ID: ORG_NAME}
+        assert get.await_args.args[0] == 'https://api.h/v1/me'
+        assert get.await_args.kwargs['headers']['Authorization'] == 'Bearer tok'
+
+    def test_failure_returns_empty_instead_of_raising(self):
+        get = AsyncMock(return_value=self._response(401, {'message': 'no'}))
+        with patch('flow.discord_bot.httpx.AsyncClient') as cls:
+            cls.return_value.__aenter__.return_value.get = get
+            assert _run(bot.fetch_org_names('https://api.h', 'tok')) == {}
+
+    def test_missing_api_url_returns_empty(self):
+        assert _run(bot.fetch_org_names(None, 'tok')) == {}
+
+
+class TestDisplayFilter:
+    def _filter(self, names=None):
+        return bot.EventDisplayFilter(
+            {ORG_ID: ORG_NAME} if names is None else names)
+
+    def test_wraps_payload_in_a_json_code_block(self):
+        msg = self._filter().render('EMAIL_REPLIED', f'org:{ORG_ID}',
+                                    {'contact_id': 'c1'})
+        body = msg.split('```json\n', 1)[1].rsplit('\n```', 1)[0]
+        assert msg.rstrip().endswith('```')
+        import json as _json
+        assert _json.loads(body) == {'contact_id': 'c1'}
+
+    def test_org_id_in_topic_becomes_the_name(self):
+        msg = self._filter().render('EMAIL_REPLIED', f'org:{ORG_ID}', {})
+        assert ORG_NAME in msg
+        assert ORG_ID not in msg
+
+    def test_org_id_inside_payload_becomes_the_name(self):
+        msg = self._filter().render('CONTACT_CREATED', f'org:{ORG_ID}', {
+            'organization_id': ORG_ID,
+            'nested': {'org': ORG_ID, 'list': [ORG_ID]},
+            'note': f'created in {ORG_ID}'})
+        assert ORG_ID not in msg
+        assert msg.count(ORG_NAME) >= 5
+
+    def test_payload_is_not_mutated(self):
+        payload = {'organization_id': ORG_ID}
+        self._filter().render('X', 't', payload)
+        assert payload == {'organization_id': ORG_ID}
+
+    def test_unknown_ids_pass_through(self):
+        msg = self._filter().render('X', 'org:other', {'id': 'abc'})
+        assert 'org:other' in msg and 'abc' in msg
+
+    def test_no_names_still_renders(self):
+        msg = self._filter({}).render('X', f'org:{ORG_ID}', {'a': 1})
+        assert ORG_ID in msg and '```json' in msg
+
+    def test_fits_discord_message_limit(self):
+        msg = self._filter().render('CONTACTS_RELOAD', 'org:1',
+                                    {'blob': 'x' * 10_000})
+        assert len(msg) <= bot.DISCORD_MESSAGE_LIMIT
+        assert msg.rstrip().endswith('```')
+
+    def test_backticks_in_payload_cannot_close_the_block(self):
+        msg = self._filter().render('X', 't', {'body': 'a ``` b'})
+        assert msg.count('```') == 2
+
+    def test_non_json_values_do_not_raise(self):
+        from datetime import datetime
+        self._filter().render('X', 't', {'at': datetime(2026, 1, 1)})
+
+
+class TestHandlersUseTheFilter:
+    def test_handler_publishes_filtered_event(self):
+        gw = MagicMock()
+        handlers = {}
+        gw.on_event.side_effect = lambda name: (
+            lambda h: handlers.setdefault(name, h))
+        publish = AsyncMock()
+        bot.register_event_handlers(
+            gw, publish, bot.EventDisplayFilter({ORG_ID: ORG_NAME}))
+
+        _run(handlers['EMAIL_REPLIED'](f'org:{ORG_ID}', {'org': ORG_ID}))
+        sent = publish.await_args.args[0]
+        assert 'EMAIL_REPLIED' in sent and ORG_NAME in sent
+        assert ORG_ID not in sent
+
+
+class TestAnnouncementUsesOrgName:
+    def test_names_the_org_instead_of_its_id(self):
+        msg = bot.format_announcement(make_cfg(org_id=ORG_ID), [],
+                                      org_name=ORG_NAME)
+        assert ORG_NAME in msg and ORG_ID not in msg
+
+    def test_falls_back_to_the_id(self):
+        msg = bot.format_announcement(make_cfg(org_id=ORG_ID), [])
+        assert ORG_ID in msg

@@ -4,7 +4,7 @@ Discord bot: a Warmbly event feed plus slash commands, run as a Prefect flow.
 One long-running flow run owns two connections on one event loop:
 
   * the Warmbly realtime gateway (AsyncGatewayClient), subscribed to
-    org:{WARMBLY_ORG_ID}; every event is posted to DISCORD_CHANNEL_ID
+    org:{WARMBLY_ORG_ID}; every event is posted to DISCORD_EVENT_CHANNEL_ID
   * the Discord gateway, serving the slash commands:
 
       /batchdraft [n]   trigger the selector -> research -> drafting pipeline
@@ -17,7 +17,12 @@ One long-running flow run owns two connections on one event loop:
                         from `warmbly --help` at startup and piped to the CLI
 
 Environment:
-  DISCORD_BOT_TOKEN, DISCORD_CHANNEL_ID      required
+  DISCORD_BOT_TOKEN                          required
+  DISCORD_CHANNEL_ID                         required; startup announcement
+  DISCORD_EVENT_CHANNEL_ID                   required; Warmbly event feed
+  DISCORD_ADMIN_ROLE                         required; only members with this
+                                             role (by exact name) may use any
+                                             command
   DISCORD_GUILD_ID                           optional; sync commands to this
                                              guild instantly instead of globally
   WARMBLY_API_TOKEN, WARMBLY_WEBSOCKET_URL,
@@ -45,6 +50,7 @@ from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import httpx
 from prefect import flow
 
 WARMBLY_BIN = shutil.which('warmbly') or 'warmbly'
@@ -52,6 +58,9 @@ DISCORD_MESSAGE_LIMIT = 2000
 DEFAULT_BATCH = 50
 DEFAULT_BATCHDRAFT_DEPLOYMENT = 'run-agents/run-agents'
 CLI_TIMEOUT = float(os.environ.get('WARMBLY_REQUEST_TIMEOUT', '60'))
+# GET /me resolves the caller's org name with any valid key; the
+# /organization endpoint rejects API keys (session-only).
+ME_PATH = '/v1/me'
 # The device code expires after ten minutes; give the CLI a little longer so it
 # reports the expiry itself.
 AUTH_TIMEOUT = 11 * 60
@@ -74,7 +83,9 @@ _DEVICE_URL = re.compile(r'Approve at:\s*(\S+)')
 class BotConfig:
     discord_token: str
     channel_id: int
+    event_channel_id: int
     guild_id: Optional[int]
+    admin_role: str
     warmbly_token: str
     gateway_url: str
     org_id: str
@@ -84,6 +95,7 @@ class BotConfig:
     @classmethod
     def from_env(cls) -> 'BotConfig':
         required = ['DISCORD_BOT_TOKEN', 'DISCORD_CHANNEL_ID',
+                    'DISCORD_EVENT_CHANNEL_ID', 'DISCORD_ADMIN_ROLE',
                     'WARMBLY_API_TOKEN', 'WARMBLY_WEBSOCKET_URL',
                     'WARMBLY_ORG_ID']
         missing = [k for k in required if not os.environ.get(k)]
@@ -93,7 +105,9 @@ class BotConfig:
         return cls(
             discord_token=os.environ['DISCORD_BOT_TOKEN'],
             channel_id=int(os.environ['DISCORD_CHANNEL_ID']),
+            event_channel_id=int(os.environ['DISCORD_EVENT_CHANNEL_ID']),
             guild_id=int(guild) if guild else None,
+            admin_role=os.environ['DISCORD_ADMIN_ROLE'],
             warmbly_token=os.environ['WARMBLY_API_TOKEN'],
             gateway_url=os.environ['WARMBLY_WEBSOCKET_URL'],
             org_id=os.environ['WARMBLY_ORG_ID'],
@@ -160,20 +174,66 @@ def chunk_output(text: str) -> List[str]:
     return [_fence(p.rstrip('\n')) for p in parts]
 
 
-def format_event(event: str, topic: str, payload: Any) -> str:
-    head = f'**{event}** `{topic}`\n'
-    body = json.dumps(payload, indent=2, default=str)
-    room = DISCORD_MESSAGE_LIMIT - len(head) - len('```json\n\n```')
-    if len(body) > room:
-        marker = '\n… (truncated)'
-        body = body[:room - len(marker)] + marker
-    return f'{head}```json\n{body}\n```'
+class EventDisplayFilter:
+    """Turns a raw gateway event into the Discord message posted for it."""
+
+    def __init__(self, names: Optional[dict] = None) -> None:
+        # id -> display name; longest first so no id is replaced inside another.
+        self._names = sorted((names or {}).items(), key=lambda kv: -len(kv[0]))
+
+    def _label(self, text: str) -> str:
+        for ident, name in self._names:
+            text = text.replace(ident, name)
+        return text
+
+    def _translate(self, value: Any) -> Any:
+        if isinstance(value, str):
+            return self._label(value)
+        if isinstance(value, dict):
+            return {k: self._translate(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [self._translate(v) for v in value]
+        return value
+
+    def render(self, event: str, topic: str, payload: Any) -> str:
+        head = f'**{event}** `{self._label(topic)}`\n'
+        body = json.dumps(self._translate(payload), indent=2, default=str,
+                          ensure_ascii=False)
+        # A literal ``` would end the code block early.
+        body = body.replace('```', '`\u200b``')
+        room = DISCORD_MESSAGE_LIMIT - len(head) - len('```json\n\n```')
+        if len(body) > room:
+            marker = '\n… (truncated)'
+            body = body[:room - len(marker)] + marker
+        return f'{head}```json\n{body}\n```'
 
 
-def format_announcement(cfg: 'BotConfig', cli_groups: List[str]) -> str:
+async def fetch_org_names(api_url: Optional[str], token: str) -> dict:
+    """{organization_id: organization_name} from GET /v1/me, or {} on failure."""
+    if not api_url:
+        return {}
+    try:
+        async with httpx.AsyncClient(timeout=CLI_TIMEOUT) as http:
+            response = await http.get(
+                api_url.rstrip('/') + ME_PATH,
+                headers={'Authorization': f'Bearer {token}'})
+            response.raise_for_status()
+            me = response.json()
+    except Exception as exc:
+        # Events still flow, labelled by id, rather than the bot not starting.
+        print(f'could not resolve org name: {type(exc).__name__}: {exc}')
+        return {}
+    org_id, name = me.get('organization_id'), me.get('organization_name')
+    return {org_id: name} if org_id and name else {}
+
+
+def format_announcement(cfg: 'BotConfig', cli_groups: List[str],
+                        org_name: Optional[str] = None) -> str:
     head = (
         '**Warmbly bot online.**\n'
-        f'Posting every Warmbly event from `org:{cfg.org_id}` here.\n\n'
+        f'Posting every Warmbly event from **{org_name or cfg.org_id}** to '
+        f'<#{cfg.event_channel_id}>. Commands are for the '
+        f'`{cfg.admin_role}` role.\n\n'
         f'`/batchdraft [n]` select, research and draft a batch '
         f'(default {DEFAULT_BATCH}) via `{cfg.batchdraft_deployment}`\n'
         '`/auth` sign the Warmbly CLI in\n'
@@ -195,25 +255,43 @@ def format_announcement(cfg: 'BotConfig', cli_groups: List[str]) -> str:
     return head + intro + listed
 
 
-async def post_to_channel(
-    client: Any, channel_id: int, queue: 'asyncio.Queue', announcement: str
+async def _resolve_channel(client: Any, channel_id: int) -> Any:
+    return (client.get_channel(channel_id)
+            or await client.fetch_channel(channel_id))
+
+
+async def run_sender(
+    client: Any, cfg: 'BotConfig', queue: 'asyncio.Queue', announcement: str
 ) -> None:
-    """Announce once, then post queued events in arrival order."""
+    """Announce once in the command channel, then feed the event channel."""
     await client.wait_until_ready()
-    channel = (client.get_channel(channel_id)
-               or await client.fetch_channel(channel_id))
     # Once per flow run: discord.py reconnects without re-running this.
     try:
+        channel = await _resolve_channel(client, cfg.channel_id)
         await channel.send(announcement)
     except Exception as exc:
         print(f'could not post announcement: {type(exc).__name__}: {exc}')
+    events = await _resolve_channel(client, cfg.event_channel_id)
     while True:
         message = await queue.get()
         try:
-            await channel.send(message)
+            await events.send(message)
         except Exception as exc:
             print(f'could not post event: {type(exc).__name__}: {exc}')
 
+
+def has_role(user: Any, role_name: str) -> bool:
+    """Exact role-name match; a DM user (a User, not a Member) has no roles."""
+    return any(r.name == role_name for r in getattr(user, 'roles', ()))
+
+
+async def check_role(interaction: Any, role_name: str) -> bool:
+    if has_role(interaction.user, role_name):
+        return True
+    if not interaction.response.is_done():
+        await interaction.response.send_message(
+            f'This bot is limited to the `{role_name}` role.', ephemeral=True)
+    return False
 
 # -- command logic -----------------------------------------------------------
 
@@ -323,16 +401,19 @@ async def list_flows(client: Any) -> str:
 
 
 def register_event_handlers(
-    gw: Any, publish: Callable[[str], Awaitable[None]]
+    gw: Any,
+    publish: Callable[[str], Awaitable[None]],
+    display: Optional[EventDisplayFilter] = None,
 ) -> None:
     """Forward every named gateway event; the SDK has no wildcard handler."""
     from warmbly.gateway import GatewayEvent
 
     names = sorted({v for k, v in vars(GatewayEvent).items()
                     if k.isupper() and isinstance(v, str)})
+    display = display or EventDisplayFilter()
     for name in names:
         async def handler(topic: str, payload: Any, _name: str = name) -> None:
-            await publish(format_event(_name, topic, payload))
+            await publish(display.render(_name, topic, payload))
         gw.on_event(name)(handler)
 
 
@@ -364,17 +445,20 @@ def build_client(cfg: BotConfig, cli_groups: List[str]) -> Any:
     from discord import app_commands
 
     client = discord.Client(intents=discord.Intents.default())
-    tree = app_commands.CommandTree(client)
-    guild = discord.Object(cfg.guild_id) if cfg.guild_id else None
+    role = cfg.admin_role
 
-    # Default to members who can manage the server; a server admin can widen
-    # this per command under Server Settings > Integrations.
-    admin_only = app_commands.default_permissions(manage_guild=True)
+    class RoleGatedTree(app_commands.CommandTree):
+        # Runs before every command, including the CLI ones added below.
+        async def interaction_check(self, interaction):
+            return await check_role(interaction, role)
+
+    tree = RoleGatedTree(client)
+    client.bot_tree = tree
+    guild = discord.Object(cfg.guild_id) if cfg.guild_id else None
 
     @tree.command(name='batchdraft',
                   description='Select, research and draft a batch of prospects')
     @app_commands.describe(n=f'batch size (default {DEFAULT_BATCH})')
-    @admin_only
     async def batchdraft(interaction: discord.Interaction,
                          n: Optional[app_commands.Range[int, 1, 1000]] = None):
         await interaction.response.defer(thinking=True)
@@ -386,7 +470,6 @@ def build_client(cfg: BotConfig, cli_groups: List[str]) -> Any:
         await interaction.followup.send(msg)
 
     @tree.command(name='auth', description='Sign the Warmbly CLI in (device flow)')
-    @admin_only
     async def auth(interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True, thinking=True)
         if not cfg.warmbly_api_url:
@@ -408,7 +491,6 @@ def build_client(cfg: BotConfig, cli_groups: List[str]) -> Any:
             ephemeral=True)
 
     @tree.command(name='list', description='Prefect flows and deployments')
-    @admin_only
     async def list_cmd(interaction: discord.Interaction):
         from prefect.client.orchestration import get_client
 
@@ -429,7 +511,6 @@ def build_client(cfg: BotConfig, cli_groups: List[str]) -> Any:
 
         command = app_commands.Command(
             name=group, description=f'warmbly {group}'[:100], callback=run)
-        command.default_permissions = discord.Permissions(manage_guild=True)
         return command
 
     for group in cli_groups:
@@ -448,18 +529,18 @@ def build_client(cfg: BotConfig, cli_groups: List[str]) -> Any:
     return client
 
 
-async def _event_feed(client: Any, cfg: BotConfig,
-                      announcement: str) -> None:
+async def _event_feed(client: Any, cfg: BotConfig, announcement: str,
+                      display: EventDisplayFilter) -> None:
     from warmbly.gateway import AsyncGatewayClient
 
     # One sender keeps events in arrival order; handlers run as separate tasks.
     queue: asyncio.Queue = asyncio.Queue()
     gw = AsyncGatewayClient(token=cfg.warmbly_token,
                             base_url=gateway_base_url(cfg.gateway_url))
-    register_event_handlers(gw, queue.put)
+    register_event_handlers(gw, queue.put, display)
 
     sender_task = asyncio.create_task(
-        post_to_channel(client, cfg.channel_id, queue, announcement))
+        run_sender(client, cfg, queue, announcement))
     try:
         await gw.connect()
         await gw.subscribe(f'org:{cfg.org_id}')
@@ -476,11 +557,16 @@ async def discord_bot() -> None:
     cfg = BotConfig.from_env()
     groups = parse_cli_groups(await _cli_help())
     print(f'warmbly command groups: {", ".join(groups)}')
+    org_names = await fetch_org_names(cfg.warmbly_api_url, cfg.warmbly_token)
+    org_name = org_names.get(cfg.org_id)
+    print(f'org {cfg.org_id} -> {org_name or "(name unresolved)"}')
     client = build_client(cfg, groups)
     async with client:
         await asyncio.gather(
             client.start(cfg.discord_token),
-            _event_feed(client, cfg, format_announcement(cfg, groups)))
+            _event_feed(client, cfg,
+                        format_announcement(cfg, groups, org_name),
+                        EventDisplayFilter(org_names)))
 
 
 if __name__ == '__main__':

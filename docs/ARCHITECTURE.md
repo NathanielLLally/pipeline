@@ -741,8 +741,22 @@ between a discord.py client and the Warmbly `AsyncGatewayClient`.
   `$WARMBLY_WEBSOCKET_URL`. The `/socket/websocket` suffix is stripped because the SDK
   appends it. The SDK has no wildcard handler, so the bot registers one handler per
   `GatewayEvent` constant. Events that are not named in the SDK are **not** forwarded.
-  Every event is posted to `$DISCORD_CHANNEL_ID` in arrival order through a single
-  queue.
+  Every event is posted to `$DISCORD_EVENT_CHANNEL_ID` in arrival order through a
+  single queue.
+- **Display filter.** `EventDisplayFilter` sits between the gateway handlers and the
+  queue. It renders each event as a bold event name, the topic, and the payload as
+  pretty-printed JSON inside a ```` ```json ```` code block, truncated to fit
+  Discord's 2000-character limit. Literal triple backticks in the payload are broken
+  with a zero-width space so they cannot close the block. Every occurrence of a known
+  organization id, in the topic or anywhere in the payload, is replaced with the
+  organization's name.
+- **Org name.** The name is fetched once at startup from
+  `GET $WARMBLY_API_URL/v1/me`, which returns `organization_id` and
+  `organization_name` for any valid key. `GET /v1/organization` exists (unknown
+  sibling paths return 404) but answers **401 "Invalid or expired token"** to API keys
+  that `/v1/me` accepts. That matches the CLI's note that org endpoints are
+  session-only, and `warmbly org view` itself calls `/v1/me` (verified 2026-10-05).
+  If the lookup fails, the bot logs it and posts events labelled with the raw id.
 - **`/batchdraft [n]`** calls `run_deployment($BATCHDRAFT_DEPLOYMENT, batch_size=n or 50,
   timeout=0, as_subflow=False)`. The default deployment is `run-agents/run-agents`, and
   `serve_agents.py` registers it only when `SERVE_RUN_AGENTS=1`.
@@ -762,11 +776,17 @@ between a discord.py client and the Warmbly `AsyncGatewayClient`.
   channel listing the event source, the built-in commands and the CLI commands. It
   goes out once per flow run, before any queued events; automatic reconnects do not
   repeat it. If the post fails, the error is logged and the event feed keeps running.
-- **Permissions.** Every command defaults to members with Manage Server. Server
-  admins can widen this under Server Settings > Integrations.
+- **Access.** Only members holding the role named by `$DISCORD_ADMIN_ROLE`
+  (`CRMadmin`) can use any command. The name must match exactly. The check lives in
+  `CommandTree.interaction_check`, so it covers every command, including CLI groups
+  discovered at startup. Anyone else gets a private refusal and nothing runs. DMs
+  carry no roles and are refused. Commands have no Discord-side
+  `default_permissions`, so they are visible to everyone; to hide them as well, set
+  per-role overrides under Server Settings > Integrations.
 - **Env vars.** These already existed: `WARMBLY_API_TOKEN`, `WARMBLY_WEBSOCKET_URL`,
   `WARMBLY_ORG_ID`, `WARMBLY_API_URL`. These are new: `DISCORD_BOT_TOKEN`,
-  `DISCORD_CHANNEL_ID`, optional `DISCORD_GUILD_ID` (instant guild sync; global sync
+  `DISCORD_CHANNEL_ID` (announcement), `DISCORD_EVENT_CHANNEL_ID` (event feed),
+  `DISCORD_ADMIN_ROLE`, optional `DISCORD_GUILD_ID` (instant guild sync; global sync
   can take up to an hour to appear) and optional `BATCHDRAFT_DEPLOYMENT`.
 - **Unverified.** The bot has not connected to Discord, because no bot token exists
   yet. The gateway feed is still subject to the realtime UUID bug in the private
