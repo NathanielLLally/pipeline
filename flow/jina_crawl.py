@@ -82,6 +82,7 @@ def build_target_query(
     tiers: Optional[List[str]] = None,
     service_categories: Optional[List[str]] = None,
     refetch: bool = False,
+    business_ids: Optional[List[str]] = None,
 ) -> tuple:
     """
     Build the selection SQL and its bound parameters.
@@ -95,11 +96,19 @@ def build_target_query(
 
     Unless refetch is set, businesses this crawler has already got text for are
     excluded, so a re-run costs nothing for what it already has.
+
+    business_ids selects exactly those businesses and ignores mode and
+    refetch: the caller named them, so silently skipping one because it was
+    crawled before would look like the crawl did nothing. They still need a
+    crawlable website and must not be QC-rejected.
     """
     params: List[Any] = [limit]
     clauses: List[str] = []
 
-    if mode != 'all':
+    if business_ids:
+        params.append(list(business_ids))
+        clauses.append(f'          and b.id = any(${len(params)}::uuid[])')
+    elif mode != 'all':
         clauses.append("""          and (
                 not exists (
                     select 1 from leads.website_crawl w
@@ -116,7 +125,7 @@ def build_target_query(
                 )
             )""")
 
-    if not refetch:
+    if not refetch and not business_ids:
         clauses.append("""          and not exists (
                 select 1 from leads.website_crawl_jina j
                 where j.business_id = b.id
@@ -387,12 +396,23 @@ async def jina_crawl(
     refetch: bool = False,
     concurrency: int = DEFAULT_CONCURRENCY,
     dry_run: bool = False,
+    business_ids: Optional[List[str]] = None,
 ) -> dict:
     """Crawl business homepages through Jina and store the pages."""
     targets = await select_targets(limit=limit, mode=mode, tiers=tiers,
                                    service_categories=service_categories,
-                                   refetch=refetch)
-    print(f'{len(targets)} businesses selected (mode={mode}, limit={limit})')
+                                   refetch=refetch, business_ids=business_ids)
+    if business_ids:
+        print(f'{len(targets)} of {len(business_ids)} named business(es) '
+              f'selected')
+        missing = sorted(set(business_ids) - {t['id'] for t in targets})
+        if missing:
+            # Named and not crawled is worth saying out loud: no such id, no
+            # usable website, or QC-rejected.
+            print(f'NOT CRAWLABLE, skipped: {missing}')
+    else:
+        print(f'{len(targets)} businesses selected (mode={mode}, '
+              f'limit={limit})')
     if not targets:
         return {'selected': 0, 'reachable': 0, 'failed': 0, 'written': 0}
 
@@ -483,6 +503,9 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
                    help="ignore this crawler's own prior rows")
     p.add_argument('--concurrency', type=int, default=DEFAULT_CONCURRENCY)
     p.add_argument('--dry-run', action='store_true')
+    p.add_argument('--business-id',
+                   help='comma-separated business ids; crawls exactly these, '
+                        'ignoring --mode and --refetch')
     return p.parse_args(argv)
 
 
@@ -502,4 +525,5 @@ if __name__ == '__main__':
         refetch=args.refetch,
         concurrency=args.concurrency,
         dry_run=args.dry_run,
+        business_ids=_split(args.business_id),
     ))

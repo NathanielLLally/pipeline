@@ -124,6 +124,57 @@ class TestTargetQuery:
         assert "icp_score desc" in sql.lower()
 
 
+class TestBusinessIds:
+    """Naming businesses crawls exactly those, whatever they have already got."""
+
+    def test_selects_only_the_named_businesses(self):
+        sql, params = build_target_query(limit=10, business_ids=["b1", "b2"])
+        assert "b.id = any(" in sql
+        assert ["b1", "b2"] in params
+
+    def test_ids_are_bound_parameters_not_interpolated(self):
+        sql, _ = build_target_query(limit=10,
+                                    business_ids=["x'; drop table t; --"])
+        assert "drop table" not in sql
+
+    def test_named_businesses_bypass_the_gap_and_already_fetched_filters(self):
+        """The caller asked for these; skipping one silently would look like
+        the crawl simply did nothing."""
+        sql, _ = build_target_query(limit=10, business_ids=["b1"])
+        assert "website_crawl_jina" not in sql
+        assert "fetch_error" not in sql
+
+    def test_named_businesses_still_need_a_crawlable_website(self):
+        sql, _ = build_target_query(limit=10, business_ids=["b1"])
+        assert "b.website is not null" in sql
+        assert "qc_status" in sql
+
+    def test_limit_still_bounds_the_named_set(self):
+        _, params = build_target_query(limit=3, business_ids=["a", "b", "c", "d"])
+        assert params[0] == 3
+
+    def test_flow_passes_ids_through_to_selection(self):
+        import asyncio
+        from unittest.mock import AsyncMock, patch
+        from flow import jina_crawl as jc
+        with patch("flow.jina_crawl.select_targets",
+                   new=AsyncMock(return_value=[])) as sel:
+            asyncio.run(jc.jina_crawl.fn(business_ids=["b1"]))
+        assert sel.await_args.kwargs["business_ids"] == ["b1"]
+
+    def test_cli_takes_comma_separated_ids(self):
+        from flow.jina_crawl import _parse_args, _split
+        args = _parse_args(["--business-id", "b1, b2"])
+        assert _split(args.business_id) == ["b1", "b2"]
+
+    def test_flow_signature_accepts_none(self):
+        """Prefect rejects a None default on a non-Optional annotation."""
+        import typing
+        from flow.jina_crawl import jina_crawl
+        hint = typing.get_type_hints(jina_crawl.fn)["business_ids"]
+        assert type(None) in typing.get_args(hint)
+
+
 class TestResponseParsing:
     def test_reads_content_title_and_final_url(self):
         parsed = parse_jina_response(SAMPLE)
