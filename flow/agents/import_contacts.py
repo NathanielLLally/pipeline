@@ -83,10 +83,6 @@ def import_contacts(
     except Exception as e:
         print(f'Warning: could not write input artifact: {e}')
 
-    # Derive idempotency key if not provided
-    if not idempotency_key:
-        idempotency_key = contact_idempotency_key(business)
-
     business_id = business.get('id', 'unknown')
     business_name = business.get('business_name', 'unknown')
 
@@ -104,6 +100,13 @@ def import_contacts(
         result = {'status': 'rejected', 'reason': 'no_emails', 'payloads_sent': 0}
         write_artifact(result, suffix='output')
         return result
+
+    # Derived here, not earlier: the key hashes the payload so an identical
+    # re-run dedupes while a changed draft is a new request. Deriving it from
+    # the business alone caused 409 "Idempotency-Key was already used with a
+    # different request" on every re-import after a draft changed.
+    if not idempotency_key:
+        idempotency_key = contact_idempotency_key(business, payloads)
 
     print(f'Importing {len(payloads)} contact(s) for {business_name} '
           f'(business_id={business_id})')

@@ -243,3 +243,105 @@ class TestPersonPrecedence:
         p = build_contact_payloads(business, RESEARCH, DRAFT)[0]
 
         assert p['first_name'] == ''
+
+
+class TestSubscriptionState:
+    """Imported contacts must arrive unsubscribed.
+
+    The API defaults to subscribed when the field is omitted, which it was --
+    so every imported contact landed subscribed and therefore sendable before
+    anyone had reviewed the draft. The review gate is the point: a contact is
+    created, a human reads the draft, and only then is it assigned to a
+    campaign and made sendable.
+    """
+
+    def test_payload_sets_unsubscribed(self):
+        p = build_contact_payloads(BUSINESS, RESEARCH, DRAFT)[0]
+
+        assert p['subscribed'] is False
+
+    def test_the_field_is_present_not_merely_falsy(self):
+        """Omitting it is what caused the bug; it must be sent explicitly."""
+        p = build_contact_payloads(BUSINESS, RESEARCH, DRAFT)[0]
+
+        assert 'subscribed' in p
+
+    def test_every_payload_in_a_multi_email_draft_is_unsubscribed(self):
+        draft = dict(DRAFT, selected_emails=['a@x.com', 'b@x.com'])
+
+        payloads = build_contact_payloads(BUSINESS, RESEARCH, draft)
+
+        assert [p['subscribed'] for p in payloads] == [False, False]
+
+    def test_can_be_overridden_for_a_deliberate_opt_in_import(self, monkeypatch):
+        monkeypatch.setenv('WARMBLY_IMPORT_SUBSCRIBED', '1')
+        import importlib
+        import flow.warmbly_contacts as mod
+        importlib.reload(mod)
+        try:
+            p = mod.build_contact_payloads(BUSINESS, RESEARCH, DRAFT)[0]
+            assert p['subscribed'] is True
+        finally:
+            monkeypatch.delenv('WARMBLY_IMPORT_SUBSCRIBED')
+            importlib.reload(mod)
+
+
+class TestIdempotencyKey:
+    """The key must cover the payload, not just the business.
+
+    A live run failed with 409 "Idempotency-Key was already used with a
+    different request": the key was leads-business-{id}, stable per business,
+    so once a business had been imported any later change to its draft -- or
+    to the subscribed flag -- collided with the earlier key forever. Warmbly
+    is right to reject that; the key was wrong.
+
+    What we want: an identical re-run is deduplicated (a safe retry), while a
+    changed draft is a genuinely new request.
+    """
+
+    def test_identical_payloads_give_the_same_key(self):
+        from flow.warmbly_contacts import contact_idempotency_key
+
+        a = build_contact_payloads(BUSINESS, RESEARCH, DRAFT)
+        b = build_contact_payloads(BUSINESS, RESEARCH, DRAFT)
+
+        assert contact_idempotency_key(BUSINESS, a) == \
+            contact_idempotency_key(BUSINESS, b)
+
+    def test_a_changed_draft_gives_a_different_key(self):
+        from flow.warmbly_contacts import contact_idempotency_key
+
+        a = build_contact_payloads(BUSINESS, RESEARCH, DRAFT)
+        b = build_contact_payloads(
+            BUSINESS, RESEARCH, dict(DRAFT, subject='Different subject'))
+
+        assert contact_idempotency_key(BUSINESS, a) != \
+            contact_idempotency_key(BUSINESS, b)
+
+    def test_a_changed_subscribed_flag_gives_a_different_key(self):
+        """The exact collision seen live."""
+        from flow.warmbly_contacts import contact_idempotency_key
+
+        a = build_contact_payloads(BUSINESS, RESEARCH, DRAFT)
+        b = [dict(p, subscribed=True) for p in a]
+
+        assert contact_idempotency_key(BUSINESS, a) != \
+            contact_idempotency_key(BUSINESS, b)
+
+    def test_key_still_names_the_business_for_legibility(self):
+        from flow.warmbly_contacts import contact_idempotency_key
+
+        key = contact_idempotency_key(
+            BUSINESS, build_contact_payloads(BUSINESS, RESEARCH, DRAFT))
+
+        assert 'biz-1' in key
+
+    def test_key_order_does_not_depend_on_dict_ordering(self):
+        """Same content, different insertion order, same key."""
+        from flow.warmbly_contacts import contact_idempotency_key
+
+        a = build_contact_payloads(BUSINESS, RESEARCH, DRAFT)
+        b = [{k: p[k] for k in reversed(list(p))} for p in a]
+
+        assert contact_idempotency_key(BUSINESS, a) == \
+            contact_idempotency_key(BUSINESS, b)

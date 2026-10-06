@@ -55,15 +55,35 @@ class TestImportContactsHappyPath:
         assert result['payloads_sent'] == 1
         assert len(result['created']) == 1
 
-    def test_derives_idempotency_key_from_business(self):
-        """Uses contact_idempotency_key when not provided"""
+    def test_derives_idempotency_key_from_business_and_payload(self):
+        """The key names the business and hashes the payload.
+
+        It used to be the business id alone, which made Warmbly reject every
+        re-import after a draft changed with 409 "Idempotency-Key was already
+        used with a different request". The business id stays in the key for
+        legibility; the hash is what makes a changed draft a new request.
+        """
         with patch('flow.agents.import_contacts.create_contacts',
                    side_effect=self._mock_create_contacts) as mock_create, \
              patch('flow.agents.import_contacts.write_artifact'):
             import_contacts.fn(BUSINESS, RESEARCH, DRAFT)
 
-        call_kwargs = mock_create.call_args.kwargs
-        assert call_kwargs['idempotency_key'] == 'leads-business-biz-1'
+        key = mock_create.call_args.kwargs['idempotency_key']
+        assert key.startswith('leads-business-biz-1-')
+        assert len(key) > len('leads-business-biz-1-')
+
+    def test_a_changed_draft_changes_the_derived_key(self):
+        """Otherwise the second import of a revised draft 409s forever."""
+        keys = []
+        for subject in ('First subject', 'Revised subject'):
+            with patch('flow.agents.import_contacts.create_contacts',
+                       side_effect=self._mock_create_contacts) as mock_create, \
+                 patch('flow.agents.import_contacts.write_artifact'):
+                import_contacts.fn(BUSINESS, RESEARCH,
+                                   dict(DRAFT, subject=subject))
+            keys.append(mock_create.call_args.kwargs['idempotency_key'])
+
+        assert keys[0] != keys[1]
 
     def test_uses_provided_idempotency_key(self):
         """Uses provided idempotency_key over derived one"""

@@ -25,6 +25,8 @@ and is required before anything sends. This module deliberately does not
 assign one: that is the human review gate (spec 2.1).
 """
 
+import hashlib
+import json
 import os
 import sys
 from pathlib import Path
@@ -35,6 +37,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import httpx
 
 CONTACTS_PATH = '/v1/contacts'
+
+# Imported contacts arrive UNSUBSCRIBED. The API defaults to subscribed when
+# the field is omitted, which made every imported contact sendable before
+# anyone had read its draft -- the opposite of the review gate this pipeline
+# is built around (spec 2.1: a contact is created, a human reviews the draft,
+# and only then is it assigned to a campaign).
+#
+# Overridable for a deliberate opt-in import, but the default is the safe
+# direction: a contact that cannot be mailed by accident.
+IMPORT_SUBSCRIBED = os.environ.get(
+    'WARMBLY_IMPORT_SUBSCRIBED', ''
+).strip().lower() in ('1', 'true', 'yes', 'on')
 REQUEST_TIMEOUT = float(os.environ.get('WARMBLY_REQUEST_TIMEOUT', '60'))
 
 
@@ -112,14 +126,33 @@ def build_contact_payloads(
             'last_name': last,
             'company': business.get('business_name') or '',
             'phone': business.get('phone') or '',
+            'subscribed': IMPORT_SUBSCRIBED,
             'custom_fields': dict(custom_fields),
         })
     return payloads
 
 
-def contact_idempotency_key(business: Dict[str, Any]) -> str:
-    """A stable key so re-running the pipeline does not duplicate contacts."""
-    return f"leads-business-{business.get('id')}"
+def contact_idempotency_key(
+    business: Dict[str, Any],
+    payloads: Optional[List[Dict[str, Any]]] = None,
+) -> str:
+    """
+    A key that dedupes an identical re-run but not a changed draft.
+
+    Keying on the business alone was wrong: Warmbly rejects a reused key whose
+    request body differs, with 409 "Idempotency-Key was already used with a
+    different request". So once a business had been imported, any later change
+    to its draft collided with the earlier key forever.
+
+    Hashing the payload fixes both directions -- the same content retries
+    safely, changed content is a new request. The business id stays in the
+    key so it is legible in a log or in Warmbly's own records.
+    """
+    digest = ''
+    if payloads:
+        canonical = json.dumps(payloads, sort_keys=True, separators=(',', ':'))
+        digest = '-' + hashlib.sha256(canonical.encode()).hexdigest()[:16]
+    return f"leads-business-{business.get('id')}{digest}"
 
 
 def create_contacts(
