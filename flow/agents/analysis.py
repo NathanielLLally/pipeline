@@ -32,7 +32,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from prefect import flow
 
-from flow.artifacts import read_artifact, variable_safe_name, write_artifact
+from flow.artifacts import (
+    read_artifact,
+    register_artifact,
+    variable_safe_name,
+    write_artifact,
+)
 from flow.llm import LLMSchemaError, LLMTransportError, complete_structured
 from flow.schemas import DraftAnalysisOutput
 
@@ -160,6 +165,7 @@ def analysis_agent(
     # Write input artifact
     try:
         write_artifact(input_data, suffix='input')
+        register_artifact(input_data, suffix='input', description='input')
     except Exception as e:
         print(f'Warning: could not write input artifact: {e}')
 
@@ -182,6 +188,7 @@ def analysis_agent(
         }
         _set_analysis_output(result, business_id)
         write_artifact(result, suffix='output')
+        register_artifact(result, suffix='output', description='output')
         return result
 
     print(
@@ -198,4 +205,5 @@ def analysis_agent(
     }
     _set_analysis_output(result, business_id)
     write_artifact(result, suffix='output')
+    register_artifact(result, suffix='output', description='output')
     return result

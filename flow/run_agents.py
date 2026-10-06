@@ -28,6 +28,7 @@ from prefect import flow, tags
 
 from flow.agents.analysis import analysis_agent
 from flow.agents.drafting import drafting_agent
+from flow.agents.import_contacts import import_contacts
 from flow.agents.research import research_agent
 from flow.agents.selector import (
     DEFAULT_BATCH_SIZE,
@@ -44,7 +45,13 @@ async def run_agents(
     template_slug: str = 'default',
     offer: Optional[str] = None,
 ) -> dict:
-    """Select businesses, research each, and draft for the ones that pass."""
+    """
+    Select businesses, research each, draft for the ones that pass, and import
+    each drafted business to Warmbly as contacts.
+
+    Imported contacts are not assigned to a campaign: that is the human review
+    gate, so nothing sends until someone assigns them.
+    """
     if business_ids:
         print(f'researching {len(business_ids)} named business(es)')
         candidates = await fetch_candidates(
@@ -67,7 +74,8 @@ async def run_agents(
     print(f'selected {len(candidates)}')
 
     outcomes: List[Dict[str, Any]] = []
-    counts = {'researched': 0, 'rejected': 0, 'drafted': 0, 'analyzed': 0, 'errored': 0}
+    counts = {'researched': 0, 'rejected': 0, 'drafted': 0, 'imported': 0,
+              'import_failed': 0, 'analyzed': 0, 'errored': 0}
 
     for candidate in candidates:
         business = candidate['business']
@@ -134,6 +142,31 @@ async def run_agents(
             outcome['draft'] = drafted['draft']
             outcome['outside_known_pool'] = drafted.get('outside_known_pool', [])
 
+            # Import before analysis: analysis is a quality report, not a
+            # gate, so a slow or failing LLM there must not hold back the
+            # contacts. The contact lands unassigned to any campaign.
+            try:
+                with tags(*stage_tags, 'import'):
+                    imported = import_contacts(
+                        business=business,
+                        research=researched['research'],
+                        draft=drafted['draft'],
+                    )
+            except Exception as exc:
+                print(f"import errored for {business.get('business_name')}: "
+                      f"{type(exc).__name__}: {exc}")
+                outcome['import_status'] = 'error'
+                outcome['import_error'] = f'{type(exc).__name__}: {exc}'
+                counts['import_failed'] += 1
+            else:
+                outcome['import_status'] = imported.get('status')
+                if imported.get('status') == 'imported':
+                    counts['imported'] += 1
+                    outcome['contacts_created'] = len(imported.get('created') or [])
+                else:
+                    counts['import_failed'] += 1
+                    outcome['import_reason'] = imported.get('reason')
+
             # Analyze the draft email for quality metrics
             try:
                 with tags(*stage_tags, 'analysis'):
@@ -159,6 +192,7 @@ async def run_agents(
 
     print(f"selected={len(candidates)} researched={counts['researched']} "
           f"rejected={counts['rejected']} drafted={counts['drafted']} "
+          f"imported={counts['imported']} import_failed={counts['import_failed']} "
           f"analyzed={counts['analyzed']} errored={counts['errored']}")
 
     return {

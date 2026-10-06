@@ -21,7 +21,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from prefect import flow
 from prefect.variables import Variable
 
-from flow.artifacts import read_artifact, variable_safe_name, write_artifact
+from flow.artifacts import (
+    read_artifact,
+    register_artifact,
+    variable_safe_name,
+    write_artifact,
+)
 from flow.fetch import fetch_html
 from flow.llm import LLMSchemaError, LLMTransportError, complete_structured
 from flow.offer import resolve_offer
@@ -132,6 +137,7 @@ def research_agent(
     # Write input artifact
     try:
         write_artifact(input_data, suffix='input')
+        register_artifact(input_data, suffix='input', description='input')
     except Exception as e:
         print(f'Warning: could not write input artifact: {e}')
 
@@ -149,6 +155,7 @@ def research_agent(
                   'research': None, 'passes': 1}
         _set_research_output(result, business_id)
         write_artifact(result, suffix='output')
+        register_artifact(result, suffix='output', description='output')
         return result
 
     print(f'pass 1 confidence {first.confidence} '
@@ -159,6 +166,7 @@ def research_agent(
                   'passes': 1}
         _set_research_output(result, business_id)
         write_artifact(result, suffix='output')
+        register_artifact(result, suffix='output', description='output')
         return result
 
     if not first.next_url_to_check:
@@ -168,6 +176,7 @@ def research_agent(
                   'research': first.model_dump(mode='json'), 'passes': 1}
         _set_research_output(result, business_id)
         write_artifact(result, suffix='output')
+        register_artifact(result, suffix='output', description='output')
         return result
 
     print(f'escalating: fetching {first.next_url_to_check}')
@@ -187,6 +196,7 @@ def research_agent(
                   'research': first.model_dump(mode='json'), 'passes': 2}
         _set_research_output(result, business_id)
         write_artifact(result, suffix='output')
+        register_artifact(result, suffix='output', description='output')
         return result
 
     print(f'pass 2 confidence {second.confidence}')
@@ -196,6 +206,7 @@ def research_agent(
                   'research': second.model_dump(mode='json'), 'passes': 2}
         _set_research_output(result, business_id)
         write_artifact(result, suffix='output')
+        register_artifact(result, suffix='output', description='output')
         return result
 
     result = {'status': 'rejected',
@@ -203,4 +214,5 @@ def research_agent(
               'research': second.model_dump(mode='json'), 'passes': 2}
     _set_research_output(result, business_id)
     write_artifact(result, suffix='output')
+    register_artifact(result, suffix='output', description='output')
     return result

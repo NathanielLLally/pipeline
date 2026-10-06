@@ -895,3 +895,36 @@ concurrency limit reached"; `reap` cancelled the stale run and the server droppe
 the count to 0 without needing the reset; a fresh run then took the slot. The live
 `discord-bot` deployment still shows `concurrency_options=None` until
 `serve_discord_bot.py` is restarted.
+
+## Contact import is part of run_agents (2026-10-06)
+
+Before this, **no contacts reached Warmbly**. `import_contacts` existed only as a
+standalone deployment with no trigger, and nothing called it. Its one run (Oct 4)
+was started by hand.
+
+`run_agents` now calls `import_contacts(business, research, draft)` as a subflow for
+every business whose draft status is `drafted`. The order is select → research →
+draft → **import** → analysis. Import runs before analysis on purpose: analysis is a
+quality report, not a gate, so a slow or failing LLM there cannot hold back contacts.
+Each outcome records `import_status` (`imported`/`rejected`/`error`) and
+`contacts_created`. The run returns `imported` and `import_failed` counts. An import
+failure is recorded for that business and the batch continues.
+
+- Contacts are created **unassigned to any campaign**. Assigning them is the human
+  review gate (spec 2.1), so nothing sends automatically.
+- The idempotency key is `leads-business-<id>`, so re-running a batch does not
+  duplicate contacts.
+- The import subflow is tagged `<business_id>, import`, so its artifacts are
+  `import-<business_id>-{input,output}.json`.
+
+Checked offline: a real `run_agents` → real `import-contacts` subflow, with only
+`httpx.post` mocked, POSTed one contact to `$WARMBLY_API_URL/v1/contacts` with the
+expected idempotency key. Not yet run against live Warmbly.
+
+**Serving status found 2026-10-06:** every `serve()` deployment on the server is
+**paused**, because Prefect pauses them when the serving process exits and nothing
+is serving them. The registered list is from 19:13 on Oct 4, which predates
+`import-contacts` being added to `serve_agents.py`. That script already lists it, so
+restarting the script registers it. 19 runs were left Running/Pending (14
+analysis-agent from the hung test session, plus run-agents and its subflows from
+Oct 4). They hold no concurrency slots, so they block nothing.

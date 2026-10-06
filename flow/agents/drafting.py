@@ -23,7 +23,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from prefect import flow
 from prefect.variables import Variable
 
-from flow.artifacts import read_artifact, variable_safe_name, write_artifact
+from flow.artifacts import (
+    read_artifact,
+    register_artifact,
+    variable_safe_name,
+    write_artifact,
+)
 from flow.llm import LLMSchemaError, LLMTransportError, complete_structured
 from flow.offer import OUTREACH_GOAL, resolve_offer
 from flow.schemas import DraftingOutput
@@ -121,6 +126,7 @@ def drafting_agent(
     # Write input artifact
     try:
         write_artifact(input_data, suffix='input')
+        register_artifact(input_data, suffix='input', description='input')
     except Exception as e:
         print(f'Warning: could not write input artifact: {e}')
 
@@ -139,6 +145,7 @@ def drafting_agent(
                   'draft': None}
         _set_drafting_output(result, business_id)
         write_artifact(result, suffix='output')
+        register_artifact(result, suffix='output', description='output')
         return result
 
     # Warmbly will not send to an address it has not itself verified, and it
@@ -155,4 +162,5 @@ def drafting_agent(
               'outside_known_pool': outside_known_pool}
     _set_drafting_output(result, business_id)
     write_artifact(result, suffix='output')
+    register_artifact(result, suffix='output', description='output')
     return result

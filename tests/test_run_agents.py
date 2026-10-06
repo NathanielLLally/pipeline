@@ -32,16 +32,23 @@ DRAFTED = {'status': 'drafted', 'draft': {'subject': 's', 'body': 'b'},
            'outside_known_pool': []}
 
 
+IMPORTED = {'status': 'imported', 'payloads_sent': 1,
+            'created': [{'id': 'c-1'}], 'business_id': 'biz-1'}
+
+
 @pytest.fixture(autouse=True)
 def _no_live_analysis():
     """
     Every drafted business now goes on to analysis_agent, which calls the LLM
     proxy. Tests that predate that stage patch research and drafting only, so
     without this they reach the live proxy and hang the suite. Tests about
-    analysis patch it again inside the test, which takes precedence.
+    analysis patch it again inside the test, which takes precedence. The same
+    goes for import_contacts, which would otherwise POST to the live Warmbly.
     """
     with patch('flow.run_agents.analysis_agent',
-               return_value={'status': 'analyzed', 'analysis': {}}):
+               return_value={'status': 'analyzed', 'analysis': {}}), \
+         patch('flow.run_agents.import_contacts',
+               return_value=IMPORTED):
         yield
 
 
@@ -319,3 +326,89 @@ class TestFailureIsolation:
         errored = [o for o in result['outcomes']
                    if o['research_status'] == 'error']
         assert 'boom' in errored[0]['error']
+
+
+class TestImport:
+    """Every drafted business is imported to Warmbly, unassigned to a campaign."""
+
+    def _batch(self, research=RESEARCHED, draft=DRAFTED, **extra):
+        with patch('flow.run_agents.fetch_candidates',
+                   new_callable=AsyncMock, return_value=[CANDIDATE]), \
+             patch('flow.run_agents.research_agent', return_value=research), \
+             patch('flow.run_agents.drafting_agent', return_value=draft), \
+             patch('flow.run_agents.import_contacts', **extra) as imp:
+            result = _run()
+        return result, imp
+
+    def test_drafted_business_is_imported_with_its_context(self):
+        result, imp = self._batch(return_value=IMPORTED)
+        imp.assert_called_once()
+        kwargs = imp.call_args.kwargs
+        assert kwargs['business'] == CANDIDATE['business']
+        assert kwargs['research'] == RESEARCHED['research']
+        assert kwargs['draft'] == DRAFTED['draft']
+        assert result['outcomes'][0]['import_status'] == 'imported'
+        assert result['imported'] == 1
+
+    def test_rejected_research_is_not_imported(self):
+        _, imp = self._batch(research=REJECTED, return_value=IMPORTED)
+        imp.assert_not_called()
+
+    def test_undrafted_business_is_not_imported(self):
+        _, imp = self._batch(
+            draft={'status': 'rejected', 'reason': 'no_usable_email'},
+            return_value=IMPORTED)
+        imp.assert_not_called()
+
+    def test_import_runs_even_when_analysis_fails(self):
+        with patch('flow.run_agents.fetch_candidates',
+                   new_callable=AsyncMock, return_value=[CANDIDATE]), \
+             patch('flow.run_agents.research_agent', return_value=RESEARCHED), \
+             patch('flow.run_agents.drafting_agent', return_value=DRAFTED), \
+             patch('flow.run_agents.analysis_agent',
+                   side_effect=RuntimeError('llm down')), \
+             patch('flow.run_agents.import_contacts',
+                   return_value=IMPORTED) as imp:
+            result = _run()
+        imp.assert_called_once()
+        outcome = result['outcomes'][0]
+        assert outcome['import_status'] == 'imported'
+        assert outcome['analysis_status'] == 'error'
+
+    def test_import_error_is_recorded_and_batch_continues(self):
+        candidates = [dict(CANDIDATE, business={'id': f'b{i}',
+                                                'business_name': f'n{i}'})
+                      for i in range(2)]
+        with patch('flow.run_agents.fetch_candidates',
+                   new_callable=AsyncMock, return_value=candidates), \
+             patch('flow.run_agents.research_agent', return_value=RESEARCHED), \
+             patch('flow.run_agents.drafting_agent', return_value=DRAFTED), \
+             patch('flow.run_agents.import_contacts',
+                   side_effect=[RuntimeError('warmbly 500'), IMPORTED]) as imp:
+            result = _run()
+        assert imp.call_count == 2
+        assert result['outcomes'][0]['import_status'] == 'error'
+        assert 'warmbly 500' in result['outcomes'][0]['import_error']
+        assert result['outcomes'][1]['import_status'] == 'imported'
+        assert result['imported'] == 1
+
+    def test_rejected_import_is_counted_separately(self):
+        result, _ = self._batch(return_value={
+            'status': 'rejected', 'reason': 'warmbly_error', 'error': '401'})
+        outcome = result['outcomes'][0]
+        assert outcome['import_status'] == 'rejected'
+        assert outcome['import_reason'] == 'warmbly_error'
+        assert result['imported'] == 0
+        assert result['import_failed'] == 1
+
+    def test_import_is_tagged_for_its_artifacts(self):
+        """Like the other stages: tags name the import's artifact files."""
+        seen = []
+
+        def record(**kwargs):
+            from prefect.context import TagsContext
+            seen.append(set(TagsContext.get().current_tags))
+            return IMPORTED
+
+        self._batch(side_effect=record)
+        assert {'biz-1', 'import'} <= seen[0]

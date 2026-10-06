@@ -110,6 +110,44 @@ def write_artifact(data: Dict[str, Any], suffix: str = 'output',
     return filepath
 
 
+def register_artifact(data: Dict[str, Any], suffix: str = 'output',
+                      description: Optional[str] = None) -> None:
+    """
+    Register an artifact with Prefect so it appears in the UI.
+
+    Args:
+        data: dict to register (same as written to disk)
+        suffix: 'input' or 'output' (used to build the artifact key)
+        description: optional description (e.g., 'input' or 'output')
+
+    Does nothing if Prefect client is unavailable (e.g., unit tests with
+    ephemeral servers or environments without API URL). Swallows all errors
+    so a missing/misconfigured Prefect API doesn't break the flow.
+    """
+    try:
+        from prefect.artifacts import create_artifact
+        from prefect.runtime import flow_run
+
+        tags = flow_run.tags or []
+        if tags:
+            key = '-'.join(sorted(str(t) for t in tags)) + f'-{suffix}'
+        else:
+            key = f'unknown-{suffix}'
+
+        # create_artifact is async-aware and works in both sync and async contexts
+        create_artifact(
+            key=key,
+            data=data,
+            type='result',
+            description=description or suffix
+        )
+    except Exception as e:
+        # Artifact registration is nice-to-have for UI visibility, not essential
+        # for flow execution. Swallow errors so a missing Prefect API doesn't break
+        # the flow (e.g., unit tests, offline environments).
+        print(f'Note: could not register artifact {suffix}: {e}')
+
+
 def read_artifact(filepath: str, suffix: Optional[str] = None) -> Dict[str, Any]:
     """
     Read a JSON artifact.
