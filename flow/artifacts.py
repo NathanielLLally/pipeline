@@ -22,6 +22,9 @@ from typing import Any, Dict, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import re
+
+from prefect.artifacts import Artifact
 from prefect.runtime import flow_run
 from slugify import slugify
 
@@ -110,6 +113,19 @@ def write_artifact(data: Dict[str, Any], suffix: str = 'output',
     return filepath
 
 
+def artifact_key(suffix: str = 'output') -> str:
+    """
+    Build a Prefect artifact key from the ambient flow-run tags.
+
+    Prefect accepts only lowercase alphanumerics and dashes in a key, while
+    tags are free-form, so anything else collapses to a dash.
+    """
+    tags = flow_run.tags or []
+    base = '-'.join(sorted(str(t) for t in tags)) if tags else 'unknown'
+    key = re.sub(r'[^a-z0-9]+', '-', base.lower()).strip('-') or 'unknown'
+    return f'{key}-{suffix}'
+
+
 def register_artifact(data: Dict[str, Any], suffix: str = 'output',
                       description: Optional[str] = None) -> None:
     """
@@ -124,27 +140,24 @@ def register_artifact(data: Dict[str, Any], suffix: str = 'output',
     ephemeral servers or environments without API URL). Swallows all errors
     so a missing/misconfigured Prefect API doesn't break the flow.
     """
+    key = artifact_key(suffix)
+
     try:
-        from prefect.artifacts import create_artifact
-        from prefect.runtime import flow_run
-
-        tags = flow_run.tags or []
-        if tags:
-            key = '-'.join(sorted(str(t) for t in tags)) + f'-{suffix}'
-        else:
-            key = f'unknown-{suffix}'
-
-        # create_artifact is async-aware and works in both sync and async contexts
-        create_artifact(
+        # Prefect 3.2.15 has no create_artifact; the Artifact model is how an
+        # arbitrary structured payload is registered. data takes any
+        # JSON-serialisable object, so the whole research/draft record goes in
+        # as-is rather than being flattened into a table or markdown.
+        Artifact(
             key=key,
-            data=data,
             type='result',
-            description=description or suffix
-        )
+            data=data,
+            description=description or suffix,
+        ).create()
     except Exception as e:
-        # Artifact registration is nice-to-have for UI visibility, not essential
-        # for flow execution. Swallow errors so a missing Prefect API doesn't break
-        # the flow (e.g., unit tests, offline environments).
+        # Only RUNTIME failures are tolerated here -- no API URL, server
+        # unreachable, unit tests with no server. A wrong symbol now fails at
+        # import instead, which is how the create_artifact mistake survived a
+        # full pipeline run looking like a missing API.
         print(f'Note: could not register artifact {suffix}: {e}')
 
 

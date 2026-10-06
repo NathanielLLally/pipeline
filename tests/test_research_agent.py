@@ -221,3 +221,29 @@ class TestJSONArtifactInput:
             input_call = mock_write.call_args_list[0]
             data = input_call.args[0]
             assert data['business']['id'] == 'json-biz'
+
+
+class TestPromptStatesTheVocabulary:
+    """A real run burned a retry on each of these.
+
+    The model answered inferred_tone='professional, friendly, community-focused'
+    (free text against a Literal) and evidence as a dict instead of a list.
+    The validation-retry loop recovered both, but each recovery is an extra
+    LLM call, and the prompt never stated the allowed values.
+    """
+
+    def test_prompt_enumerates_the_allowed_tones(self):
+        prompt = build_research_prompt(BUSINESS, EMAILS, "text")
+
+        for tone in ('clinical', 'warm', 'premium', 'casual', 'sparse'):
+            assert tone in prompt
+
+    def test_prompt_says_exactly_one_tone(self):
+        prompt = build_research_prompt(BUSINESS, EMAILS, "text").lower()
+
+        assert 'exactly one' in prompt
+
+    def test_prompt_says_evidence_is_a_list_of_strings(self):
+        prompt = build_research_prompt(BUSINESS, EMAILS, "text").lower()
+
+        assert 'list of' in prompt

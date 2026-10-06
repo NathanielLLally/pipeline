@@ -72,8 +72,12 @@ def build_research_prompt(
         'Extract contact_name and contact_title if the pages actually name '
         'a person to write to (an owner, founder or trainer); leave them null '
         'rather than inventing one. '
-        'Return pain_signals, a personalization_hook, inferred_tone, a '
-        'confidence between 0 and 1, evidence quoted from the text above, and '
+        'Return pain_signals as a list of short strings, a '
+        'personalization_hook, and inferred_tone as exactly one of: '
+        'clinical, warm, premium, casual, sparse -- one of those five words '
+        'and nothing else, not a description of the tone. Also a '
+        'confidence between 0 and 1, evidence as a list of strings quoted '
+        'verbatim from the text above, and '
         'suggested_email chosen from the verified pool. If confidence is low '
         'and another page on the site would help, set next_url_to_check.',
     ]
