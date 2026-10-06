@@ -7,6 +7,7 @@ those are what is tested. The discord.py wiring around them is thin.
 """
 
 import asyncio
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -237,7 +238,12 @@ class TestGatewayWiring:
 
         _run(handlers['EMAIL_REPLIED']('org:1', {'contact_id': 'c1'}))
         publish.assert_awaited_once()
-        assert 'EMAIL_REPLIED' in publish.await_args.args[0]
+        # (summary, filename, json bytes): the payload is attached as a file
+        # rather than inlined as a fenced code block.
+        summary, filename, data = publish.await_args.args[0]
+        assert 'EMAIL_REPLIED' in summary
+        assert filename.endswith('.json')
+        assert json.loads(data.decode())['contact_id'] == 'c1'
 
 
 class TestListFlows:
@@ -569,9 +575,12 @@ class TestHandlersUseTheFilter:
             gw, publish, bot.EventDisplayFilter({ORG_ID: ORG_NAME}))
 
         _run(handlers['EMAIL_REPLIED'](f'org:{ORG_ID}', {'org': ORG_ID}))
-        sent = publish.await_args.args[0]
-        assert 'EMAIL_REPLIED' in sent and ORG_NAME in sent
-        assert ORG_ID not in sent
+        summary, _filename, data = publish.await_args.args[0]
+        body = data.decode()
+        assert 'EMAIL_REPLIED' in summary and ORG_NAME in summary
+        # The substitution must apply to the attachment too, not just the line.
+        assert ORG_ID not in summary and ORG_ID not in body
+        assert ORG_NAME in body
 
 
 class TestAnnouncementUsesOrgName:
@@ -824,3 +833,119 @@ class TestNoSighupHandler:
         import signal
         assert not hasattr(bot, 'install_sighup')
         assert signal.getsignal(signal.SIGHUP) in (signal.SIG_DFL, signal.SIG_IGN, None)
+
+
+class TestEventAttachment:
+    """Forward the JSON as an attachment, not an inline code block.
+
+    A fenced code block in the channel is noisy and gets truncated at
+    Discord's 2000-character limit, so the part you want is often the part
+    that was cut. As a file it is a one-line summary you can scan plus a
+    link to click when an event is actually interesting, and nothing is
+    truncated.
+    """
+
+    def _filter(self, names=None):
+        return bot.EventDisplayFilter(
+            {ORG_ID: 'Acme'} if names is None else names)
+
+    def test_summary_names_the_event_and_topic(self):
+        summary = self._filter().event_summary(
+            'EMAIL_REPLIED', f'org:{ORG_ID}', {'id': 'abc'})
+
+        assert 'EMAIL_REPLIED' in summary
+        assert 'Acme' in summary
+
+    def test_summary_fits_in_one_discord_message(self):
+        summary = self._filter().event_summary(
+            'X', 't', {'blob': 'y' * 50_000})
+
+        assert len(summary) < bot.DISCORD_MESSAGE_LIMIT
+
+    def test_attachment_is_untruncated_json(self):
+        payload = {'blob': 'y' * 50_000}
+
+        name, data = self._filter().event_attachment('X', 't', payload)
+
+        assert len(data) > 50_000
+        assert json.loads(data.decode())['blob'] == 'y' * 50_000
+
+    def test_attachment_applies_the_name_substitution(self):
+        name, data = self._filter().event_attachment(
+            'X', f'org:{ORG_ID}', {'org': ORG_ID})
+
+        assert json.loads(data.decode())['org'] == 'Acme'
+
+    def test_attachment_filename_identifies_the_event(self):
+        name, _ = self._filter().event_attachment('EMAIL_REPLIED', 't', {})
+
+        assert name.endswith('.json')
+        assert 'email-replied' in name.lower()
+
+    def test_attachment_needs_no_codeblock_escaping(self):
+        """The ``` escaping existed only because of the inline code block."""
+        name, data = self._filter().event_attachment(
+            'X', 't', {'body': 'a ``` b'})
+
+        assert json.loads(data.decode())['body'] == 'a ``` b'
+
+
+class TestSenderUploadsFiles:
+    def test_sends_summary_with_the_json_attached(self):
+        import asyncio as aio
+
+        sent = {}
+
+        class Channel:
+            async def send(self, content=None, file=None):
+                sent['content'] = content
+                sent['file'] = file
+
+        channel = Channel()
+        queue = aio.Queue()
+        queue.put_nowait(('**X** `t`', 'x.json', b'{"a": 1}'))
+
+        async def drive():
+            client = MagicMock()
+            client.wait_until_ready = AsyncMock()
+            with patch.object(bot, '_resolve_channel',
+                              AsyncMock(return_value=channel)):
+                task = aio.ensure_future(
+                    bot.run_sender(client, make_cfg(), queue, 'hello'))
+                await aio.sleep(0.05)
+                task.cancel()
+
+        aio.run(drive())
+
+        assert sent['content'] == '**X** `t`'
+        assert sent['file'] is not None
+
+    def test_a_plain_string_still_sends_as_a_message(self):
+        """Announcements and anything else queued as text keep working."""
+        import asyncio as aio
+
+        sent = {}
+
+        class Channel:
+            async def send(self, content=None, file=None):
+                sent['content'] = content
+                sent['file'] = file
+
+        channel = Channel()
+        queue = aio.Queue()
+        queue.put_nowait('just text')
+
+        async def drive():
+            client = MagicMock()
+            client.wait_until_ready = AsyncMock()
+            with patch.object(bot, '_resolve_channel',
+                              AsyncMock(return_value=channel)):
+                task = aio.ensure_future(
+                    bot.run_sender(client, make_cfg(), queue, 'hello'))
+                await aio.sleep(0.05)
+                task.cancel()
+
+        aio.run(drive())
+
+        assert sent['content'] == 'just text'
+        assert sent['file'] is None

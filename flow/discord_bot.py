@@ -51,6 +51,7 @@ loaders and silently not under others (where SIGHUP then kills the bot).
 import asyncio
 import io
 import json
+from datetime import datetime, timezone
 import os
 import re
 import shlex
@@ -221,6 +222,41 @@ class EventDisplayFilter:
             return [self._translate(v) for v in value]
         return value
 
+    def event_summary(self, event: str, topic: str, payload: Any) -> str:
+        """
+        The one line that goes in the channel, with the JSON attached.
+
+        Deliberately short: this is what you scan to decide whether an event
+        is worth opening. The payload itself rides along as a file, so nothing
+        has to be truncated to fit Discord's message limit.
+        """
+        head = f'**{event}** `{self._label(topic)}`'
+        hint = ''
+        if isinstance(payload, dict):
+            # Whichever identifier is present, so the line says *which* thing.
+            for key in ('email', 'name', 'subject', 'id', 'contact_id',
+                        'campaign_id'):
+                value = payload.get(key)
+                if isinstance(value, (str, int)) and str(value):
+                    hint = f' · {key}=`{self._label(str(value))[:120]}`'
+                    break
+        line = head + hint
+        return line[:DISCORD_MESSAGE_LIMIT]
+
+    def event_attachment(self, event: str, topic: str,
+                         payload: Any) -> tuple:
+        """
+        (filename, bytes) carrying the whole payload as JSON.
+
+        No truncation and no ``` escaping: neither is needed once this is a
+        file rather than a fenced block in a message.
+        """
+        body = json.dumps(self._translate(payload), indent=2, default=str,
+                          ensure_ascii=False)
+        slug = re.sub(r'[^a-z0-9]+', '-', event.lower()).strip('-') or 'event'
+        stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')
+        return f'{slug}-{stamp}.json', body.encode()
+
     def render(self, event: str, topic: str, payload: Any) -> str:
         head = f'**{event}** `{self._label(topic)}`\n'
         body = json.dumps(self._translate(payload), indent=2, default=str,
@@ -294,6 +330,10 @@ async def run_sender(
     client: Any, cfg: 'BotConfig', queue: 'asyncio.Queue', announcement: str
 ) -> None:
     """Announce once in the command channel, then feed the event channel."""
+    # Imported here, not at module scope, matching the rest of this file: the
+    # module must stay importable without discord.py installed.
+    import discord
+
     await client.wait_until_ready()
     # Once per flow run: discord.py reconnects without re-running this.
     try:
@@ -305,7 +345,15 @@ async def run_sender(
     while True:
         message = await queue.get()
         try:
-            await events.send(message)
+            if isinstance(message, tuple):
+                # (summary, filename, json bytes): the payload goes up as an
+                # attachment so it is clickable and never truncated.
+                content, filename, data = message
+                await events.send(
+                    content,
+                    file=discord.File(io.BytesIO(data), filename))
+            else:
+                await events.send(message)
         except Exception as exc:
             print(f'could not post event: {type(exc).__name__}: {exc}')
 
@@ -446,7 +494,10 @@ def register_event_handlers(
     display = display or EventDisplayFilter()
     for name in names:
         async def handler(topic: str, payload: Any, _name: str = name) -> None:
-            await publish(display.render(_name, topic, payload))
+            filename, data = display.event_attachment(
+                _name, topic, payload)
+            await publish((display.event_summary(_name, topic, payload),
+                           filename, data))
         gw.on_event(name)(handler)
 
 
