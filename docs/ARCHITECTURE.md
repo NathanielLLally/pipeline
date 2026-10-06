@@ -944,3 +944,35 @@ feed.
 
 That launcher-only rule was dropped the same day, because it defeated starting from
 the UI. See "start it from the UI; the newest run wins" above.
+
+## Email verification task: flow/mx_check.py (2026-10-06)
+
+`from flow.mx_check import verify_business_emails` gives a Prefect task that runs
+`scripts/mxCheck.pl` and upserts `leads.email_verification`. Pass exactly one of:
+- `emails=[...]`
+- `business_ids=[...]`
+- `unverified_limit=N` (the N highest-confidence `business_email` rows with no
+  verification yet)
+
+- **No temp file.** Addresses are piped in with `--file /dev/stdin`, and the script
+  path is absolute, so the working directory does not matter. mxCheck.pl's own
+  per-check result files are its internal fork-to-parent IPC and are cleaned up by
+  the script.
+- **One check per address, one row per `business_email`.** Of 17,182 `business_email`
+  rows only 11,453 addresses are distinct, so a result fans out to every row holding
+  that address. The write is an upsert on the unique `business_email_id`; a re-check
+  updates `verified`, `mx_server`, `error` and `verified_at` in place.
+- An address the script returned no result for is **not** written. `verified=false`
+  would record a check that never happened.
+- C0 control characters are stripped before writing, because Postgres text cannot
+  hold NUL.
+- Settings: `LEADS_DB_URL`; optional `MXCHECK_THREADS` (10), `MXCHECK_RATE_LIMIT` (0),
+  `MXCHECK_TIMEOUT` (600s; the script is killed after this), `MXCHECK_FORCE_CHECK`.
+- **Port 25 outbound is required.** The scraper hosts block it. Which hosts can run
+  this is the same open question as in the mxCheck.pl SOCKS5 notes.
+
+Verified 2026-10-06: the real script ran over stdin from `/tmp`. The real upsert ran
+inside a rolled-back transaction against the live table: 4 rows for one address
+shared by 4 businesses, a re-check updated them in place, and the table was left
+empty. `flow/warmbly_integration_test.py` still has its own temp-file call; it is a
+spike and was left as is.
