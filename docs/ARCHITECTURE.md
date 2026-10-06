@@ -852,47 +852,43 @@ Do not `importlib.reload(flow.llm)` inside the test session. A reload creates ne
 stop catching them in every later test. Read module-level settings in a subprocess
 instead.
 
-## discord-bot: never wait on a concurrency slot (2026-10-06)
+## discord-bot: start it from the UI; the newest run wins (2026-10-06)
 
-The deployment allows one run at a time, because a second run would post every
-Warmbly event twice. It now uses **`CANCEL_NEW`** instead of the default `ENQUEUE`: a
-start that cannot get the slot is cancelled at once, rather than sitting in
-`Scheduled/AwaitingConcurrencySlot` indefinitely. `to_deployment` stores this as
-`concurrency_limit=1` plus `concurrency_options.collision_strategy`.
+Only one bot may be connected at a time, or every Warmbly event is posted twice.
+That rule is **not** a Prefect concurrency limit. A limit acts at the slot check,
+before the run's own code: `ENQUEUE` parked new runs in `AwaitingConcurrencySlot`
+for hours, and `CANCEL_NEW` cancelled them at once. In both cases a dead run holding
+the slot made every UI start fail. A separate launcher script could clear it, but
+that ruled out starting from the UI, which is the point of using Prefect.
 
-**Start the bot with `python flow/start_discord_bot.py`**, not
-`prefect deployment run`. The launcher calls `flow/discord_bot_reaper.reap()` and
-then triggers one run without waiting for it. The reap step:
+Instead the deployment has **no concurrency limit**, and each run's first step
+(`claim_and_reap` → `flow/discord_bot_reaper.reap`) is:
 
-1. Treats every other `discord-bot` run in Running, Pending or Cancelling, or
-   Scheduled as `AwaitingConcurrencySlot`, as a blocker.
-2. If a blocker's tags say it runs on this host (`host:<name>`, `pid:<n>`) **and**
-   `/proc/<pid>/environ` contains `PREFECT__FLOW_RUN_ID=<that run>`, sends it SIGTERM,
-   then SIGKILL after 10s. A recycled PID or a process on another host is never
-   signalled. The tags exist because the runner leaves `flow_run.infrastructure_pid`
-   empty.
-3. Forces the blocker to Cancelled. Leaving Running, Pending or Cancelling is what
-   makes the server release the slot (`ReleaseFlowConcurrencySlots` in
-   `server/orchestration/core_policy.py`), and a forced transition counts.
-4. If the limit still shows a slot held, resets `active_slots` with
-   `update_global_concurrency_limit`: to 0 from the launcher, or to 1 from inside a run
-   (that slot is the run's own). Slot decay is 0.0, so a leaked slot never expires
-   by itself.
+1. tag itself `pid:<n>`, `host:<name>` (the runner leaves `infrastructure_pid`
+   empty);
+2. for every *older* run of the deployment in Running, Pending or Cancelling:
+   - if its tags put it on this host **and** `/proc/<pid>/environ` contains
+     `PREFECT__FLOW_RUN_ID=<that run>`, send SIGTERM, then SIGKILL after 10s;
+   - force it to Cancelled ("Replaced by a newer discord-bot run.").
 
-The flow also runs `claim_and_reap()` first thing: it tags itself with its PID and
-host, then reaps other runs. That second layer covers starts that bypass the
-launcher. A failure there is logged and the bot carries on.
+"Older" means `(start_time, id)` sorts lower. Newer runs are never touched, so two
+starts close together cannot cancel each other and leave nothing running; exactly
+one survives. Scheduled runs are left alone, because they stop their elders when
+they start.
 
-**Why the launcher is needed:** with `CANCEL_NEW`, a run that finds the slot held is
-cancelled at the slot check, before any of its own code runs. So it can never reap
-the run that blocks it; only something outside the run can.
+**Start it from the Prefect UI** (or `prefect deployment run discord-bot/discord-bot`).
+Starting it again is how to restart it. `flow/start_discord_bot.py` was removed.
 
-**Verified live 2026-10-06** with a throwaway deployment configured the same way: an
-abandoned Running run held 1 slot; a new run was cancelled with "Deployment
-concurrency limit reached"; `reap` cancelled the stale run and the server dropped
-the count to 0 without needing the reset; a fresh run then took the slot. The live
-`discord-bot` deployment still shows `concurrency_options=None` until
-`serve_discord_bot.py` is restarted.
+Re-serving with `concurrency_limit=None` makes the server **delete** the stored
+limit (`_create_or_update_deployment_concurrency_limit` → `_delete_related_concurrency_limit`).
+So restarting `serve_discord_bot.py` on prod clears the old limit with no manual
+step.
+
+**Verified live 2026-10-06** on the workstation server with a throwaway deployment:
+it started with limit 1 and a dead Running run holding the slot. Re-registering it
+without a limit deleted the limit. A UI-style start went straight to Running, and
+its reap cancelled the dead run while the new run stayed Running. The probe was then
+deleted.
 
 ## Contact import is part of run_agents (2026-10-06)
 
@@ -946,5 +942,5 @@ started, tagged itself `host:mail.accurateleadinfo.com`/`pid:…`, synced 34 com
 **globally** (`DISCORD_GUILD_ID` is not set on prod), and subscribed to the Warmbly
 feed.
 
-**Always start the bot with the launcher.** A start from the UI cannot clear a dead
-run that holds the slot.
+That launcher-only rule was dropped the same day, because it defeated starting from
+the UI. See "start it from the UI; the newest run wins" above.

@@ -1,11 +1,11 @@
 """
-Unit tests for clearing stale discord-bot runs before a new one starts.
+Unit tests for "newest discord-bot run wins".
 
-The deployment runs with concurrency_limit=1 and CANCEL_NEW, so a run left
-holding the slot (killed process, lost worker) would block every later start.
-The reaper releases it: kill the stale process if it is provably that run's,
-force the run to Cancelled (which the server turns into a slot release), and
-reset the counter if it still reads as held.
+The deployment has no Prefect concurrency limit, so a start from the UI always
+runs. Each run's first act is to stop every OLDER live run of the deployment:
+kill its process when it is provably that run's, then force it to Cancelled.
+Newer runs are left alone, so two near-simultaneous starts cannot cancel each
+other and leave nothing running.
 
 No Prefect server or real process is touched: the client and the process
 probes are fakes.
@@ -25,31 +25,33 @@ def _run(coro):
     return asyncio.run(coro)
 
 
-def flow_run(state_type, state_name=None, tags=(), run_id=None):
+from datetime import datetime, timedelta, timezone
+
+T0 = datetime(2026, 10, 6, 12, 0, tzinfo=timezone.utc)
+
+
+def flow_run(state_type, state_name=None, tags=(), run_id=None, minutes=0):
+    started = T0 + timedelta(minutes=minutes)
     return SimpleNamespace(
         id=run_id or uuid4(),
-        name=f'run-{state_type.lower()}',
+        name=f'run-{state_type.lower()}-{minutes}',
         state_type=SimpleNamespace(value=state_type),
         state_name=state_name or state_type.title(),
         tags=list(tags),
+        start_time=started if state_type != 'SCHEDULED' else None,
+        expected_start_time=started,
     )
 
 
 DEPLOYMENT_ID = uuid4()
 
 
-def fake_client(runs, active_slots=0,
-                limit_name=f'deployment:{DEPLOYMENT_ID}'):
+def fake_client(runs):
     client = MagicMock()
-    client.read_deployment_by_name = AsyncMock(return_value=SimpleNamespace(
-        id=DEPLOYMENT_ID,
-        global_concurrency_limit=SimpleNamespace(
-            name=limit_name, limit=1, active_slots=active_slots)))
+    client.read_deployment_by_name = AsyncMock(
+        return_value=SimpleNamespace(id=DEPLOYMENT_ID))
     client.read_flow_runs = AsyncMock(return_value=runs)
     client.set_flow_run_state = AsyncMock()
-    client.update_global_concurrency_limit = AsyncMock()
-    client.read_global_concurrency_limit_by_name = AsyncMock(
-        return_value=SimpleNamespace(active_slots=active_slots))
     return client
 
 
@@ -58,12 +60,11 @@ class TestWhichRunsAreBlockers:
     def test_live_states_are_blockers(self, state):
         assert reaper.is_blocker(flow_run(state))
 
-    def test_a_run_waiting_for_the_slot_is_a_blocker(self):
-        assert reaper.is_blocker(
+    def test_a_scheduled_run_is_left_alone(self):
+        """It has not started; when it does, it will stop its elders itself."""
+        assert not reaper.is_blocker(flow_run('SCHEDULED'))
+        assert not reaper.is_blocker(
             flow_run('SCHEDULED', state_name='AwaitingConcurrencySlot'))
-
-    def test_an_ordinary_scheduled_run_is_left_alone(self):
-        assert not reaper.is_blocker(flow_run('SCHEDULED', state_name='Scheduled'))
 
     @pytest.mark.parametrize('state',
                              ['COMPLETED', 'FAILED', 'CANCELLED', 'CRASHED'])
@@ -112,103 +113,97 @@ class TestOwnershipCheck:
 
 
 class TestReap:
-    def test_cancels_every_blocker_but_never_itself(self):
-        me = uuid4()
-        stale = flow_run('RUNNING')
-        waiting = flow_run('SCHEDULED', state_name='AwaitingConcurrencySlot')
-        mine = flow_run('RUNNING', run_id=me)
-        done = flow_run('COMPLETED')
-        client = fake_client([stale, waiting, mine, done])
+    def _me(self, minutes=10):
+        return flow_run('RUNNING', minutes=minutes)
 
-        report = _run(reaper.reap(client, 'discord-bot/discord-bot',
-                                  current_run_id=me))
+    def _cancelled(self, client):
+        return {c.args[0] for c in client.set_flow_run_state.await_args_list}
 
-        cancelled = [c.args[0] if c.args else c.kwargs['flow_run_id']
-                     for c in client.set_flow_run_state.await_args_list]
-        assert set(cancelled) == {stale.id, waiting.id}
-        assert me not in cancelled
+    def test_cancels_older_live_runs_but_never_itself(self):
+        me = self._me()
+        older_running = flow_run('RUNNING', minutes=1)
+        older_pending = flow_run('PENDING', minutes=2)
+        done = flow_run('COMPLETED', minutes=3)
+        client = fake_client([older_running, older_pending, me, done])
+
+        report = _run(reaper.reap(client, 'discord-bot/discord-bot', me))
+
+        assert self._cancelled(client) == {older_running.id, older_pending.id}
         assert report.cancelled == 2
 
+    def test_newer_runs_are_left_alone(self):
+        """Two starts close together must not cancel each other."""
+        me = self._me(minutes=10)
+        newer = flow_run('RUNNING', minutes=11)
+        client = fake_client([me, newer])
+        report = _run(reaper.reap(client, 'discord-bot/discord-bot', me))
+        client.set_flow_run_state.assert_not_awaited()
+        assert report.cancelled == 0
+
+    def test_same_start_time_breaks_ties_by_id(self):
+        """Exactly one of two simultaneous runs survives."""
+        a = flow_run('RUNNING', minutes=5)
+        b = flow_run('RUNNING', minutes=5)
+        client_a = fake_client([a, b])
+        client_b = fake_client([a, b])
+        _run(reaper.reap(client_a, 'discord-bot/discord-bot', a))
+        _run(reaper.reap(client_b, 'discord-bot/discord-bot', b))
+        cancelled = self._cancelled(client_a) | self._cancelled(client_b)
+        assert len(cancelled) == 1
+
     def test_cancellation_is_forced(self):
-        client = fake_client([flow_run('RUNNING')])
-        _run(reaper.reap(client, 'discord-bot/discord-bot'))
+        client = fake_client([flow_run('RUNNING', minutes=1), self._me()])
+        _run(reaper.reap(client, 'discord-bot/discord-bot', self._me()))
         call = client.set_flow_run_state.await_args
         assert call.kwargs['force'] is True
         assert call.kwargs['state'].type.value == 'CANCELLED'
 
     def test_kills_a_local_process_only_when_it_owns_the_run(self):
-        run = flow_run('RUNNING', tags=['pid:4321', 'host:hawkeye'])
+        run = flow_run('RUNNING', tags=['pid:4321', 'host:hawkeye'], minutes=1)
         client = fake_client([run])
         with patch('flow.discord_bot_reaper.socket.gethostname',
                    return_value='hawkeye'), \
              patch('flow.discord_bot_reaper.pid_belongs_to_run',
                    return_value=True), \
              patch('flow.discord_bot_reaper.terminate') as term:
-            report = _run(reaper.reap(client, 'discord-bot/discord-bot'))
+            report = _run(reaper.reap(client, 'discord-bot/discord-bot',
+                                      self._me()))
         term.assert_called_once_with(4321)
         assert report.killed == 1
 
     def test_never_kills_a_pid_that_is_not_the_runs(self):
-        run = flow_run('RUNNING', tags=['pid:4321', 'host:hawkeye'])
+        run = flow_run('RUNNING', tags=['pid:4321', 'host:hawkeye'], minutes=1)
         client = fake_client([run])
         with patch('flow.discord_bot_reaper.socket.gethostname',
                    return_value='hawkeye'), \
              patch('flow.discord_bot_reaper.pid_belongs_to_run',
                    return_value=False), \
              patch('flow.discord_bot_reaper.terminate') as term:
-            _run(reaper.reap(client, 'discord-bot/discord-bot'))
+            _run(reaper.reap(client, 'discord-bot/discord-bot', self._me()))
         term.assert_not_called()
         client.set_flow_run_state.assert_awaited()
 
     def test_never_kills_a_process_on_another_host(self):
-        run = flow_run('RUNNING', tags=['pid:4321', 'host:elsewhere'])
+        run = flow_run('RUNNING', tags=['pid:4321', 'host:elsewhere'], minutes=1)
         client = fake_client([run])
         with patch('flow.discord_bot_reaper.socket.gethostname',
                    return_value='hawkeye'), \
              patch('flow.discord_bot_reaper.pid_belongs_to_run',
                    return_value=True), \
              patch('flow.discord_bot_reaper.terminate') as term:
-            _run(reaper.reap(client, 'discord-bot/discord-bot'))
+            _run(reaper.reap(client, 'discord-bot/discord-bot', self._me()))
         term.assert_not_called()
 
-    def test_resets_a_slot_still_held_after_cancelling(self):
-        client = fake_client([flow_run('RUNNING')], active_slots=1)
-        report = _run(reaper.reap(client, 'discord-bot/discord-bot'))
-        update = client.update_global_concurrency_limit.await_args
-        assert update.kwargs['name'] == f'deployment:{DEPLOYMENT_ID}'
-        assert update.kwargs['concurrency_limit'].active_slots == 0
-        assert report.slots_reset
-
-    def test_keeps_its_own_slot_when_run_from_inside_the_flow(self):
-        """Inside a running flow, one held slot is that flow's own."""
-        client = fake_client([], active_slots=1)
-        report = _run(reaper.reap(client, 'discord-bot/discord-bot',
-                                  current_run_id=uuid4()))
-        client.update_global_concurrency_limit.assert_not_awaited()
-        assert not report.slots_reset
-
-    def test_a_free_slot_is_not_touched(self):
-        client = fake_client([], active_slots=0)
-        _run(reaper.reap(client, 'discord-bot/discord-bot'))
-        client.update_global_concurrency_limit.assert_not_awaited()
-
     def test_one_failed_cancel_does_not_stop_the_rest(self):
-        a, b = flow_run('RUNNING'), flow_run('PENDING')
+        a, b = flow_run('RUNNING', minutes=1), flow_run('PENDING', minutes=2)
         client = fake_client([a, b])
         client.set_flow_run_state = AsyncMock(
             side_effect=[RuntimeError('boom'), None])
-        report = _run(reaper.reap(client, 'discord-bot/discord-bot'))
+        report = _run(reaper.reap(client, 'discord-bot/discord-bot',
+                                  self._me()))
         assert client.set_flow_run_state.await_count == 2
         assert report.cancelled == 1
         assert report.errors
-
-    def test_deployment_without_a_limit_only_cancels(self):
-        client = fake_client([flow_run('RUNNING')])
-        client.read_deployment_by_name.return_value = SimpleNamespace(
-            id=DEPLOYMENT_ID, global_concurrency_limit=None)
-        _run(reaper.reap(client, 'discord-bot/discord-bot'))
-        client.update_global_concurrency_limit.assert_not_awaited()
-        client.set_flow_run_state.assert_awaited_once()
 
 
 class TestTerminate:
@@ -239,58 +234,28 @@ class TestTerminate:
 
 
 class TestDeploymentConfig:
-    def test_new_runs_are_cancelled_not_queued(self):
-        from prefect.client.schemas.objects import ConcurrencyLimitStrategy
+    def test_no_prefect_concurrency_limit(self):
+        """
+        A Prefect limit cancels or parks a UI start before the run's own code
+        can stop its predecessor. One-at-a-time is enforced by the run itself.
+        """
         from flow.serve_discord_bot import build_deployment
         deployment = build_deployment()
-        # to_deployment splits the config: the number, and the strategy.
-        assert deployment.concurrency_limit == 1
-        assert (deployment.concurrency_options.collision_strategy
-                == ConcurrencyLimitStrategy.CANCEL_NEW)
+        assert deployment.concurrency_limit is None
+        assert deployment.concurrency_options is None
 
-
-class TestLauncher:
-    def test_reaps_before_starting_a_run(self):
-        from flow import start_discord_bot as launcher
-        order = []
-
-        async def fake_reap(client, name, current_run_id=None):
-            order.append(('reap', name, current_run_id))
-            return reaper.ReapReport()
-
-        async def fake_run_deployment(**kwargs):
-            order.append(('start', kwargs['name']))
-            return SimpleNamespace(id='fr', name='new-run')
-
-        client = MagicMock()
-        with patch('flow.start_discord_bot.reap', side_effect=fake_reap):
-            msg = _run(launcher.start(client, fake_run_deployment))
-
-        assert order == [('reap', launcher.DEPLOYMENT, None),
-                         ('start', launcher.DEPLOYMENT)]
-        assert 'new-run' in msg
-
-    def test_start_returns_immediately(self):
-        from flow import start_discord_bot as launcher
-        seen = {}
-
-        async def fake_run_deployment(**kwargs):
-            seen.update(kwargs)
-            return SimpleNamespace(id='fr', name='r')
-
-        with patch('flow.start_discord_bot.reap',
-                   new=AsyncMock(return_value=reaper.ReapReport())):
-            _run(launcher.start(MagicMock(), fake_run_deployment))
-        assert seen['timeout'] == 0
+    def test_launcher_is_gone(self):
+        import importlib.util
+        assert importlib.util.find_spec('flow.start_discord_bot') is None
 
 
 class TestFlowReapsOnStart:
-    def test_tags_itself_then_reaps_keeping_its_own_slot(self):
+    def test_tags_itself_then_stops_older_runs(self):
         from flow import discord_bot as bot
         run_id = uuid4()
         client = MagicMock()
         client.read_flow_run = AsyncMock(
-            return_value=SimpleNamespace(tags=['existing']))
+            return_value=SimpleNamespace(id=run_id, tags=['existing']))
         client.update_flow_run = AsyncMock()
         ctx = MagicMock()
         ctx.__aenter__ = AsyncMock(return_value=client)
@@ -305,7 +270,7 @@ class TestFlowReapsOnStart:
 
         tags = client.update_flow_run.await_args.kwargs['tags']
         assert set(tags) == {'existing', 'pid:7', 'host:h'}
-        assert rp.await_args.kwargs['current_run_id'] == run_id
+        assert rp.await_args.args[2].id == run_id
 
     def test_reap_failure_does_not_stop_the_bot(self):
         from flow import discord_bot as bot

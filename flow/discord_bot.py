@@ -699,10 +699,10 @@ async def run_gateway(
 
 async def claim_and_reap(run_id: Optional[Any]) -> None:
     """
-    Tag this run with its pid/host, then clear other runs of this deployment.
+    Tag this run with its pid/host, then stop every older run of this
+    deployment, so the newest start always wins.
 
-    The tags let a later start find and stop this process if it goes stale.
-    Runs inside the slot this run already holds, so the reap keeps one.
+    The tags let a later run find and stop this process.
     """
     if run_id is None:
         return
@@ -711,11 +711,10 @@ async def claim_and_reap(run_id: Optional[Any]) -> None:
             current = await client.read_flow_run(run_id)
             tags = sorted({*(current.tags or ()), *self_tags()})
             await client.update_flow_run(run_id, tags=tags)
-            report = await reap(client, BOT_DEPLOYMENT,
-                                current_run_id=run_id)
-        print(f'reaped on start: {report.summary()}')
+            report = await reap(client, BOT_DEPLOYMENT, current)
+        print(f'replaced older runs: {report.summary()}')
     except Exception as exc:
-        print(f'reap on start skipped: {type(exc).__name__}: {exc}')
+        print(f'could not stop older runs: {type(exc).__name__}: {exc}')
 
 
 @flow(log_prints=True)

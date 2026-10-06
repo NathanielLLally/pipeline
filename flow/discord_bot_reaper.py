@@ -1,20 +1,21 @@
 """
-Clear stale discord-bot runs so a new one never waits on a concurrency slot.
+Newest discord-bot run wins: each run stops every older live run on start.
 
-The deployment allows one run at a time (a second would double-post every
-Warmbly event) with CANCEL_NEW: a run that cannot get the slot is cancelled
-immediately instead of sitting in AwaitingConcurrencySlot forever. That makes a
-leaked slot fatal to every later start, so starting the bot first reaps:
+Only one bot may be connected at a time, or every Warmbly event is posted
+twice. That is enforced here, by the run itself, rather than with a Prefect
+deployment concurrency limit: a limit cancels (CANCEL_NEW) or parks (ENQUEUE)
+a new run at the slot check, before its own code can clear a predecessor, so a
+dead run holding the slot made every start from the UI fail.
 
-  1. every other discord-bot run that is Running, Pending, Cancelling, or
-     Scheduled as AwaitingConcurrencySlot is a blocker;
-  2. if a blocker's process is on this host and provably that run's (its
-     /proc/<pid>/environ names the run id), it gets SIGTERM, then SIGKILL;
-  3. the blocker is forced to Cancelled. Leaving Running/Pending/Cancelling is
-     what makes the server release its slot (ReleaseFlowConcurrencySlots);
-  4. if the limit still reads as held, active_slots is reset. From the
-     launcher that means "to 0"; from inside a run, one slot is the run's own
-     and is left alone.
+On start, a run:
+
+  1. finds every other run of the deployment in Running, Pending or
+     Cancelling that started *before* it (ties broken by id, so exactly one of
+     two simultaneous runs survives). Newer runs are left alone: they will do
+     the same to this one, and only the newest is left;
+  2. if an older run's process is on this host and provably that run's (its
+     /proc/<pid>/environ names the run id), sends SIGTERM, then SIGKILL;
+  3. forces it to Cancelled.
 
 Runs record where they live as tags (`pid:<n>`, `host:<name>`) because the
 runner leaves flow_run.infrastructure_pid empty.
@@ -25,34 +26,38 @@ import signal
 import socket
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, List, Optional, Tuple
-from uuid import UUID
 
 LIVE_STATES = frozenset({'RUNNING', 'PENDING', 'CANCELLING'})
-AWAITING_SLOT = 'AwaitingConcurrencySlot'
 RUN_ID_ENV = 'PREFECT__FLOW_RUN_ID'
 TERM_GRACE = 10.0
 
 
 @dataclass
 class ReapReport:
-    blockers: int = 0
+    older: int = 0
     cancelled: int = 0
     killed: int = 0
-    slots_reset: bool = False
     errors: List[str] = field(default_factory=list)
 
     def summary(self) -> str:
-        text = (f'blockers={self.blockers} cancelled={self.cancelled} '
-                f'killed={self.killed} slots_reset={self.slots_reset}')
+        text = (f'older={self.older} cancelled={self.cancelled} '
+                f'killed={self.killed}')
         return text + (f' errors={self.errors}' if self.errors else '')
 
 
 def is_blocker(run: Any) -> bool:
-    state = run.state_type.value if run.state_type else ''
-    if state in LIVE_STATES:
-        return True
-    return state == 'SCHEDULED' and run.state_name == AWAITING_SLOT
+    """A run that is, or is about to be, connected to Discord and Warmbly."""
+    return (run.state_type.value if run.state_type else '') in LIVE_STATES
+
+
+def _started(run: Any) -> datetime:
+    return run.start_time or run.expected_start_time
+
+
+def _order(run: Any) -> Tuple[datetime, str]:
+    return _started(run), str(run.id)
 
 
 def self_tags() -> List[str]:
@@ -113,13 +118,8 @@ def terminate(pid: int, grace: float = TERM_GRACE) -> None:
         pass
 
 
-async def reap(
-    client: Any,
-    deployment_name: str,
-    current_run_id: Optional[UUID] = None,
-) -> ReapReport:
-    """Release everything that would stop a new discord-bot run."""
-    from prefect.client.schemas.actions import GlobalConcurrencyLimitUpdate
+async def reap(client: Any, deployment_name: str, current: Any) -> ReapReport:
+    """Stop every live run of the deployment that is older than `current`."""
     from prefect.client.schemas.filters import (
         DeploymentFilter,
         DeploymentFilterId,
@@ -134,13 +134,14 @@ async def reap(
         limit=200,
     )
     here = socket.gethostname()
+    mine = _order(current)
 
     for run in runs:
-        if current_run_id is not None and str(run.id) == str(current_run_id):
+        if str(run.id) == str(current.id) or not is_blocker(run):
             continue
-        if not is_blocker(run):
+        if _order(run) > mine:
             continue
-        report.blockers += 1
+        report.older += 1
 
         host, pid = run_process(run)
         if host == here and pid and pid != os.getpid() \
@@ -154,24 +155,11 @@ async def reap(
         try:
             await client.set_flow_run_state(
                 run.id,
-                state=Cancelled(message='Reaped by a new discord-bot start.'),
+                state=Cancelled(message='Replaced by a newer discord-bot run.'),
                 force=True,
             )
             report.cancelled += 1
         except Exception as exc:
             report.errors.append(f'cancel {run.name}: {exc}')
 
-    limit = getattr(deployment, 'global_concurrency_limit', None)
-    if limit is None:
-        return report
-
-    current = await client.read_global_concurrency_limit_by_name(limit.name)
-    # From inside a run, one slot is that run's own; from the launcher, none.
-    allowed = 1 if current_run_id is not None else 0
-    if current.active_slots > allowed:
-        await client.update_global_concurrency_limit(
-            name=limit.name,
-            concurrency_limit=GlobalConcurrencyLimitUpdate(active_slots=allowed),
-        )
-        report.slots_reset = True
     return report
