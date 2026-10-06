@@ -818,8 +818,7 @@ between a discord.py client and the Warmbly `AsyncGatewayClient`.
 - **Unverified.** The bot has not connected to Discord, because no bot token exists
   yet. The gateway feed is still subject to the realtime UUID bug in the private
   notes: JOIN succeeded, but whether broadcasts arrive afterwards was never confirmed.
-  `concurrency_limit=1` is passed to `to_deployment`, but it has not been checked
-  against `serve()`.
+  The concurrency setup below was verified against the live server.
 
 **Do not name a file in `flow/` after a package it imports.** When Prefect runs a
 deployment, it puts the entrypoint's directory first on the import path. A file
@@ -854,3 +853,45 @@ Do not `importlib.reload(flow.llm)` inside the test session. A reload creates ne
 `LLMTransportError`/`LLMSchemaError` classes, and agents that imported the old ones
 stop catching them in every later test. Read module-level settings in a subprocess
 instead.
+
+## discord-bot: never wait on a concurrency slot (2026-10-06)
+
+The deployment allows one run at a time, because a second run would post every
+Warmbly event twice. It now uses **`CANCEL_NEW`** instead of the default `ENQUEUE`: a
+start that cannot get the slot is cancelled at once, rather than sitting in
+`Scheduled/AwaitingConcurrencySlot` indefinitely. `to_deployment` stores this as
+`concurrency_limit=1` plus `concurrency_options.collision_strategy`.
+
+**Start the bot with `python flow/start_discord_bot.py`**, not
+`prefect deployment run`. The launcher calls `flow/discord_bot_reaper.reap()` and
+then triggers one run without waiting for it. The reap step:
+
+1. Treats every other `discord-bot` run in Running, Pending or Cancelling, or
+   Scheduled as `AwaitingConcurrencySlot`, as a blocker.
+2. If a blocker's tags say it runs on this host (`host:<name>`, `pid:<n>`) **and**
+   `/proc/<pid>/environ` contains `PREFECT__FLOW_RUN_ID=<that run>`, sends it SIGTERM,
+   then SIGKILL after 10s. A recycled PID or a process on another host is never
+   signalled. The tags exist because the runner leaves `flow_run.infrastructure_pid`
+   empty.
+3. Forces the blocker to Cancelled. Leaving Running, Pending or Cancelling is what
+   makes the server release the slot (`ReleaseFlowConcurrencySlots` in
+   `server/orchestration/core_policy.py`), and a forced transition counts.
+4. If the limit still shows a slot held, resets `active_slots` with
+   `update_global_concurrency_limit`: to 0 from the launcher, or to 1 from inside a run
+   (that slot is the run's own). Slot decay is 0.0, so a leaked slot never expires
+   by itself.
+
+The flow also runs `claim_and_reap()` first thing: it tags itself with its PID and
+host, then reaps other runs. That second layer covers starts that bypass the
+launcher. A failure there is logged and the bot carries on.
+
+**Why the launcher is needed:** with `CANCEL_NEW`, a run that finds the slot held is
+cancelled at the slot check, before any of its own code runs. So it can never reap
+the run that blocks it; only something outside the run can.
+
+**Verified live 2026-10-06** with a throwaway deployment configured the same way: an
+abandoned Running run held 1 slot; a new run was cancelled with "Deployment
+concurrency limit reached"; `reap` cancelled the stale run and the server dropped
+the count to 0 without needing the reset; a fresh run then took the slot. The live
+`discord-bot` deployment still shows `concurrency_options=None` until
+`serve_discord_bot.py` is restarted.

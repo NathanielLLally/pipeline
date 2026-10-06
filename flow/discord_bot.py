@@ -64,11 +64,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import httpx
 from prefect import flow
+from prefect.client.orchestration import get_client
+
+from flow.discord_bot_reaper import reap, self_tags
 
 WARMBLY_BIN = shutil.which('warmbly') or 'warmbly'
 DISCORD_MESSAGE_LIMIT = 2000
 DEFAULT_BATCH = 50
 DEFAULT_BATCHDRAFT_DEPLOYMENT = 'run-agents/run-agents'
+BOT_DEPLOYMENT = os.environ.get('DISCORD_BOT_DEPLOYMENT') or 'discord-bot/discord-bot'
 CLI_TIMEOUT = float(os.environ.get('WARMBLY_REQUEST_TIMEOUT', '60'))
 # GET /me resolves the caller's org name with any valid key; the
 # /organization endpoint rejects API keys (session-only).
@@ -707,9 +711,33 @@ async def run_gateway(
         await _backoff(reloader, retry_delay)
 
 
+async def claim_and_reap(run_id: Optional[Any]) -> None:
+    """
+    Tag this run with its pid/host, then clear other runs of this deployment.
+
+    The tags let a later start find and stop this process if it goes stale.
+    Runs inside the slot this run already holds, so the reap keeps one.
+    """
+    if run_id is None:
+        return
+    try:
+        async with get_client() as client:
+            current = await client.read_flow_run(run_id)
+            tags = sorted({*(current.tags or ()), *self_tags()})
+            await client.update_flow_run(run_id, tags=tags)
+            report = await reap(client, BOT_DEPLOYMENT,
+                                current_run_id=run_id)
+        print(f'reaped on start: {report.summary()}')
+    except Exception as exc:
+        print(f'reap on start skipped: {type(exc).__name__}: {exc}')
+
+
 @flow(log_prints=True)
 async def discord_bot() -> None:
     """Run the bot until cancelled."""
+    from prefect.runtime import flow_run as current_flow_run
+
+    await claim_and_reap(current_flow_run.id)
     cfg = BotConfig.from_env()
     groups = parse_cli_groups(await _cli_help())
     print(f'warmbly command groups: {", ".join(groups)}')
