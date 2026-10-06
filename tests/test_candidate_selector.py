@@ -227,3 +227,64 @@ class TestExplicitIds:
         sql, _ = build_candidate_query(['Tier 1'], 10, None, include_ids=[])
 
         assert 'icp_tier = any' in sql
+
+
+class TestContactFieldsForWarmbly:
+    """The selector must supply what the Warmbly import consumes.
+
+    flow/warmbly_contacts.build_contact_payloads reads decision_maker_name,
+    decision_maker_title and phone off the business dict -- the fallback for
+    when the research node finds no person on the page. If the selector does
+    not fetch them the fallback is dead code and every imported contact gets
+    a blank name and phone, silently.
+    """
+
+    def test_query_selects_the_decision_maker(self):
+        sql, _ = build_candidate_query(['Tier 1'], 10, None)
+
+        assert 'decision_maker_name' in sql
+        assert 'decision_maker_title' in sql
+
+    def test_query_selects_the_phone(self):
+        sql, _ = build_candidate_query(['Tier 1'], 10, None)
+
+        assert 'b.phone' in sql
+
+    def test_ids_mode_selects_them_too(self):
+        sql, _ = build_candidate_query(None, None, None, include_ids=['a'])
+
+        assert 'decision_maker_name' in sql
+        assert 'b.phone' in sql
+
+    def test_shaped_business_carries_them(self):
+        row = dict(self._row_with_contact())
+
+        business = shape_candidate(row)['business']
+
+        assert business['decision_maker_name'] == 'Wyatt Smith'
+        assert business['decision_maker_title'] == 'Owner'
+        assert business['phone'] == '972-245-3386'
+
+    def test_absent_values_shape_to_none_not_keyerror(self):
+        row = dict(self._row_with_contact(), decision_maker_name=None,
+                   decision_maker_title=None, phone=None)
+
+        business = shape_candidate(row)['business']
+
+        assert business['decision_maker_name'] is None
+        assert business['phone'] is None
+
+    def _row_with_contact(self):
+        return {
+            'id': 'uuid-1', 'name': 'Happy Tails',
+            'website': 'https://happytails.example',
+            'domain': 'happytails.example', 'city': 'Austin', 'state': 'TX',
+            'icp_score': 88, 'icp_tier': 'Tier 1',
+            'primary_category': 'Pet groomer', 'service_category': 'grooming',
+            'description': 'Grooming', 'rating': 4.8, 'review_count': 120,
+            'phone': '972-245-3386',
+            'decision_maker_name': 'Wyatt Smith',
+            'decision_maker_title': 'Owner',
+            'emails': [{'email': 'a@b.com', 'source': 'website'}],
+            'crawl_pages': [{'url': 'u', 'page_kind': 'home', 'text': 'hi'}],
+        }

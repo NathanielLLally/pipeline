@@ -38,7 +38,10 @@ _SELECT_BODY = """
             b.id::text as id, b.name, b.website, b.domain,
             b.city, b.state, b.icp_score, b.icp_tier,
             b.primary_category, b.service_category, b.description,
-            b.rating, b.review_count,
+            b.rating, b.review_count, b.phone,
+            -- The Warmbly import falls back to these when the research node
+            -- finds no person named on the live pages.
+            b.decision_maker_name, b.decision_maker_title,
             (
                 select json_agg(json_build_object(
                     'email', e.email, 'source', e.source,
@@ -159,6 +162,11 @@ def shape_candidate(row: Any) -> Dict[str, Any]:
             'description': row['description'],
             'rating': float(row['rating']) if row['rating'] is not None else None,
             'review_count': row['review_count'],
+            # .get() because these three are nullable and are the only
+            # fields a caller may legitimately shape a row without.
+            'phone': row.get('phone'),
+            'decision_maker_name': row.get('decision_maker_name'),
+            'decision_maker_title': row.get('decision_maker_title'),
         },
         'candidate_emails': list(emails),
         'crawl_pages': list(pages),
