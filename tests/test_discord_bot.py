@@ -680,28 +680,12 @@ class TestReloader:
         async def go():
             r = bot.Reloader()
             r.attach(asyncio.get_running_loop())
-            threading.Thread(target=r.request, args=('SIGHUP',)).start()
+            threading.Thread(target=r.request, args=('from-thread',)).start()
             return await asyncio.wait_for(r.wait(), 2)
-        assert _run(go()) == 'SIGHUP'
+        assert _run(go()) == 'from-thread'
 
     def test_request_before_attach_is_ignored(self):
         bot.Reloader().request('early')
-
-    def test_sighup_handler_requests_reload(self):
-        import signal
-        r = MagicMock()
-        installed = {}
-        with patch('flow.discord_bot.signal.signal',
-                   side_effect=lambda sig, h: installed.setdefault(sig, h)):
-            assert bot.install_sighup(r) is True
-        installed[signal.SIGHUP](signal.SIGHUP, None)
-        r.request.assert_called_once_with('SIGHUP')
-
-    def test_sighup_off_the_main_thread_degrades_quietly(self):
-        r = MagicMock()
-        with patch('flow.discord_bot.signal.signal',
-                   side_effect=ValueError('main thread only')):
-            assert bot.install_sighup(r) is False
 
 
 class TestFeedReloads:
@@ -828,36 +812,15 @@ class TestReloadDuringBackoff:
         assert len(built) == 2
 
 
-class TestSighupUnderPrefectRunner:
-    def test_sighup_reaches_a_flow_running_off_the_main_thread(self):
+
+
+class TestNoSighupHandler:
+    def test_the_bot_does_not_claim_sighup(self):
         """
-        Prefect runs an async flow on its RunSyncEventLoopThread, where
-        signal.signal is refused. The handler installed at import (main thread)
-        must still reach the loop the flow attached.
+        Prefect may load the flow off the main thread, where signal.signal is
+        refused, so a handler would exist under some loaders and not others.
+        Reload is /reload or a successful /auth; SIGHUP keeps its default.
         """
-        import os
         import signal
-        import threading
-
-        assert bot.install_sighup(bot.RELOADER) is True  # main thread, as at import
-        result = {}
-
-        def flow_thread():
-            async def go():
-                bot.RELOADER.attach(asyncio.get_running_loop())
-                result['ready'].set()
-                result['reason'] = await asyncio.wait_for(bot.RELOADER.wait(), 5)
-            asyncio.run(go())
-
-        result['ready'] = threading.Event()
-        t = threading.Thread(target=flow_thread, name='RunSyncEventLoopThread')
-        t.start()
-        assert result['ready'].wait(5)
-        os.kill(os.getpid(), signal.SIGHUP)
-        t.join(5)
-        assert result.get('reason') == 'SIGHUP'
-
-    def test_module_installs_sighup_on_import(self):
-        import signal
-        handler = signal.getsignal(signal.SIGHUP)
-        assert callable(handler) and handler not in (signal.SIG_DFL, signal.SIG_IGN)
+        assert not hasattr(bot, 'install_sighup')
+        assert signal.getsignal(signal.SIGHUP) in (signal.SIG_DFL, signal.SIG_IGN, None)

@@ -39,11 +39,13 @@ The bot runs the CLI as whatever user the Prefect worker runs as, so /auth
 signs in that user's ~/.config/warmbly, which the piped commands then use.
 
 Reloading: the event feed takes its token from `warmbly auth token` (the CLI's
-active sign-in), falling back to WARMBLY_API_TOKEN. A successful /auth, the
-/reload command, or SIGHUP to the process reconnects the feed with whatever
-token is active then and re-resolves the org name, without restarting the
-flow run. SIGHUP needs the handler is installed at import, on the main thread, so it works both run
-directly and as a served deployment; the flow run logs the PID to signal.
+active sign-in), falling back to WARMBLY_API_TOKEN. A successful /auth or the
+/reload command reconnects the feed with whatever token is active then and
+re-resolves the org name, without restarting the flow run.
+
+There is deliberately no SIGHUP handler: Prefect can load the flow off the
+main thread, where signal.signal is refused, so it would work under some
+loaders and silently not under others (where SIGHUP then kills the bot).
 """
 
 import asyncio
@@ -53,7 +55,6 @@ import os
 import re
 import shlex
 import shutil
-import signal
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -576,7 +577,7 @@ def build_client(cfg: BotConfig, cli_groups: List[str],
 
 
 class Reloader:
-    """A reload request that any thread or signal handler may raise."""
+    """A reload request that any thread may raise (/auth, /reload)."""
 
     def __init__(self) -> None:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -591,8 +592,8 @@ class Reloader:
         if self._loop is None or self._event is None:
             return
         self._reason = reason
-        # call_soon_threadsafe: SIGHUP lands on the main thread, while a
-        # served flow runs its event loop on another one.
+        # call_soon_threadsafe: requests can come from another thread than
+        # the one running the flow's event loop.
         self._loop.call_soon_threadsafe(self._event.set)
 
     async def wait(self) -> str:
@@ -601,22 +602,7 @@ class Reloader:
         return self._reason
 
 
-def install_sighup(reloader: Any) -> bool:
-    try:
-        signal.signal(signal.SIGHUP,
-                      lambda signum, frame: reloader.request('SIGHUP'))
-    except ValueError:
-        # signal.signal is main-thread only.
-        return False
-    return True
-
-
-# Installed at import, which Prefect does on the main thread of the flow run's
-# process. The async flow body itself then runs on Prefect's
-# RunSyncEventLoopThread, where signal.signal would be refused; the flow
-# attaches its loop to this reloader instead.
 RELOADER = Reloader()
-_SIGHUP_INSTALLED = install_sighup(RELOADER)
 
 
 async def active_warmbly_token(fallback: str) -> str:
@@ -744,8 +730,7 @@ async def discord_bot() -> None:
 
     reloader = RELOADER
     reloader.attach(asyncio.get_running_loop())
-    print(f'reload: /reload, successful /auth'
-          + (f', or kill -HUP {os.getpid()}' if _SIGHUP_INSTALLED else ''))
+    print('reload: /reload or a successful /auth')
 
     async def refresh() -> Tuple[str, EventDisplayFilter]:
         token = await active_warmbly_token(cfg.warmbly_token)

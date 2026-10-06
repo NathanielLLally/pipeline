@@ -784,21 +784,19 @@ between a discord.py client and the Warmbly `AsyncGatewayClient`.
 - **`/list`** shows Prefect flows and their deployments from `get_client()`.
 - **Reload without restart.** The event feed's credential is
   `warmbly auth token` (the CLI's active sign-in), falling back to
-  `$WARMBLY_API_TOKEN`. A successful `/auth`, the `/reload` command, or `SIGHUP`
+  `$WARMBLY_API_TOKEN`. A successful `/auth`, the `/reload` command
   closes the current gateway connection and opens a new one with whatever token is
   active at that moment, and re-resolves the org name. The Discord connection,
   the event queue and the announcement are untouched, so events already queued are
   not lost and the bot does not re-announce. A reload request also cuts short the
   30s retry wait after a fatal gateway error (e.g. a revoked key), so `/auth` fixes
   a dead feed immediately.
-- **SIGHUP under Prefect.** A served run is its own `python -m prefect.engine`
-  process. It imports the flow module on the **main thread**, but an *async* flow body
-  runs on Prefect's `RunSyncEventLoopThread` via `run_coro_as_sync`, where
-  `signal.signal` raises ValueError. The handler is therefore installed at import
-  time on a module-level `RELOADER`, and the flow attaches its event loop to it;
-  delivery uses `call_soon_threadsafe`. The run logs `kill -HUP <pid>` at startup.
-  Prefect itself handles only SIGTERM, in the runner parent, so it does not claim
-  SIGHUP (verified against prefect 3.2.15, 2026-10-05).
+- **No SIGHUP (removed 2026-10-06).** A module-level `signal.signal(SIGHUP, ...)` worked
+  when Prefect loaded the flow from `PREFECT__FLOW_ENTRYPOINT` on the main thread (as
+  on the workstation). On **prod** the engine loads it through `run_coro_as_sync`, off
+  the main thread, so the install silently failed: `/proc/<pid>/status` SigCgt showed
+  SIGHUP uncaught, meaning `kill -HUP` would have **killed** the bot. Reload is only
+  `/reload` or a successful `/auth`.
 - **Announcement.** When Discord is ready, the bot posts an introduction to the
   channel listing the event source, the built-in commands and the CLI commands. It
   goes out once per flow run, before any queued events; automatic reconnects do not
@@ -928,3 +926,25 @@ is serving them. The registered list is from 19:13 on Oct 4, which predates
 restarting the script registers it. 19 runs were left Running/Pending (14
 analysis-agent from the hung test session, plus run-agents and its subflows from
 Oct 4). They hold no concurrency slots, so they block nothing.
+
+## Prod incident: discord-bot cancelled on every start (2026-10-06)
+
+`PREFECT_API_URL=http://127.0.0.1:4200/api` resolves on **both** the workstation and
+prod, to different servers. Prod's Prefect lives on `accurateleadinfo.com` (SSH port
+**2222**). Prod runs **Python 3.14** and prefect 3.2.15 in `~/src/git/pipeline/.venv`
+(the 3.9 note above applies to the webhook endpoint's interpreter, not this venv).
+
+Cause: run `brass-dugong` had shown **Running since 2026-10-05 09:33** with no
+process behind it. It held the deployment's only slot (`active_slots=1`). It predates
+the `pid:`/`host:` tags. Starts from the UI or `prefect deployment run` hit
+`CANCEL_NEW` and were cancelled at the slot check ("Deployment concurrency limit
+reached"), before any in-flow reap could run.
+
+Fix: ran `python flow/start_discord_bot.py` on prod. It reaped 1 blocker
+(cancelled, nothing to kill, no slot reset needed), and the new run `satisfied-firefly`
+started, tagged itself `host:mail.accurateleadinfo.com`/`pid:…`, synced 34 commands
+**globally** (`DISCORD_GUILD_ID` is not set on prod), and subscribed to the Warmbly
+feed.
+
+**Always start the bot with the launcher.** A start from the UI cannot clear a dead
+run that holds the slot.
