@@ -38,17 +38,8 @@ import httpx
 
 CONTACTS_PATH = '/v1/contacts'
 
-# Imported contacts arrive UNSUBSCRIBED. The API defaults to subscribed when
-# the field is omitted, which made every imported contact sendable before
-# anyone had read its draft -- the opposite of the review gate this pipeline
-# is built around (spec 2.1: a contact is created, a human reviews the draft,
-# and only then is it assigned to a campaign).
-#
-# Overridable for a deliberate opt-in import, but the default is the safe
-# direction: a contact that cannot be mailed by accident.
-IMPORT_SUBSCRIBED = os.environ.get(
-    'WARMBLY_IMPORT_SUBSCRIBED', ''
-).strip().lower() in ('1', 'true', 'yes', 'on')
+# Imported contacts arrive subscribed. Sent explicitly rather than left to the
+# API default, so the state does not change silently if that default does.
 REQUEST_TIMEOUT = float(os.environ.get('WARMBLY_REQUEST_TIMEOUT', '60'))
 
 
@@ -126,7 +117,7 @@ def build_contact_payloads(
             'last_name': last,
             'company': business.get('business_name') or '',
             'phone': business.get('phone') or '',
-            'subscribed': IMPORT_SUBSCRIBED,
+            'subscribed': True,
             'custom_fields': dict(custom_fields),
         })
     return payloads

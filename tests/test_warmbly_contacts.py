@@ -246,35 +246,26 @@ class TestPersonPrecedence:
 
 
 class TestSubscriptionState:
-    """Imported contacts must arrive unsubscribed.
+    """Imported contacts arrive subscribed.
 
-    The API defaults to subscribed when the field is omitted, which it was --
-    so every imported contact landed subscribed and therefore sendable before
-    anyone had reviewed the draft. The review gate is the point: a contact is
-    created, a human reads the draft, and only then is it assigned to a
-    campaign and made sendable.
+    Sent explicitly rather than left to the API default, so the state does not
+    change silently if the instance's default does.
     """
 
-    def test_payload_sets_unsubscribed(self):
+    def test_payload_sets_subscribed(self):
         p = build_contact_payloads(BUSINESS, RESEARCH, DRAFT)[0]
 
-        assert p['subscribed'] is False
+        assert p['subscribed'] is True
 
-    def test_the_field_is_present_not_merely_falsy(self):
-        """Omitting it is what caused the bug; it must be sent explicitly."""
-        p = build_contact_payloads(BUSINESS, RESEARCH, DRAFT)[0]
-
-        assert 'subscribed' in p
-
-    def test_every_payload_in_a_multi_email_draft_is_unsubscribed(self):
+    def test_every_payload_in_a_multi_email_draft_is_subscribed(self):
         draft = dict(DRAFT, selected_emails=['a@x.com', 'b@x.com'])
 
         payloads = build_contact_payloads(BUSINESS, RESEARCH, draft)
 
-        assert [p['subscribed'] for p in payloads] == [False, False]
+        assert [p['subscribed'] for p in payloads] == [True, True]
 
-    def test_can_be_overridden_for_a_deliberate_opt_in_import(self, monkeypatch):
-        monkeypatch.setenv('WARMBLY_IMPORT_SUBSCRIBED', '1')
+    def test_old_env_override_no_longer_unsubscribes(self, monkeypatch):
+        monkeypatch.setenv('WARMBLY_IMPORT_SUBSCRIBED', '0')
         import importlib
         import flow.warmbly_contacts as mod
         importlib.reload(mod)
@@ -323,7 +314,7 @@ class TestIdempotencyKey:
         from flow.warmbly_contacts import contact_idempotency_key
 
         a = build_contact_payloads(BUSINESS, RESEARCH, DRAFT)
-        b = [dict(p, subscribed=True) for p in a]
+        b = [dict(p, subscribed=not p['subscribed']) for p in a]
 
         assert contact_idempotency_key(BUSINESS, a) != \
             contact_idempotency_key(BUSINESS, b)
