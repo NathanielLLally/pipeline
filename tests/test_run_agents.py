@@ -53,6 +53,14 @@ def _no_live_analysis():
 
 
 def _run(**kwargs):
+    """Run with preflight OFF unless a test asks for it.
+
+    These tests are about sequencing and accounting. Preflight reaches the
+    live database through mx_check and jina_crawl, and a unit test must never
+    do that -- when preflight was added, every one of these started hitting
+    Postgres with a fixture id of 'biz-1' and logging DataError.
+    """
+    kwargs.setdefault('preflight', False)
     return asyncio.run(run_agents.fn(**kwargs))
 
 
@@ -412,3 +420,135 @@ class TestImport:
 
         self._batch(side_effect=record)
         assert {'biz-1', 'import'} <= seen[0]
+
+
+UNVERIFIED = {
+    'business': {'id': 'biz-1', 'business_name': 'Happy Tails'},
+    'candidate_emails': [{'email': 'a@b.com', 'verified': None}],
+    'crawl_excerpt': 'text', 'crawl_pages': [], 'jina_pages': [],
+}
+READY = {
+    'business': {'id': 'biz-2', 'business_name': 'Ready Co'},
+    'candidate_emails': [{'email': 'c@d.com', 'verified': True}],
+    'crawl_excerpt': 'text', 'crawl_pages': [],
+    'jina_pages': [{'url': 'u', 'text': 't'}],
+}
+
+
+def _patches(candidates, **extra):
+    """Patch the whole stage set; individual tests override what they assert."""
+    base = {
+        'fetch_candidates': AsyncMock(return_value=candidates),
+        'verify_business_emails': AsyncMock(return_value={'written': 1}),
+        'jina_crawl': AsyncMock(return_value={'crawled': 1}),
+        'research_agent': MagicMock(return_value=RESEARCHED),
+        'drafting_agent': MagicMock(return_value=DRAFTED),
+        'import_contacts': MagicMock(return_value={'status': 'imported'}),
+        'analysis_agent': MagicMock(return_value={'status': 'analyzed'}),
+    }
+    base.update(extra)
+    return base
+
+
+def _run_with(patched, **kwargs):
+    import contextlib
+    kwargs.setdefault('preflight', True)
+    with contextlib.ExitStack() as stack:
+        mocks = {}
+        for name, mock in patched.items():
+            mocks[name] = stack.enter_context(
+                patch(f'flow.run_agents.{name}', mock))
+        result = asyncio.run(run_agents.fn(**kwargs))
+    return result, mocks
+
+
+class TestPreflightEmailVerification:
+    """Emails with no verdict go through mx_check before research runs.
+
+    Research and drafting both reason about which address to write to, so
+    sending them addresses of unknown deliverability wastes the LLM calls that
+    follow.
+    """
+
+    def test_unverified_emails_trigger_mx_check(self):
+        _, mocks = _run_with(_patches([UNVERIFIED]))
+
+        mocks['verify_business_emails'].assert_awaited_once()
+        assert mocks['verify_business_emails'].await_args.kwargs[
+            'business_ids'] == ['biz-1']
+
+    def test_fully_verified_batch_skips_mx_check(self):
+        _, mocks = _run_with(_patches([READY]))
+
+        mocks['verify_business_emails'].assert_not_awaited()
+
+    def test_only_the_unverified_businesses_are_sent(self):
+        _, mocks = _run_with(_patches([UNVERIFIED, READY]))
+
+        assert mocks['verify_business_emails'].await_args.kwargs[
+            'business_ids'] == ['biz-1']
+
+    def test_mx_check_failure_does_not_abort_the_batch(self):
+        """A verification outage should not cost the whole run."""
+        patched = _patches([UNVERIFIED])
+        patched['verify_business_emails'] = AsyncMock(
+            side_effect=RuntimeError('mxcheck down'))
+
+        result, mocks = _run_with(patched)
+
+        assert mocks['research_agent'].called
+        assert result['researched'] == 1
+
+
+class TestPreflightJinaCrawl:
+    """Businesses with no Jina page get crawled before research."""
+
+    def test_missing_jina_triggers_a_crawl(self):
+        _, mocks = _run_with(_patches([UNVERIFIED]))
+
+        mocks['jina_crawl'].assert_awaited_once()
+        assert mocks['jina_crawl'].await_args.kwargs['business_ids'] == ['biz-1']
+
+    def test_existing_jina_skips_the_crawl(self):
+        _, mocks = _run_with(_patches([READY]))
+
+        mocks['jina_crawl'].assert_not_awaited()
+
+    def test_crawl_failure_does_not_abort_the_batch(self):
+        patched = _patches([UNVERIFIED])
+        patched['jina_crawl'] = AsyncMock(side_effect=RuntimeError('jina down'))
+
+        result, _ = _run_with(patched)
+
+        assert result['researched'] == 1
+
+
+class TestPreflightRefetch:
+    """After preflight the candidates are stale, so they are re-fetched.
+
+    mx_check writes verdicts and jina_crawl writes pages; research must see
+    both, and the in-memory candidates predate them.
+    """
+
+    def test_candidates_are_refetched_after_preflight(self):
+        _, mocks = _run_with(_patches([UNVERIFIED]))
+
+        assert mocks['fetch_candidates'].await_count == 2
+
+    def test_no_refetch_when_nothing_ran(self):
+        _, mocks = _run_with(_patches([READY]))
+
+        assert mocks['fetch_candidates'].await_count == 1
+
+    def test_refetch_asks_for_exactly_the_selected_businesses(self):
+        _, mocks = _run_with(_patches([UNVERIFIED]))
+
+        assert mocks['fetch_candidates'].await_args.kwargs[
+            'include_ids'] == ['biz-1']
+
+    def test_preflight_can_be_disabled(self):
+        _, mocks = _run_with(_patches([UNVERIFIED]), preflight=False)
+
+        mocks['verify_business_emails'].assert_not_awaited()
+        mocks['jina_crawl'].assert_not_awaited()
+        assert mocks['fetch_candidates'].await_count == 1

@@ -247,3 +247,55 @@ class TestPromptStatesTheVocabulary:
         prompt = build_research_prompt(BUSINESS, EMAILS, "text").lower()
 
         assert 'list of' in prompt
+
+
+class TestDecisionMakerWriteback:
+    """A person found on the page is written back to leads.businesses.
+
+    decision_maker_name exists for only 16% of Tier 1 and 5% of Tier 2, so
+    research reading the live site is where most names will ever come from.
+    Keeping the name only in the flow output wastes it.
+    """
+
+    def test_writes_back_an_extracted_person(self):
+        with patch('flow.agents.research.complete_structured',
+                   return_value=_out(confidence=0.9,
+                                     contact_name='Wyatt Smith',
+                                     contact_title='Owner')), \
+             patch('flow.agents.research.record_decision_maker_sync') as record:
+            research_agent.fn(BUSINESS, EMAILS, "text")
+
+        record.assert_called_once()
+        args = record.call_args.args
+        assert args[0] == BUSINESS['id']
+        assert args[1] == 'Wyatt Smith'
+
+    def test_no_person_means_no_write(self):
+        with patch('flow.agents.research.complete_structured',
+                   return_value=_out(confidence=0.9, contact_name=None)), \
+             patch('flow.agents.research.record_decision_maker_sync') as record:
+            research_agent.fn(BUSINESS, EMAILS, "text")
+
+        record.assert_not_called()
+
+    def test_a_rejected_business_still_writes_back_a_found_person(self):
+        """The name is true regardless of whether the hook was good enough."""
+        low = _out(confidence=0.2, contact_name='Megan Fields',
+                   next_url_to_check=None)
+        with patch('flow.agents.research.complete_structured',
+                   return_value=low), \
+             patch('flow.agents.research.record_decision_maker_sync') as record:
+            result = research_agent.fn(BUSINESS, EMAILS, "text")
+
+        assert result['status'] == 'rejected'
+        record.assert_called_once()
+
+    def test_a_writeback_failure_does_not_fail_research(self):
+        with patch('flow.agents.research.complete_structured',
+                   return_value=_out(confidence=0.9,
+                                     contact_name='Wyatt Smith')), \
+             patch('flow.agents.research.record_decision_maker_sync',
+                   side_effect=RuntimeError('db down')):
+            result = research_agent.fn(BUSINESS, EMAILS, "text")
+
+        assert result['status'] == 'researched'

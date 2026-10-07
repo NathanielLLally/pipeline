@@ -30,11 +30,68 @@ from flow.agents.analysis import analysis_agent
 from flow.agents.drafting import drafting_agent
 from flow.agents.import_contacts import import_contacts
 from flow.agents.research import research_agent
+from flow.jina_crawl import jina_crawl
+from flow.mx_check import verify_business_emails
 from flow.agents.selector import (
+    needs_email_verification,
+    needs_jina_crawl,
     DEFAULT_BATCH_SIZE,
     DEFAULT_TIERS,
     fetch_candidates,
 )
+
+
+async def run_preflight(
+    candidates: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """
+    Fill the gaps the selector found, before any LLM call is made.
+
+    Two gaps are worth closing first because research and drafting both
+    reason about them:
+
+      * emails with no verification verdict go through mx_check, so the
+        agents are not choosing between addresses of unknown deliverability
+      * businesses with no Jina-crawled page get crawled, so research has
+        that text as context
+
+    Both are best-effort. A verification or crawl outage degrades the quality
+    of the run; it must not cost the batch, so each failure is reported and
+    the pipeline continues with whatever data exists.
+
+    Returns the candidates, re-fetched if anything ran -- mx_check writes
+    verdicts and jina_crawl writes pages, and the in-memory candidates
+    predate both.
+    """
+    unverified = [c['business']['id'] for c in candidates
+                  if needs_email_verification(c)]
+    uncrawled = [c['business']['id'] for c in candidates
+                 if needs_jina_crawl(c)]
+
+    if unverified:
+        print(f'preflight: verifying emails for {len(unverified)} business(es)')
+        try:
+            await verify_business_emails(business_ids=unverified)
+        except Exception as exc:
+            print(f'preflight: mx_check failed, continuing without verdicts: '
+                  f'{type(exc).__name__}: {exc}')
+
+    if uncrawled:
+        print(f'preflight: jina crawling {len(uncrawled)} business(es)')
+        try:
+            await jina_crawl(business_ids=uncrawled)
+        except Exception as exc:
+            print(f'preflight: jina_crawl failed, continuing without those '
+                  f'pages: {type(exc).__name__}: {exc}')
+
+    if not (unverified or uncrawled):
+        return candidates
+
+    ids = [c['business']['id'] for c in candidates]
+    print(f'preflight: re-fetching {len(ids)} candidate(s) to pick up the '
+          f'new verdicts and pages')
+    refreshed = await fetch_candidates(include_ids=ids)
+    return refreshed or candidates
 
 
 @flow(log_prints=True)
@@ -44,6 +101,7 @@ async def run_agents(
     business_ids: Optional[List[str]] = None,
     template_slug: str = 'default',
     offer: Optional[str] = None,
+    preflight: bool = True,
 ) -> dict:
     """
     Select businesses, research each, draft for the ones that pass, and import
@@ -72,6 +130,9 @@ async def run_agents(
         not_found = []
 
     print(f'selected {len(candidates)}')
+
+    if preflight and candidates:
+        candidates = await run_preflight(candidates)
 
     outcomes: List[Dict[str, Any]] = []
     counts = {'researched': 0, 'rejected': 0, 'drafted': 0, 'imported': 0,

@@ -11,6 +11,7 @@ Can be called with dict params or from a JSON input artifact:
   research_agent(json_input_file='biz-1-research-input.json')
 """
 
+import asyncio
 import os
 import sys
 from pathlib import Path
@@ -29,6 +30,7 @@ from flow.artifacts import (
 )
 from flow.fetch import fetch_html
 from flow.llm import LLMSchemaError, LLMTransportError, complete_structured
+from flow.decision_maker import record_decision_maker_sync
 from flow.offer import resolve_offer
 from flow.schemas import ResearchOutput
 
@@ -82,6 +84,34 @@ def build_research_prompt(
         'and another page on the site would help, set next_url_to_check.',
     ]
     return '\n'.join(parts)
+
+
+def _write_back_person(business: dict, research: Any) -> None:
+    """
+    Persist a person this pass found, so the next run inherits it.
+
+    Called as soon as a pass parses, not at the end: the name is true whether
+    or not the confidence gate later rejects the business, and a rejected
+    business still has a contactable human on its site.
+
+    Failures are swallowed on purpose. The research output is already safe in
+    its artifact and variable; a database problem must not turn a successful
+    research pass into a failed one.
+    """
+    name = getattr(research, 'contact_name', None)
+    if not name:
+        return
+    try:
+        record_decision_maker_sync(
+            business.get('id'),
+            name,
+            getattr(research, 'contact_title', None),
+            getattr(research, 'confidence', None),
+            source_url=business.get('website'),
+        )
+    except Exception as exc:
+        print(f'Note: decision maker writeback failed: '
+              f'{type(exc).__name__}: {exc}')
 
 
 def _set_research_output(result: dict, business_id: str) -> dict:
@@ -162,6 +192,8 @@ def research_agent(
         register_artifact(result, suffix='output', description='output')
         return result
 
+    _write_back_person(business, first)
+
     print(f'pass 1 confidence {first.confidence} '
           f'(threshold {CONFIDENCE_THRESHOLD})')
 
@@ -202,6 +234,9 @@ def research_agent(
         write_artifact(result, suffix='output')
         register_artifact(result, suffix='output', description='output')
         return result
+
+    # Pass 2 may name someone pass 1 missed, or name them better.
+    _write_back_person(business, second)
 
     print(f'pass 2 confidence {second.confidence}')
 
