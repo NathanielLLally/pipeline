@@ -45,10 +45,31 @@ _SELECT_BODY = """
             (
                 select json_agg(json_build_object(
                     'email', e.email, 'source', e.source,
-                    'confidence', e.confidence, 'is_role', e.is_role))
+                    'confidence', e.confidence, 'is_role', e.is_role,
+                    -- The latest verdict, or null for "never checked", which
+                    -- is what run_agents routes through mx_check. A false
+                    -- verdict is an answer; only a missing row is unknown.
+                    'verified', (
+                        select v.verified
+                        from leads.email_verification v
+                        where v.business_email_id = e.id
+                        order by v.verified_at desc nulls last
+                        limit 1)))
                 from leads.business_email e
                 where e.business_id = b.id
             ) as emails,
+            (
+                -- Jina-crawled pages, kept separate so run_agents can see
+                -- whether this business has any, and folded into the research
+                -- context because it is more text about the business.
+                select json_agg(json_build_object(
+                           'url', j.url, 'page_kind', j.page_kind,
+                           'text', j.text_excerpt)
+                       order by j.page_kind, j.fetched_at)
+                from leads.website_crawl_jina j
+                where j.business_id = b.id
+                  and j.text_excerpt is not null and j.text_excerpt <> ''
+            ) as jina_pages,
             (
                 -- Every crawled page, not the longest one: the homepage plus
                 -- about/services/contact are all context, and picking one
@@ -146,6 +167,7 @@ def shape_candidate(row: Any) -> Dict[str, Any]:
     """
     emails = row['emails'] or []
     pages = row.get('crawl_pages') or []
+    jina_pages = row.get('jina_pages') or []
 
     return {
         'business': {
@@ -170,8 +192,27 @@ def shape_candidate(row: Any) -> Dict[str, Any]:
         },
         'candidate_emails': list(emails),
         'crawl_pages': list(pages),
-        'crawl_excerpt': join_crawl_pages(pages),
+        'jina_pages': list(jina_pages),
+        # Both sources: the research agent reads everything available, and a
+        # Jina page is simply more text about the business.
+        'crawl_excerpt': join_crawl_pages(list(pages) + list(jina_pages)),
     }
+
+
+def needs_email_verification(candidate: Dict[str, Any]) -> bool:
+    """
+    True if any candidate email has no verification verdict yet.
+
+    A false verdict is an answer -- the address was checked and rejected.
+    Only a missing row is unknown, and those are what mx_check should see.
+    """
+    return any(e.get('verified') is None
+               for e in candidate.get('candidate_emails') or [])
+
+
+def needs_jina_crawl(candidate: Dict[str, Any]) -> bool:
+    """True if the business has no Jina-crawled page carrying text."""
+    return not (candidate.get('jina_pages') or [])
 
 
 async def fetch_candidates(
@@ -199,7 +240,7 @@ async def fetch_candidates(
     shaped = []
     for r in rows:
         d = dict(r)
-        for key in ('emails', 'crawl_pages'):
+        for key in ('emails', 'crawl_pages', 'jina_pages'):
             if isinstance(d.get(key), str):
                 d[key] = json.loads(d[key])
         shaped.append(shape_candidate(d))

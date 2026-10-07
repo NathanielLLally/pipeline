@@ -208,11 +208,18 @@ class TestExplicitIds:
 
         assert 'exists' not in sql.lower()
 
-    def test_ids_mode_has_no_limit(self):
-        """The id list is the limit."""
-        sql, _ = build_candidate_query(None, None, None, include_ids=['a'])
+    def test_ids_mode_has_no_outer_limit(self):
+        """The id list is the limit.
 
-        assert 'limit' not in sql.lower()
+        Checks for a *bound* limit rather than the word: correlated
+        subqueries legitimately contain `limit 1` (the latest verification
+        verdict), so a bare substring test gives a false failure.
+        """
+        sql, params = build_candidate_query(None, None, None,
+                                            include_ids=['a'])
+
+        assert 'limit $' not in sql.lower()
+        assert len(params) == 1
 
     def test_batch_mode_is_unchanged_when_no_ids_given(self):
         sql, params = build_candidate_query(['Tier 1'], 10, None,
@@ -288,3 +295,127 @@ class TestContactFieldsForWarmbly:
             'emails': [{'email': 'a@b.com', 'source': 'website'}],
             'crawl_pages': [{'url': 'u', 'page_kind': 'home', 'text': 'hi'}],
         }
+
+
+class TestVerificationAndJinaExposure:
+    """run_agents cannot decide what to run without these two facts.
+
+    Before research it must know (a) which emails have no verification verdict
+    yet, so they can go through mx_check, and (b) whether the business has any
+    Jina-crawled pages, so jina_crawl can fill the gap. The selector read
+    neither table, so neither question was answerable.
+
+    Measured on the live database when this was written: leads.email_verification
+    had 1 row and 13 businesses had any Jina page, so both paths fire for
+    essentially every candidate.
+    """
+
+    def test_query_reads_the_verification_table(self):
+        sql, _ = build_candidate_query(['Tier 1'], 10, None)
+
+        assert 'leads.email_verification' in sql
+
+    def test_query_reads_the_jina_table(self):
+        sql, _ = build_candidate_query(['Tier 1'], 10, None)
+
+        assert 'leads.website_crawl_jina' in sql
+
+    def test_ids_mode_reads_them_too(self):
+        sql, _ = build_candidate_query(None, None, None, include_ids=['a'])
+
+        assert 'leads.email_verification' in sql
+        assert 'leads.website_crawl_jina' in sql
+
+    def test_emails_carry_a_verification_verdict(self):
+        row = self._row(emails=[
+            {'email': 'a@b.com', 'source': 'crawl', 'verified': True},
+            {'email': 'c@d.com', 'source': 'crawl', 'verified': None}])
+
+        emails = shape_candidate(row)['candidate_emails']
+
+        assert emails[0]['verified'] is True
+        assert emails[1]['verified'] is None
+
+    def test_jina_pages_are_exposed_separately(self):
+        row = self._row(jina_pages=[
+            {'url': 'u', 'page_kind': 'home', 'text': 'jina text'}])
+
+        assert shape_candidate(row)['jina_pages'][0]['text'] == 'jina text'
+
+    def test_jina_text_also_reaches_the_research_context(self):
+        """Everything available goes to research; Jina pages are context too."""
+        row = self._row(
+            crawl_pages=[{'url': 'u1', 'page_kind': 'home', 'text': 'classic'}],
+            jina_pages=[{'url': 'u2', 'page_kind': 'home', 'text': 'JINA ONLY'}])
+
+        excerpt = shape_candidate(row)['crawl_excerpt']
+
+        assert 'classic' in excerpt
+        assert 'JINA ONLY' in excerpt
+
+    def test_absent_jina_pages_shape_to_an_empty_list(self):
+        assert shape_candidate(self._row(jina_pages=None))['jina_pages'] == []
+
+    def _row(self, **over):
+        base = {
+            'id': 'uuid-1', 'name': 'Happy Tails',
+            'website': 'https://happytails.example',
+            'domain': 'happytails.example', 'city': 'Austin', 'state': 'TX',
+            'icp_score': 88, 'icp_tier': 'Tier 1',
+            'primary_category': 'Pet groomer', 'service_category': 'grooming',
+            'description': 'Grooming', 'rating': 4.8, 'review_count': 120,
+            'phone': '555', 'decision_maker_name': None,
+            'decision_maker_title': None,
+            'emails': [{'email': 'a@b.com', 'source': 'crawl',
+                        'verified': None}],
+            'crawl_pages': [{'url': 'u', 'page_kind': 'home', 'text': 'hi'}],
+            'jina_pages': None,
+        }
+        base.update(over)
+        return base
+
+
+class TestPreflightPredicates:
+    """Pure predicates so run_agents' decisions are testable without a DB."""
+
+    def test_unknown_verification_needs_mx_check(self):
+        from flow.agents.selector import needs_email_verification
+
+        candidate = {'candidate_emails': [
+            {'email': 'a@b.com', 'verified': True},
+            {'email': 'c@d.com', 'verified': None}]}
+
+        assert needs_email_verification(candidate) is True
+
+    def test_all_verdicts_present_needs_no_mx_check(self):
+        from flow.agents.selector import needs_email_verification
+
+        candidate = {'candidate_emails': [
+            {'email': 'a@b.com', 'verified': True},
+            {'email': 'c@d.com', 'verified': False}]}
+
+        assert needs_email_verification(candidate) is False
+
+    def test_a_false_verdict_is_a_verdict(self):
+        """Rejected is answered; only a missing row is unknown."""
+        from flow.agents.selector import needs_email_verification
+
+        assert needs_email_verification(
+            {'candidate_emails': [{'email': 'a@b.com', 'verified': False}]}
+        ) is False
+
+    def test_no_emails_needs_no_mx_check(self):
+        from flow.agents.selector import needs_email_verification
+
+        assert needs_email_verification({'candidate_emails': []}) is False
+
+    def test_missing_jina_pages_needs_a_crawl(self):
+        from flow.agents.selector import needs_jina_crawl
+
+        assert needs_jina_crawl({'jina_pages': []}) is True
+
+    def test_existing_jina_pages_need_no_crawl(self):
+        from flow.agents.selector import needs_jina_crawl
+
+        assert needs_jina_crawl(
+            {'jina_pages': [{'url': 'u', 'text': 't'}]}) is False
