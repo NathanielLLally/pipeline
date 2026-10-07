@@ -22,6 +22,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from warmbly.gateway import AsyncGatewayClient, GatewayEvent
 
+from flow.discord_bot import gateway_base_url
+
 
 def _env(name: str) -> str:
     value = os.environ.get(name)
@@ -37,7 +39,11 @@ async def main() -> None:
     intents_raw = os.environ.get('WARMBLY_EVENT_INTENTS', '').strip()
     intents = [t.strip().upper() for t in intents_raw.split(',') if t.strip()] or None
 
-    gw = AsyncGatewayClient(token=token, base_url=url)
+    # WARMBLY_WEBSOCKET_URL carries the full /socket/websocket path, but the
+    # SDK appends that itself -- passing it raw doubles the path and the
+    # gateway answers HTTP 500.
+    base_url = gateway_base_url(url)
+    gw = AsyncGatewayClient(token=token, base_url=base_url)
 
     # Every UPPER_CASE business event, no exclusions -- mirrors what the
     # Discord bot registers, minus Discord. presence_* / rate_limited /
@@ -52,7 +58,7 @@ async def main() -> None:
     for name in names:
         gw.on_event(name)(lambda topic, payload, _name=name: handler(topic, payload, _name))
 
-    print(f'connecting to {url} ...')
+    print(f'connecting to {base_url}/socket/websocket ...')
     await gw.connect()
     print(f'subscribing to org:{org_id} (intents={intents or "all"}) ...')
     reply = await gw.subscribe(f'org:{org_id}', intents=intents)
