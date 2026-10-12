@@ -104,8 +104,8 @@ async def run_agents(
     preflight: bool = True,
 ) -> dict:
     """
-    Select businesses, research each, draft for the ones that pass, and import
-    each drafted business to Warmbly as contacts.
+    Select businesses, research each, draft for the ones that pass, analyze
+    each draft, and finally import each drafted business to Warmbly as contacts.
 
     Imported contacts are not assigned to a campaign: that is the human review
     gate, so nothing sends until someone assigns them.
@@ -203,9 +203,28 @@ async def run_agents(
             outcome['draft'] = drafted['draft']
             outcome['outside_known_pool'] = drafted.get('outside_known_pool', [])
 
-            # Import before analysis: analysis is a quality report, not a
-            # gate, so a slow or failing LLM there must not hold back the
-            # contacts. The contact lands unassigned to any campaign.
+            # Analyze before import, so the import is the last thing a
+            # business does. Analysis is a quality report, not a gate: a slow
+            # or failing LLM here is recorded and the import still runs. The
+            # contact lands unassigned to any campaign.
+            try:
+                with tags(*stage_tags, 'analysis'):
+                    analyzed = analysis_agent(
+                        research=researched['research'],
+                        draft=drafted['draft'],
+                        business=business
+                    )
+            except Exception as exc:
+                print(f"analysis errored for {business.get('business_name')}: "
+                      f"{type(exc).__name__}: {exc}")
+                outcome['analysis_status'] = 'error'
+                outcome['analysis_error'] = f'{type(exc).__name__}: {exc}'
+            else:
+                outcome['analysis_status'] = analyzed.get('status')
+                if analyzed.get('status') == 'analyzed':
+                    counts['analyzed'] += 1
+                    outcome['analysis'] = analyzed.get('analysis')
+
             try:
                 with tags(*stage_tags, 'import'):
                     imported = import_contacts(
@@ -227,27 +246,6 @@ async def run_agents(
                 else:
                     counts['import_failed'] += 1
                     outcome['import_reason'] = imported.get('reason')
-
-            # Analyze the draft email for quality metrics
-            try:
-                with tags(*stage_tags, 'analysis'):
-                    analyzed = analysis_agent(
-                        research=researched['research'],
-                        draft=drafted['draft'],
-                        business=business
-                    )
-            except Exception as exc:
-                print(f"analysis errored for {business.get('business_name')}: "
-                      f"{type(exc).__name__}: {exc}")
-                outcome['analysis_status'] = 'error'
-                outcome['analysis_error'] = f'{type(exc).__name__}: {exc}'
-                outcomes.append(outcome)
-                continue
-
-            outcome['analysis_status'] = analyzed.get('status')
-            if analyzed.get('status') == 'analyzed':
-                counts['analyzed'] += 1
-                outcome['analysis'] = analyzed.get('analysis')
 
         outcomes.append(outcome)
 

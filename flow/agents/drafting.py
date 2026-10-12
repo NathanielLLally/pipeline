@@ -65,7 +65,8 @@ def build_drafting_prompt(
         f"Verified addresses you may write to: {pool}",
         '',
         'Choose selected_emails from the verified addresses above and only '
-        'those. Return subject, body, and a rationale for the framing.',
+        'those. Return subject, email_text (the email body), and a rationale '
+        'for the framing.',
     ])
 
 

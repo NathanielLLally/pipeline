@@ -13,7 +13,7 @@ from datetime import datetime
 import re
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 REJECTION_REASONS = (
     'no_verified_emails',
@@ -97,9 +97,16 @@ def find_placeholder(value: str) -> Optional[str]:
 
 
 class DraftingOutput(BaseModel):
+    # The LLM sees the body as `email_text`; everything downstream, and every
+    # stored draft, keeps `body`. nemotron-3-ultra behind the proxy cuts any
+    # string field named `body` (or `message`) at 256 characters under
+    # json_schema, mid-sentence and with finish_reason=stop, while the same
+    # model writes 700+ characters into `email_text`.
+    model_config = ConfigDict(populate_by_name=True)
+
     selected_emails: List[str] = Field(min_length=1)
     subject: str
-    body: str
+    body: str = Field(alias='email_text')
     rationale: str
 
     @field_validator('subject', 'body')

@@ -4,7 +4,18 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from flow.draft_qa import qa_metrics
+from flow.agents.analysis import qa_metrics
+
+
+def test_qa_lives_in_the_analysis_module():
+    """draft_qa was merged into flow.agents.analysis; the old module is gone."""
+    import importlib
+    import pytest
+    from flow.agents import analysis
+
+    assert qa_metrics.__module__ == analysis.__name__
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module('flow.draft_qa')
 
 # The draft that reached Warmbly for Maximum Canine on 2026-10-06: the model
 # drifted into Thai mid-word and stopped.
