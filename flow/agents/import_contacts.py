@@ -34,6 +34,7 @@ def import_contacts(
     research: Optional[Dict[str, Any]] = None,
     draft: Optional[Dict[str, Any]] = None,
     idempotency_key: Optional[str] = None,
+    candidate_emails: Optional[List[Dict[str, Any]]] = None,
     json_input_file: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
@@ -61,6 +62,7 @@ def import_contacts(
             research = input_data.get('research')
             draft = input_data.get('draft')
             idempotency_key = input_data.get('idempotency_key')
+            candidate_emails = input_data.get('candidate_emails')
         except Exception as e:
             print(f'Failed to load input artifact: {e}')
             raise
@@ -75,6 +77,7 @@ def import_contacts(
             'research': research,
             'draft': draft,
             'idempotency_key': idempotency_key,
+            'candidate_emails': candidate_emails,
         }
 
     # Write input artifact
@@ -88,7 +91,8 @@ def import_contacts(
 
     # Build payloads
     try:
-        payloads = build_contact_payloads(business, research, draft)
+        payloads = build_contact_payloads(business, research, draft,
+                                          candidate_emails=candidate_emails)
     except Exception as e:
         print(f'Failed to build contact payloads: {e}')
         result = {'status': 'rejected', 'reason': 'payload_build_failed', 'error': str(e)}

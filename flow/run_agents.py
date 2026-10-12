@@ -212,6 +212,7 @@ async def run_agents(
                         business=business,
                         research=researched['research'],
                         draft=drafted['draft'],
+                        candidate_emails=emails,
                     )
             except Exception as exc:
                 print(f"import errored for {business.get('business_name')}: "

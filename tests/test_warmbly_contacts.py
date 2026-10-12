@@ -93,6 +93,61 @@ class TestPayloadShape:
         assert p['last_name'] == 'Jane Watson'
 
 
+class TestEveryPoolEmailIsImported:
+    """Every address in the research pool becomes a contact; only the ones
+    drafting chose carry the draft. Warmbly runs its own verification, so our
+    verdict decides who gets drafted, not who gets imported."""
+
+    POOL = [
+        {'email': 'training@homedogtraining.com', 'source': 'crawl', 'verified': True},
+        {'email': 'info@homedogtraining.com', 'source': 'crawl', 'verified': False},
+        {'email': 'wyatt@homedogtraining.com', 'source': 'hunter', 'verified': None},
+    ]
+
+    def _payloads(self, pool=None, draft=DRAFT):
+        return build_contact_payloads(BUSINESS, RESEARCH, draft,
+                                      candidate_emails=pool or self.POOL)
+
+    def test_unselected_pool_emails_are_imported_after_the_selected(self):
+        assert [p['email'] for p in self._payloads()] == [
+            'training@homedogtraining.com',
+            'info@homedogtraining.com',
+            'wyatt@homedogtraining.com',
+        ]
+
+    def test_only_selected_contacts_carry_the_draft(self):
+        by_email = {p['email']: p['custom_fields'] for p in self._payloads()}
+
+        assert by_email['training@homedogtraining.com']['draft_subject'] == \
+            DRAFT['subject']
+        for email in ('info@homedogtraining.com', 'wyatt@homedogtraining.com'):
+            assert not any(k.startswith('draft_') for k in by_email[email]), email
+
+    def test_unselected_contacts_still_carry_research_and_business(self):
+        fields = {p['email']: p['custom_fields']
+                  for p in self._payloads()}['info@homedogtraining.com']
+
+        assert fields['research_hook'] == RESEARCH['personalization_hook']
+        assert fields['leads_business_id'] == BUSINESS['id']
+
+    def test_an_address_in_both_lists_is_imported_once(self):
+        pool = [{'email': 'Training@HomeDogTraining.com', 'verified': True}]
+
+        emails = [p['email'] for p in self._payloads(pool=pool)]
+
+        assert emails == ['training@homedogtraining.com']
+
+    def test_our_verification_verdict_is_never_sent(self):
+        for p in self._payloads():
+            assert 'verification_status' not in p
+            assert 'verified' not in p['custom_fields']
+
+    def test_without_a_pool_only_the_selected_are_imported(self):
+        payloads = build_contact_payloads(BUSINESS, RESEARCH, DRAFT)
+
+        assert [p['email'] for p in payloads] == DRAFT['selected_emails']
+
+
 class TestCustomFields:
     def _cf(self, **over):
         business = dict(BUSINESS, **over)

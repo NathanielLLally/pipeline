@@ -113,6 +113,22 @@ class TestImportContactsHappyPath:
             assert output_call.kwargs['suffix'] == 'output'
 
 
+class TestImportsTheWholePool:
+    def test_candidate_emails_reach_the_payloads(self):
+        pool = [{'email': 'owner@happytails.example', 'verified': True},
+                {'email': 'info@happytails.example', 'verified': False}]
+
+        with patch('flow.agents.import_contacts.create_contacts',
+                   side_effect=lambda p, **k: p) as create, \
+             patch('flow.agents.import_contacts.write_artifact'):
+            result = import_contacts.fn(BUSINESS, RESEARCH, DRAFT,
+                                        candidate_emails=pool)
+
+        sent = [p['email'] for p in create.call_args.args[0]]
+        assert sent == ['owner@happytails.example', 'info@happytails.example']
+        assert result['payloads_sent'] == 2
+
+
 class TestImportContactsFailures:
     """Test failure modes."""
 

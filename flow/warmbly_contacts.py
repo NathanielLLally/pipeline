@@ -75,9 +75,15 @@ def build_contact_payloads(
     business: Dict[str, Any],
     research: Dict[str, Any],
     draft: Dict[str, Any],
+    candidate_emails: Optional[List[Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
     """
-    One Warmbly contact per address the drafting agent selected.
+    One Warmbly contact per address drafting selected, then one per remaining
+    address in the research pool.
+
+    Only the selected contacts carry the draft. The rest are imported without
+    it and without our verification verdict: Warmbly verifies on its own and
+    may judge deliverability differently.
 
     The person comes from the research node, which extracts it from the live
     pages, falling back to leads.businesses.decision_maker_name from the
@@ -87,10 +93,12 @@ def build_contact_payloads(
     title = research.get('contact_title') or business.get('decision_maker_title')
     first, last = split_person_name(person)
 
-    custom = {
+    draft_custom = {
         'draft_subject': draft.get('subject'),
         'draft_body': draft.get('body'),
         'draft_rationale': draft.get('rationale'),
+    }
+    custom = {
         'research_hook': research.get('personalization_hook'),
         'research_tone': research.get('inferred_tone'),
         'research_confidence': research.get('confidence'),
@@ -105,21 +113,35 @@ def build_contact_payloads(
         'business_icp_tier': business.get('icp_tier'),
         'business_icp_score': business.get('icp_score'),
     }
-    # Omit empties rather than writing blank strings into the CRM.
-    custom_fields = {k: _as_text(v) for k, v in custom.items()
-                     if _as_text(v) != ''}
 
-    payloads = []
-    for email in draft.get('selected_emails') or []:
-        payloads.append({
+    def non_empty(fields: Dict[str, Any]) -> Dict[str, str]:
+        # Omit empties rather than writing blank strings into the CRM.
+        return {k: _as_text(v) for k, v in fields.items() if _as_text(v) != ''}
+
+    def payload(email: str, fields: Dict[str, str]) -> Dict[str, Any]:
+        return {
             'email': email,
             'first_name': first,
             'last_name': last,
             'company': business.get('business_name') or '',
             'phone': business.get('phone') or '',
             'subscribed': True,
-            'custom_fields': dict(custom_fields),
-        })
+            'custom_fields': fields,
+        }
+
+    drafted_fields = non_empty({**draft_custom, **custom})
+    pool_fields = non_empty(custom)
+
+    payloads = []
+    seen = set()
+    for email in draft.get('selected_emails') or []:
+        seen.add(email.lower())
+        payloads.append(payload(email, dict(drafted_fields)))
+    for entry in candidate_emails or []:
+        email = (entry.get('email') or '').strip()
+        if email and email.lower() not in seen:
+            seen.add(email.lower())
+            payloads.append(payload(email, dict(pool_fields)))
     return payloads
 
 

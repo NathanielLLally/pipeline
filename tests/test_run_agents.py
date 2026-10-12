@@ -355,6 +355,7 @@ class TestImport:
         assert kwargs['business'] == CANDIDATE['business']
         assert kwargs['research'] == RESEARCHED['research']
         assert kwargs['draft'] == DRAFTED['draft']
+        assert kwargs['candidate_emails'] == CANDIDATE['candidate_emails']
         assert result['outcomes'][0]['import_status'] == 'imported'
         assert result['imported'] == 1
 
