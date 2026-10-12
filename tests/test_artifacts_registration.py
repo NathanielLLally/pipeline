@@ -48,42 +48,62 @@ class TestTheSymbolExists:
         """
         import flow.artifacts as mod
 
-        assert hasattr(mod, 'Artifact'), (
-            'Artifact should be imported at module scope so a wrong symbol '
+        assert hasattr(mod, 'create_markdown_artifact'), (
+            'create_markdown_artifact should be imported at module scope so a wrong symbol '
             'fails at import rather than being swallowed at call time'
         )
 
 
 class TestRegistrationBehaviour:
-    def test_registers_with_the_artifact_class(self):
+    @staticmethod
+    def _json_block(markdown: str):
+        import json
+        import re
+
+        match = re.search(r'```json\n(.*)\n```', markdown, re.DOTALL)
+        assert match, f'no ```json block in markdown:\n{markdown}'
+        return json.loads(match.group(1))
+
+    def test_registers_as_a_markdown_artifact_holding_the_json(self):
+        """type='result' is hidden by the flow-run Artifacts tab (the UI
+        filters notType: ['result']); markdown is shown there and on the
+        Artifacts page."""
         import flow.artifacts as mod
 
-        with patch.object(mod, 'Artifact') as artifact:
-            mod.register_artifact({'a': 1}, suffix='output')
+        data = {'a': 1, 'nested': {'b': [1, 2]}}
+        with patch.object(mod, 'create_markdown_artifact') as create:
+            mod.register_artifact(data, suffix='output', description='out')
 
-        artifact.assert_called_once()
-        kwargs = artifact.call_args.kwargs
-        assert kwargs['data'] == {'a': 1}
-        assert kwargs['type'] == 'result'
-        artifact.return_value.create.assert_called_once()
+        create.assert_called_once()
+        kwargs = create.call_args.kwargs
+        assert kwargs['key'].endswith('-output')
+        assert kwargs['description'] == 'out'
+        assert self._json_block(kwargs['markdown']) == data
+
+    def test_never_uses_the_result_type(self):
+        import pathlib
+
+        source = pathlib.Path('flow/artifacts.py').read_text()
+
+        assert "type='result'" not in source
+        assert 'type="result"' not in source
 
     def test_a_missing_api_is_still_tolerated(self):
         """No API is an environment fact, not a bug: keep swallowing it."""
         import flow.artifacts as mod
 
-        with patch.object(mod, 'Artifact') as artifact:
-            artifact.return_value.create.side_effect = RuntimeError(
-                'no Prefect API')
+        with patch.object(mod, 'create_markdown_artifact') as create:
+            create.side_effect = RuntimeError('no Prefect API')
             mod.register_artifact({'a': 1}, suffix='output')  # must not raise
 
     def test_key_is_lowercase_and_dash_separated(self):
         """Prefect rejects keys outside [a-z0-9-]; tags are free-form."""
         import flow.artifacts as mod
 
-        with patch.object(mod, 'Artifact') as artifact, \
+        with patch.object(mod, 'create_markdown_artifact') as create, \
              patch.object(mod.flow_run, 'tags', ['Biz_ID 42', 'Tier 1']):
             mod.register_artifact({'a': 1}, suffix='output')
 
-        key = artifact.call_args.kwargs['key']
+        key = create.call_args.kwargs['key']
         assert key == key.lower()
         assert all(c.isalnum() or c == '-' for c in key), key
