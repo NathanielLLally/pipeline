@@ -38,6 +38,7 @@ from flow.artifacts import (
     variable_safe_name,
     write_artifact,
 )
+from flow.draft_qa import qa_metrics
 from flow.llm import LLMSchemaError, LLMTransportError, complete_structured
 from flow.schemas import DraftAnalysisOutput
 
@@ -172,6 +173,10 @@ def analysis_agent(
     business_id = business.get('id', 'unknown')
     business_name = business.get('business_name', 'Unknown')
     prompt = build_analysis_prompt(research, draft, business)
+    # Computed before the LLM call so it is present even when that call fails.
+    qa = qa_metrics(draft, business)
+    if not qa['passed']:
+        print(f'QA failed for {business_name}: {qa["failures"]}')
 
     try:
         analysis = complete_structured(
@@ -184,7 +189,8 @@ def analysis_agent(
         result = {
             'status': 'error',
             'error': f'{type(exc).__name__}: {exc}',
-            'analysis': None
+            'analysis': None,
+            'qa': qa,
         }
         _set_analysis_output(result, business_id)
         write_artifact(result, suffix='output')
@@ -201,7 +207,8 @@ def analysis_agent(
 
     result = {
         'status': 'analyzed',
-        'analysis': analysis.model_dump(mode='json')
+        'analysis': analysis.model_dump(mode='json'),
+        'qa': qa,
     }
     _set_analysis_output(result, business_id)
     write_artifact(result, suffix='output')
