@@ -29,6 +29,7 @@ import hashlib
 import json
 import os
 import sys
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -37,6 +38,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import httpx
 
 CONTACTS_PATH = '/v1/contacts'
+# Compose drafts: what Warmbly's Drafts view lists. Owned by the API key's
+# user, and keyed by a client-generated id, so the PUT is idempotent.
+DRAFTS_PATH = '/v1/unibox/drafts'
+# Fixed, so a business + address always maps to the same draft id and a
+# re-run updates that draft instead of adding another.
+_DRAFT_NAMESPACE = uuid.UUID('6f1c2b9e-5d3a-4c7e-9a41-2b8d0e7f3c55')
 
 # Imported contacts arrive subscribed. Sent explicitly rather than left to the
 # API default, so the state does not change silently if that default does.
@@ -146,6 +153,20 @@ def contact_idempotency_key(
     return f"leads-business-{business.get('id')}{digest}"
 
 
+def _warmbly_request_parts() -> tuple:
+    """The API base URL and auth headers, or an explicit error if unset."""
+    token = os.environ.get('WARMBLY_API_TOKEN')
+    if not token:
+        raise RuntimeError('WARMBLY_API_TOKEN is not set')
+    base = (os.environ.get('WARMBLY_API_URL') or '').rstrip('/')
+    if not base:
+        raise RuntimeError('WARMBLY_API_URL is not set')
+    return base, {
+        'Content-Type': 'application/json',
+        'Authorization': f'Bearer {token}',
+    }
+
+
 def create_contacts(
     payloads: List[Dict[str, Any]],
     idempotency_key: Optional[str] = None,
@@ -159,17 +180,7 @@ def create_contacts(
     if not payloads:
         return []
 
-    token = os.environ.get('WARMBLY_API_TOKEN')
-    if not token:
-        raise RuntimeError('WARMBLY_API_TOKEN is not set')
-    base = (os.environ.get('WARMBLY_API_URL') or '').rstrip('/')
-    if not base:
-        raise RuntimeError('WARMBLY_API_URL is not set')
-
-    headers = {
-        'Content-Type': 'application/json',
-        'Authorization': f'Bearer {token}',
-    }
+    base, headers = _warmbly_request_parts()
     if idempotency_key:
         headers['Idempotency-Key'] = idempotency_key
 
@@ -185,3 +196,54 @@ def create_contacts(
 
     created = response.json()
     return created if isinstance(created, list) else [created]
+
+
+def compose_draft_id(business_id: Any, email: str) -> str:
+    """A stable draft id for one business and one address."""
+    return str(uuid.uuid5(_DRAFT_NAMESPACE,
+                          f'{business_id}:{email.strip().lower()}'))
+
+
+def build_compose_drafts(
+    business: Dict[str, Any],
+    draft: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """
+    One compose draft per address the drafting agent selected, as
+    [{'id': ..., 'body': {to, subject, body}}].
+
+    No mailbox is named: Warmbly picks one when the draft is sent, as it does
+    for a compose with email_account_id omitted.
+    """
+    return [
+        {
+            'id': compose_draft_id(business.get('id'), email),
+            'body': {
+                'to': [email],
+                'subject': draft.get('subject') or '',
+                'body': draft.get('body') or '',
+            },
+        }
+        for email in draft.get('selected_emails') or []
+    ]
+
+
+def create_compose_drafts(drafts: List[Dict[str, Any]]) -> List[str]:
+    """PUT each draft to Warmbly's Unibox Drafts and return their ids."""
+    if not drafts:
+        return []
+    base, headers = _warmbly_request_parts()
+
+    ids = []
+    for d in drafts:
+        response = httpx.put(f"{base}{DRAFTS_PATH}/{d['id']}", json=d['body'],
+                             headers=headers, timeout=REQUEST_TIMEOUT)
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise RuntimeError(
+                f'Warmbly returned {exc.response.status_code} creating '
+                f"draft {d['id']}: {exc.response.text[:400]}"
+            ) from exc
+        ids.append(d['id'])
+    return ids

@@ -25,7 +25,11 @@ import pytest
 
 from flow.warmbly_contacts import (
     CONTACTS_PATH,
+    DRAFTS_PATH,
+    build_compose_drafts,
     build_contact_payloads,
+    compose_draft_id,
+    create_compose_drafts,
     create_contacts,
 )
 
@@ -336,3 +340,70 @@ class TestIdempotencyKey:
 
         assert contact_idempotency_key(BUSINESS, a) == \
             contact_idempotency_key(BUSINESS, b)
+
+
+class TestComposeDrafts:
+    """The draft also lands in Warmbly's Unibox Drafts, ready to review and send.
+
+    Contacts alone carried the draft only as custom fields, which nothing in
+    Warmbly renders as an email. PUT /v1/unibox/drafts/:id creates a compose
+    draft owned by the API key's user; the id is client-generated, so the PUT
+    is idempotent and a re-run updates the same draft instead of adding one.
+    """
+
+    def _ok(self, draft_id):
+        r = MagicMock(spec=httpx.Response)
+        r.status_code = 200
+        r.json.return_value = {'id': draft_id}
+        r.raise_for_status.return_value = None
+        return r
+
+    def test_one_draft_per_selected_email(self):
+        draft = dict(DRAFT, selected_emails=['a@x.com', 'b@x.com'])
+
+        drafts = build_compose_drafts(BUSINESS, draft)
+
+        assert [d['body']['to'] for d in drafts] == [['a@x.com'], ['b@x.com']]
+
+    def test_draft_carries_subject_and_body(self):
+        d = build_compose_drafts(BUSINESS, DRAFT)[0]['body']
+
+        assert d['subject'] == DRAFT['subject']
+        assert d['body'] == DRAFT['body']
+
+    def test_draft_id_is_a_stable_uuid_per_business_and_address(self):
+        import uuid
+        a = compose_draft_id('biz-1', 'a@x.com')
+
+        assert uuid.UUID(a)
+        assert a == compose_draft_id('biz-1', 'A@X.com')
+        assert a != compose_draft_id('biz-1', 'b@x.com')
+        assert a != compose_draft_id('biz-2', 'a@x.com')
+
+    def test_puts_each_draft_to_its_id(self, monkeypatch):
+        monkeypatch.setenv('WARMBLY_API_URL', 'https://api.example.test')
+        monkeypatch.setenv('WARMBLY_API_TOKEN', 'wb-token')
+        drafts = build_compose_drafts(BUSINESS, DRAFT)
+
+        with patch('flow.warmbly_contacts.httpx.put',
+                   return_value=self._ok(drafts[0]['id'])) as put:
+            ids = create_compose_drafts(drafts)
+
+        url = put.call_args.args[0]
+        assert url == f"https://api.example.test{DRAFTS_PATH}/{drafts[0]['id']}"
+        assert put.call_args.kwargs['json'] == drafts[0]['body']
+        assert put.call_args.kwargs['headers']['Authorization'] == 'Bearer wb-token'
+        assert ids == [drafts[0]['id']]
+
+    def test_http_error_is_raised_with_the_reason(self, monkeypatch):
+        monkeypatch.setenv('WARMBLY_API_URL', 'https://api.example.test')
+        monkeypatch.setenv('WARMBLY_API_TOKEN', 'wb-token')
+        bad = MagicMock(spec=httpx.Response)
+        bad.status_code = 403
+        bad.text = 'missing WRITE_UNIBOX'
+        bad.raise_for_status.side_effect = httpx.HTTPStatusError(
+            '403', request=MagicMock(), response=bad)
+
+        with patch('flow.warmbly_contacts.httpx.put', return_value=bad), \
+             pytest.raises(RuntimeError, match='WRITE_UNIBOX'):
+            create_compose_drafts(build_compose_drafts(BUSINESS, DRAFT))

@@ -2,7 +2,8 @@
 The import-contacts-agent deployment.
 
 Takes drafting output (with research and business context), builds Warmbly
-contact payloads, and imports them. Can be triggered standalone or as part of
+contact payloads, imports them, then creates the email as a Warmbly compose
+draft (Unibox Drafts) for each selected address. Can be triggered standalone or as part of
 the pipeline.
 
 Can be called with dict params or from a JSON input artifact:
@@ -22,8 +23,10 @@ from prefect import flow
 
 from flow.artifacts import read_artifact, write_artifact
 from flow.warmbly_contacts import (
+    build_compose_drafts,
     build_contact_payloads,
     contact_idempotency_key,
+    create_compose_drafts,
     create_contacts,
 )
 
@@ -49,7 +52,8 @@ def import_contacts(
     Writes output and input artifacts to the current directory, tagged by flow run tags.
 
     Returns:
-        {'status': 'imported', 'payloads_sent': N, 'created': [...contact dicts...]}
+        {'status': 'imported', 'payloads_sent': N, 'created': [...contact dicts...],
+         'drafts_status': 'created'|'error', 'drafts': [...draft ids...]}
         or
         {'status': 'rejected', 'reason': '...', 'error': '...'}
     """
@@ -121,6 +125,19 @@ def import_contacts(
         return result
 
     print(f'Successfully imported {len(created)} contact(s)')
+
+    # Then the email itself, as a Warmbly compose draft: the contact carries
+    # the draft only as custom fields, which Warmbly never shows as an email.
+    # The contact is the durable object, so a draft failure is reported
+    # rather than turning a successful import into a rejection.
+    drafts_status, draft_ids, drafts_error = 'created', [], None
+    try:
+        draft_ids = create_compose_drafts(build_compose_drafts(business, draft))
+        print(f'Created {len(draft_ids)} Warmbly draft(s): {draft_ids}')
+    except Exception as e:
+        drafts_status, drafts_error = 'error', str(e)
+        print(f'Warmbly draft creation failed: {e}')
+
     result = {
         'status': 'imported',
         'business_id': business_id,
@@ -128,6 +145,10 @@ def import_contacts(
         'payloads_sent': len(payloads),
         'created': created,
         'idempotency_key': idempotency_key,
+        'drafts_status': drafts_status,
+        'drafts': draft_ids,
     }
+    if drafts_error:
+        result['drafts_error'] = drafts_error
     write_artifact(result, suffix='output')
     return result

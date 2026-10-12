@@ -36,6 +36,69 @@ DRAFT = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _no_live_drafts():
+    """Every successful import now also PUTs compose drafts to Warmbly.
+
+    Patched for every test so none reaches the live API; the draft tests
+    patch it again inside the test, which takes precedence.
+    """
+    with patch('flow.agents.import_contacts.create_compose_drafts',
+               side_effect=lambda drafts: [d['id'] for d in drafts]):
+        yield
+
+
+class TestImportCreatesComposeDrafts:
+    """After the contact is imported, its email is created as a Warmbly draft."""
+
+    def _created(self, payloads, **kwargs):
+        return [dict(p, id=f'warmbly-{i}') for i, p in enumerate(payloads)]
+
+    def test_creates_a_draft_for_each_selected_email_after_import(self):
+        order = []
+        with patch('flow.agents.import_contacts.create_contacts',
+                   side_effect=lambda p, **k: order.append('contacts') or
+                   self._created(p)), \
+             patch('flow.agents.import_contacts.create_compose_drafts',
+                   side_effect=lambda d: order.append('drafts') or
+                   [x['id'] for x in d]) as mk, \
+             patch('flow.agents.import_contacts.write_artifact'):
+            result = import_contacts.fn(business=BUSINESS, research=RESEARCH,
+                                     draft=DRAFT)
+
+        assert order == ['contacts', 'drafts']
+        sent = mk.call_args.args[0]
+        assert [d['body']['to'] for d in sent] == [DRAFT['selected_emails']]
+        assert sent[0]['body']['subject'] == DRAFT['subject']
+        assert result['status'] == 'imported'
+        assert result['drafts_status'] == 'created'
+        assert result['drafts'] == [sent[0]['id']]
+
+    def test_draft_failure_keeps_the_import_and_reports_it(self):
+        with patch('flow.agents.import_contacts.create_contacts',
+                   side_effect=lambda p, **k: self._created(p)), \
+             patch('flow.agents.import_contacts.create_compose_drafts',
+                   side_effect=RuntimeError('Warmbly returned 403')), \
+             patch('flow.agents.import_contacts.write_artifact'):
+            result = import_contacts.fn(business=BUSINESS, research=RESEARCH,
+                                     draft=DRAFT)
+
+        assert result['status'] == 'imported'
+        assert result['drafts_status'] == 'error'
+        assert '403' in result['drafts_error']
+
+    def test_no_draft_when_the_contact_import_fails(self):
+        with patch('flow.agents.import_contacts.create_contacts',
+                   side_effect=RuntimeError('Warmbly returned 500')), \
+             patch('flow.agents.import_contacts.create_compose_drafts') as mk, \
+             patch('flow.agents.import_contacts.write_artifact'):
+            result = import_contacts.fn(business=BUSINESS, research=RESEARCH,
+                                     draft=DRAFT)
+
+        assert result['status'] == 'rejected'
+        mk.assert_not_called()
+
+
 class TestImportContactsHappyPath:
     """Test successful contact import."""
 
