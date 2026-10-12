@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import re
 
-from prefect.artifacts import Artifact
+from prefect.artifacts import create_markdown_artifact
 from prefect.runtime import flow_run
 from slugify import slugify
 
@@ -143,16 +143,15 @@ def register_artifact(data: Dict[str, Any], suffix: str = 'output',
     key = artifact_key(suffix)
 
     try:
-        # Prefect 3.2.15 has no create_artifact; the Artifact model is how an
-        # arbitrary structured payload is registered. data takes any
-        # JSON-serialisable object, so the whole research/draft record goes in
-        # as-is rather than being flattened into a table or markdown.
-        Artifact(
+        # Not the 'result' artifact type: the UI's flow-run and task-run
+        # Artifacts tabs filter notType ['result'], so those never show.
+        # Markdown with a JSON code block keeps the whole nested record.
+        create_markdown_artifact(
             key=key,
-            type='result',
-            data=data,
+            markdown='```json\n' + json.dumps(data, indent=2, default=str)
+                     + '\n```',
             description=description or suffix,
-        ).create()
+        )
     except Exception as e:
         # Only RUNTIME failures are tolerated here -- no API URL, server
         # unreachable, unit tests with no server. A wrong symbol now fails at
