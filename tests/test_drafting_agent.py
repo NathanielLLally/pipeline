@@ -159,6 +159,13 @@ class TestOfferContext:
 
         assert DEFAULT_OFFER in prompt
 
+    def test_prompt_names_the_wire_field_email_text(self):
+        """The prompt must name the field the schema asks for, not `body`."""
+        prompt = build_drafting_prompt(RESEARCH, EMAILS)
+
+        assert 'email_text' in prompt
+        assert 'subject, body' not in prompt
+
 
 class TestJSONArtifactInput:
     """Test loading drafting_agent inputs from JSON files."""

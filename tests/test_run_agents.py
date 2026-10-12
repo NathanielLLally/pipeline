@@ -369,6 +369,20 @@ class TestImport:
             return_value=IMPORTED)
         imp.assert_not_called()
 
+    def test_import_runs_last_after_analysis(self):
+        calls = []
+        with patch('flow.run_agents.fetch_candidates',
+                   new_callable=AsyncMock, return_value=[CANDIDATE]), \
+             patch('flow.run_agents.research_agent', return_value=RESEARCHED), \
+             patch('flow.run_agents.drafting_agent', return_value=DRAFTED), \
+             patch('flow.run_agents.analysis_agent',
+                   side_effect=lambda **kw: calls.append('analysis') or
+                   {'status': 'analyzed', 'analysis': {}}), \
+             patch('flow.run_agents.import_contacts',
+                   side_effect=lambda **kw: calls.append('import') or IMPORTED):
+            _run()
+        assert calls == ['analysis', 'import']
+
     def test_import_runs_even_when_analysis_fails(self):
         with patch('flow.run_agents.fetch_candidates',
                    new_callable=AsyncMock, return_value=[CANDIDATE]), \

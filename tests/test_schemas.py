@@ -54,6 +54,48 @@ class TestDraftingOutput:
                            rationale="r")
 
 
+class TestDraftingOutputWireName:
+    """The LLM sees the body as `email_text`; the pipeline keeps `body`.
+
+    nemotron-3-ultra via the proxy cuts any string field named `body` (or
+    `message`) at 256 characters under json_schema, while the same model
+    writes 700+ characters into a field named `email_text`. Downstream code
+    and stored drafts all read `draft['body']`, so only the wire name moves.
+    """
+
+    _wire = ('{"selected_emails": ["a@b.com"], "subject": "Hello", '
+             '"email_text": "Noticed you take bookings by phone only.", '
+             '"rationale": "r"}')
+
+    def test_schema_sent_to_the_llm_names_the_field_email_text(self):
+        from flow.llm import strict_json_schema
+        schema = strict_json_schema(DraftingOutput)
+        assert 'email_text' in schema['properties']
+        assert 'body' not in schema['properties']
+        assert 'email_text' in schema['required']
+
+    def test_llm_reply_with_email_text_populates_body(self):
+        draft = DraftingOutput.model_validate_json(self._wire)
+        assert draft.body == 'Noticed you take bookings by phone only.'
+
+    def test_dump_keeps_the_body_key_for_downstream(self):
+        dumped = DraftingOutput.model_validate_json(
+            self._wire).model_dump(mode='json')
+        assert dumped['body'] == 'Noticed you take bookings by phone only.'
+        assert 'email_text' not in dumped
+
+    def test_stored_drafts_keyed_body_still_validate(self):
+        stored = {'selected_emails': ['a@b.com'], 'subject': 'Hello',
+                  'body': 'Noticed you take bookings by phone only.',
+                  'rationale': 'r'}
+        assert DraftingOutput.model_validate(stored).body == stored['body']
+
+    def test_placeholder_check_applies_to_email_text(self):
+        with pytest.raises(ValidationError):
+            DraftingOutput.model_validate_json(
+                self._wire.replace('phone only.', 'phone. [Your Name]'))
+
+
 class TestNoPlaceholders:
     """A draft containing [Your Name] is not a finished email.
 

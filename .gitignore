@@ -1,4 +1,5 @@
 .env
+.env*
 bin/**
 map-outputs/**
 *.log

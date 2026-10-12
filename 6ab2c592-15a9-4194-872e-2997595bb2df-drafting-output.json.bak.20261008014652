@@ -1,0 +1,12 @@
+{
+  "status": "drafted",
+  "draft": {
+    "selected_emails": [
+      "infohillcrest@pawcommons.com"
+    ],
+    "subject": "Live local dog-owner leads for Hillcrest (no tours needed)",
+    "body": "Hi team,I noticed you don't offer facility tours and rely on Google and social media for views \u2014 so prospective boarders can't walk through before booking.We generate and qualify local dog-owner leads through paid ads and deliver them to you in real time\u00a0\u2026",
+    "rationale": "The email opens with a concrete observation (no tours, reliance on online views) that directly ties to the pain point of converting lookers without in-person visits. The offer is a terse overview of the service (paid ads, live qualified leads). The ask is a single low-friction reply prompt. No flattery, pricing, or mechanics are included."
+  },
+  "outside_known_pool": []
+}
