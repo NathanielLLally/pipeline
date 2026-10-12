@@ -12,4 +12,5 @@ __pycache__/
 unknown-*.json
 *output.json
 *input.json
+*.json.bak*
 .vscode/

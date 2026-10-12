@@ -1,5 +1,0 @@
-{
-  "status": "error",
-  "error": "LLMTransportError: proxy returned 502 for model 'openrouter/stealth/space-bunny-alpha': {\"error\":{\"message\":\"litellm.APIError: APIError: OpenrouterException - Provider returned an empty response\\n\\nLiteLLM: model group 'openrouter/stealth/space-bunny-alpha' failed with the error above. No fallback was attempted.\",\"type\":\"internal_server_error\",\"param\":null,\"code\":\"502\"}}",
-  "analysis": null
-}

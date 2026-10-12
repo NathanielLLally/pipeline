@@ -1,5 +1,0 @@
-{
-  "status": "error",
-  "error": "LLMSchemaError: DraftAnalysisOutput not produced in 2 attempts: 3 validation errors for DraftAnalysisOutput\ncall_to_action_score\n  Field required [type=missing, input_value={'personalization_score':... relevant assessment.']}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\ncall_to_action_rationale\n  Field required [type=missing, input_value={'personalization_score':... relevant assessment.']}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing\nimprovement_areas\n  Field required [type=missing, input_value={'personalization_score':... relevant assessment.']}, input_type=dict]\n    For further information visit https://errors.pydantic.dev/2.13/v/missing",
-  "analysis": null
-}

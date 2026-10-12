@@ -1,1 +1,0 @@
-response_format=json_schema
