@@ -36,8 +36,9 @@ VERIFIED_EMAIL = VerifiedEmail(
 
 RESEARCH_OUTPUT = {
     'business_name': 'Happy Tails Dog Training',
-    'contact_name': 'Sarah Johnson',
-    'contact_title': 'Owner',
+    'contacts': [{'name': 'Sarah Johnson', 'title': 'Owner',
+                  'email': 'sarah@happytails.example',
+                  'is_decision_maker': True}],
     'pain_signals': [
         'no online booking',
         'no lead form',

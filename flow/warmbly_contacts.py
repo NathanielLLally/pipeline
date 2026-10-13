@@ -37,6 +37,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import httpx
 
+from flow.schemas import primary_contact
+
 CONTACTS_PATH = '/v1/contacts'
 # Compose drafts: what Warmbly's Drafts view lists. Owned by the API key's
 # user, and keyed by a client-generated id, so the PUT is idempotent.
@@ -93,11 +95,13 @@ def build_contact_payloads(
     may judge deliverability differently.
 
     The person comes from the research node, which extracts it from the live
-    pages, falling back to leads.businesses.decision_maker_name from the
+    pages (its first decision maker, else the first person named), falling
+    back to leads.businesses.decision_maker_name from the
     earlier enrichment pass.
     """
-    person = research.get('contact_name') or business.get('decision_maker_name')
-    title = research.get('contact_title') or business.get('decision_maker_title')
+    found_name, found_title = primary_contact(research)
+    person = found_name or business.get('decision_maker_name')
+    title = found_title or business.get('decision_maker_title')
     first, last = split_person_name(person)
 
     draft_custom = {

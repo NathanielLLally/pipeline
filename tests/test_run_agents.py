@@ -154,6 +154,57 @@ class TestSequencing:
         assert research.call_args.args[2] == big
 
 
+class TestStaleEmailsStayExcluded:
+    """Research drops pool addresses the site no longer shows.
+
+    Drafting and import must see that filtered pool, not the original one,
+    or a dead address is drafted to and imported anyway.
+    """
+
+    LIVE = [{'email': 'owner@happytails.example', 'source': 'website'}]
+
+    def _candidate(self):
+        return dict(CANDIDATE, candidate_emails=self.LIVE + [
+            {'email': 'old@happytails.example', 'source': 'website'}])
+
+    def _researched(self):
+        return dict(RESEARCHED, verified_emails=self.LIVE,
+                    excluded_emails=['old@happytails.example'])
+
+    def test_drafting_gets_the_live_pool(self):
+        with patch('flow.run_agents.fetch_candidates', new_callable=AsyncMock,
+                   return_value=[self._candidate()]), \
+             patch('flow.run_agents.research_agent',
+                   return_value=self._researched()), \
+             patch('flow.run_agents.drafting_agent',
+                   return_value=DRAFTED) as draft:
+            _run()
+
+        assert draft.call_args.args[1] == self.LIVE
+
+    def test_import_gets_the_live_pool(self):
+        with patch('flow.run_agents.fetch_candidates', new_callable=AsyncMock,
+                   return_value=[self._candidate()]), \
+             patch('flow.run_agents.research_agent',
+                   return_value=self._researched()), \
+             patch('flow.run_agents.drafting_agent', return_value=DRAFTED), \
+             patch('flow.run_agents.import_contacts',
+                   return_value=IMPORTED) as imp:
+            _run()
+
+        assert imp.call_args.kwargs['candidate_emails'] == self.LIVE
+
+    def test_research_without_a_pool_leaves_the_candidates_alone(self):
+        with patch('flow.run_agents.fetch_candidates', new_callable=AsyncMock,
+                   return_value=[CANDIDATE]), \
+             patch('flow.run_agents.research_agent', return_value=RESEARCHED), \
+             patch('flow.run_agents.drafting_agent',
+                   return_value=DRAFTED) as draft:
+            _run()
+
+        assert draft.call_args.args[1] == CANDIDATE['candidate_emails']
+
+
 class TestAccounting:
     def test_counts_each_outcome(self):
         candidates = [dict(CANDIDATE, business={'id': f'b{i}',

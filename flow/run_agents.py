@@ -182,6 +182,9 @@ async def run_agents(
             continue
 
         counts['researched'] += 1
+        # Research drops pool addresses the site no longer shows; drafting
+        # and import must not resurrect them from the original pool.
+        emails = researched.get('verified_emails', emails)
 
         try:
             with tags(*stage_tags, 'drafting'):

@@ -13,9 +13,10 @@ Can be called with dict params or from a JSON input artifact:
 
 import asyncio
 import os
+import re
 import sys
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, List, Optional, Set, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
@@ -32,7 +33,7 @@ from flow.fetch import fetch_html
 from flow.llm import LLMSchemaError, LLMTransportError, complete_structured
 from flow.decision_maker import record_decision_maker_sync
 from flow.offer import resolve_offer
-from flow.schemas import ResearchOutput
+from flow.schemas import ResearchOutput, primary_contact
 
 CONFIDENCE_THRESHOLD = float(
     os.environ.get('CONFIDENCE_THRESHOLD', '0.7')
@@ -41,9 +42,47 @@ CONFIDENCE_THRESHOLD = float(
 SYSTEM_PROMPT = (
     'You research small service businesses to find specific, evidenced '
     'reasons a lead-generation service would matter to them. Quote evidence '
-    'from the supplied text. Never invent an email address.  Extract business '
-    ' name, pain signals, personalization hook, and a confidence score.'
+    'from the supplied text. Never invent a person or an email address. '
+    'Extract the business name, the people the pages name and which of them '
+    'make decisions, pain signals, a personalization hook, and a confidence '
+    'score.'
 )
+
+# Deliberately loose: it only has to find the addresses a page states so they
+# can be compared with the pool, not validate them. Whole-token matching is the
+# point -- 'info@x.com' must not count as present inside 'myinfo@x.com'.
+_EMAIL = re.compile(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}')
+
+
+def emails_in(*texts: Optional[str]) -> Set[str]:
+    """Every address stated in the texts, lowercased."""
+    found: Set[str] = set()
+    for text in texts:
+        if text:
+            found.update(m.lower() for m in _EMAIL.findall(text))
+    return found
+
+
+def live_pool(
+    verified_emails: list,
+    *texts: Optional[str],
+) -> Tuple[list, List[str]]:
+    """
+    Split the verified pool into (still live, presumed dead).
+
+    Verification is a point-in-time MX check; the site is the current truth.
+    If the pages show some of the pool, they are evidently listing the
+    business's addresses, so a pool address they omit is presumed retired and
+    excluded. If they show none, or all, there is nothing to conclude and the
+    pool stands unchanged.
+    """
+    on_page = emails_in(*texts)
+    shown = [e for e in verified_emails if e['email'].lower() in on_page]
+    if not shown or len(shown) == len(verified_emails):
+        return list(verified_emails), []
+    excluded = [e['email'] for e in verified_emails
+                if e['email'].lower() not in on_page]
+    return shown, excluded
 
 
 def build_research_prompt(
@@ -71,9 +110,15 @@ def build_research_prompt(
 
     parts += [
         '',
-        'Extract contact_name and contact_title if the pages actually name '
-        'a person to write to (an owner, founder or trainer); leave them null '
-        'rather than inventing one. '
+        'Return contacts as a list with one entry for every person the pages '
+        'actually name (owner, founder, director, manager, trainer, groomer, '
+        'vet). Leave the list empty rather than inventing anyone. For each, '
+        'give name; title exactly as the page states it, or null; email only '
+        'if the page ties an address to that person, or null; and '
+        'is_decision_maker true when the title marks someone who decides on '
+        'spending (owner, co-owner, founder, president, CEO, director, '
+        'partner, general or practice manager, medical director), otherwise '
+        'false. List decision makers first. '
         'Return pain_signals as a list of short strings, a '
         'personalization_hook, and inferred_tone as exactly one of: '
         'clinical, warm, premium, casual, sparse -- one of those five words '
@@ -88,7 +133,10 @@ def build_research_prompt(
 
 def _write_back_person(business: dict, research: Any) -> None:
     """
-    Persist a person this pass found, so the next run inherits it.
+    Persist the person this pass found, so the next run inherits it.
+
+    leads.businesses has a single decision_maker column, so only the primary
+    contact goes back: the first decision maker, else the first named person.
 
     Called as soon as a pass parses, not at the end: the name is true whether
     or not the confidence gate later rejects the business, and a rejected
@@ -98,20 +146,48 @@ def _write_back_person(business: dict, research: Any) -> None:
     its artifact and variable; a database problem must not turn a successful
     research pass into a failed one.
     """
-    name = getattr(research, 'contact_name', None)
+    name, title = primary_contact(research.model_dump())
     if not name:
         return
     try:
         record_decision_maker_sync(
             business.get('id'),
             name,
-            getattr(research, 'contact_title', None),
+            title,
             getattr(research, 'confidence', None),
             source_url=business.get('website'),
         )
     except Exception as exc:
         print(f'Note: decision maker writeback failed: '
               f'{type(exc).__name__}: {exc}')
+
+
+def _enforce_pool(research: ResearchOutput, kept: list,
+                  *texts: Optional[str]) -> ResearchOutput:
+    """
+    Strip addresses the output may not carry.
+
+    suggested_email must come from the live pool; a stale or invented one is
+    replaced by the first live address. A contact's email must be in the live
+    pool or stated on the pages, else it is nulled -- an address attributed
+    to a named person is exactly where a model guesses 'first@domain'.
+    """
+    live = {e['email'].lower() for e in kept}
+    allowed = live | emails_in(*texts)
+
+    suggested = research.suggested_email
+    if kept and suggested.lower() not in live:
+        print(f'suggested_email {suggested!r} not in the live pool; '
+              f'using {kept[0]["email"]!r}')
+        suggested = kept[0]['email']
+
+    contacts = [
+        c if c.email is None or c.email.lower() in allowed
+        else c.model_copy(update={'email': None})
+        for c in research.contacts
+    ]
+    return research.model_copy(
+        update={'suggested_email': suggested, 'contacts': contacts})
 
 
 def _set_research_output(result: dict, business_id: str) -> dict:
@@ -176,8 +252,24 @@ def research_agent(
         print(f'Warning: could not write input artifact: {e}')
 
     business_id = business.get('id', 'unknown')
-    prompt = build_research_prompt(
-        business, verified_emails, crawl_excerpt, offer=offer)
+    kept, excluded = live_pool(verified_emails, crawl_excerpt)
+    texts: Tuple[Optional[str], ...] = (crawl_excerpt,)
+
+    def finish(result: dict) -> dict:
+        """Enforce the live pool on the research, then persist and return."""
+        if result['research'] is not None:
+            result['research'] = _enforce_pool(
+                result['research'], kept, *texts).model_dump(mode='json')
+        result['verified_emails'] = kept
+        result['excluded_emails'] = excluded
+        if excluded:
+            print(f'excluded verified emails absent from the site: {excluded}')
+        _set_research_output(result, business_id)
+        write_artifact(result, suffix='output')
+        register_artifact(result, suffix='output', description='output')
+        return result
+
+    prompt = build_research_prompt(business, kept, crawl_excerpt, offer=offer)
 
     try:
         first = complete_structured(prompt, ResearchOutput,
@@ -185,12 +277,8 @@ def research_agent(
                                     agent_model_env='RESEARCH_MODEL')
     except (LLMSchemaError, LLMTransportError) as exc:
         print(f'pass 1 failed: {type(exc).__name__}: {exc}')
-        result = {'status': 'rejected', 'reason': 'llm_schema_failure',
-                  'research': None, 'passes': 1}
-        _set_research_output(result, business_id)
-        write_artifact(result, suffix='output')
-        register_artifact(result, suffix='output', description='output')
-        return result
+        return finish({'status': 'rejected', 'reason': 'llm_schema_failure',
+                       'research': None, 'passes': 1})
 
     _write_back_person(business, first)
 
@@ -198,28 +286,25 @@ def research_agent(
           f'(threshold {CONFIDENCE_THRESHOLD})')
 
     if first.confidence >= CONFIDENCE_THRESHOLD:
-        result = {'status': 'researched', 'research': first.model_dump(mode='json'),
-                  'passes': 1}
-        _set_research_output(result, business_id)
-        write_artifact(result, suffix='output')
-        register_artifact(result, suffix='output', description='output')
-        return result
+        return finish({'status': 'researched', 'research': first,
+                       'passes': 1})
 
     if not first.next_url_to_check:
         print('below threshold and no next_url_to_check; nothing to escalate')
-        result = {'status': 'rejected',
-                  'reason': 'low_confidence_no_escalation_url',
-                  'research': first.model_dump(mode='json'), 'passes': 1}
-        _set_research_output(result, business_id)
-        write_artifact(result, suffix='output')
-        register_artifact(result, suffix='output', description='output')
-        return result
+        return finish({'status': 'rejected',
+                       'reason': 'low_confidence_no_escalation_url',
+                       'research': first, 'passes': 1})
 
     print(f'escalating: fetching {first.next_url_to_check}')
     extra = fetch_html(first.next_url_to_check)
 
+    # The extra page is more evidence of which addresses are live, so the
+    # pool is recomputed over both texts and pass 2 sees only that.
+    texts = (crawl_excerpt, extra)
+    kept, excluded = live_pool(verified_emails, *texts)
+
     second_prompt = build_research_prompt(
-        business, verified_emails, crawl_excerpt,
+        business, kept, crawl_excerpt,
         extra_context=extra or '', offer=offer,
     )
     try:
@@ -228,12 +313,8 @@ def research_agent(
                                      agent_model_env='RESEARCH_MODEL')
     except (LLMSchemaError, LLMTransportError) as exc:
         print(f'pass 2 failed: {type(exc).__name__}: {exc}')
-        result = {'status': 'rejected', 'reason': 'llm_schema_failure',
-                  'research': first.model_dump(mode='json'), 'passes': 2}
-        _set_research_output(result, business_id)
-        write_artifact(result, suffix='output')
-        register_artifact(result, suffix='output', description='output')
-        return result
+        return finish({'status': 'rejected', 'reason': 'llm_schema_failure',
+                       'research': first, 'passes': 2})
 
     # Pass 2 may name someone pass 1 missed, or name them better.
     _write_back_person(business, second)
@@ -241,17 +322,9 @@ def research_agent(
     print(f'pass 2 confidence {second.confidence}')
 
     if second.confidence >= CONFIDENCE_THRESHOLD:
-        result = {'status': 'researched',
-                  'research': second.model_dump(mode='json'), 'passes': 2}
-        _set_research_output(result, business_id)
-        write_artifact(result, suffix='output')
-        register_artifact(result, suffix='output', description='output')
-        return result
+        return finish({'status': 'researched', 'research': second,
+                       'passes': 2})
 
-    result = {'status': 'rejected',
-              'reason': 'low_confidence_after_two_passes',
-              'research': second.model_dump(mode='json'), 'passes': 2}
-    _set_research_output(result, business_id)
-    write_artifact(result, suffix='output')
-    register_artifact(result, suffix='output', description='output')
-    return result
+    return finish({'status': 'rejected',
+                   'reason': 'low_confidence_after_two_passes',
+                   'research': second, 'passes': 2})
