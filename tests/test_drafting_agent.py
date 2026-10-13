@@ -159,6 +159,31 @@ class TestOfferContext:
 
         assert DEFAULT_OFFER in prompt
 
+    def test_prompt_says_it_is_a_cold_email(self):
+        prompt = build_drafting_prompt(RESEARCH, EMAILS)
+
+        assert 'cold email' in prompt.lower()
+
+    def test_cold_email_framing_survives_an_offer_override(self):
+        """A second vertical overrides the offer, never the channel."""
+        prompt = build_drafting_prompt(RESEARCH, EMAILS,
+                                       offer='we send you roofing leads')
+
+        assert 'cold email' in prompt.lower()
+
+    def test_goal_opens_with_their_problem_not_with_us(self):
+        from flow.offer import OUTREACH_GOAL
+
+        assert 'open with a problem they already have' in OUTREACH_GOAL.lower()
+
+    def test_offer_and_goal_carry_no_placeholder_for_the_model_to_echo(self):
+        """An echoed '[City]' gets the whole draft rejected."""
+        from flow.offer import DEFAULT_OFFER, OUTREACH_GOAL
+        from flow.schemas import find_placeholder
+
+        assert find_placeholder(OUTREACH_GOAL) is None
+        assert find_placeholder(DEFAULT_OFFER) is None
+
     def test_prompt_names_the_wire_field_email_text(self):
         """The prompt must name the field the schema asks for, not `body`."""
         prompt = build_drafting_prompt(RESEARCH, EMAILS)
