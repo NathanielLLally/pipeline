@@ -360,3 +360,118 @@ class TestWholeCallDeadline:
 
         assert read(None) == 180.0
         assert read('42') == 42.0
+
+
+def _counts(entries):
+    """Just the call and failure counts, without the token tallies."""
+    return {name: {'calls': e['calls'], 'failed': e['failed']} for name, e in entries.items()}
+
+
+class TestCallCounting:
+    """Per-provider call and failure counts, scoped to a count_calls() block."""
+
+    def test_counts_calls_by_provider_and_model(self):
+        from flow.llm import chat_completion, count_calls
+        with patch('flow.llm.httpx.post', return_value=_reply('hi')):
+            with count_calls() as stats:
+                chat_completion([], 'ollama/gpt-oss:20b')
+                chat_completion([], 'ollama/gemma4:31b')
+                chat_completion([], 'openrouter/x/y:free')
+
+        assert _counts(stats['by_provider']) == {
+            'ollama': {'calls': 2, 'failed': 0},
+            'openrouter': {'calls': 1, 'failed': 0},
+        }
+        assert _counts(stats['by_model'])['ollama/gemma4:31b'] == {'calls': 1, 'failed': 0}
+
+    def test_transport_failure_is_counted_as_failed(self):
+        from flow.llm import chat_completion, count_calls
+        with patch('flow.llm.httpx.post', side_effect=httpx.ReadTimeout('slow')):
+            with count_calls() as stats:
+                with pytest.raises(LLMTransportError):
+                    chat_completion([], 'ollama/gpt-oss:20b')
+
+        assert _counts(stats['by_provider'])['ollama'] == {'calls': 1, 'failed': 1}
+
+    def test_empty_reply_is_counted_as_failed(self):
+        """An empty answer sends the multi-agent to its next model: a wasted call."""
+        from flow.llm import chat_completion, count_calls
+        with patch('flow.llm.httpx.post', return_value=_reply('  ')):
+            with count_calls() as stats:
+                chat_completion([], 'ollama/gpt-oss:20b')
+
+        assert stats['by_provider']['ollama']['failed'] == 1
+
+    def test_unprefixed_model_is_its_own_provider(self):
+        from flow.llm import count_calls
+        with patch('flow.llm.httpx.post', return_value=_reply(json.dumps(VALID))):
+            with count_calls() as stats:
+                complete_structured("describe", ResearchOutput, model='gpt-4o-mini')
+
+        assert _counts(stats['by_provider']) == {'gpt-4o-mini': {'calls': 1, 'failed': 0}}
+
+    def test_calls_outside_the_block_are_not_counted(self):
+        from flow.llm import chat_completion, count_calls
+        with patch('flow.llm.httpx.post', return_value=_reply('hi')):
+            chat_completion([], 'ollama/a')
+            with count_calls() as stats:
+                pass
+            chat_completion([], 'ollama/b')
+
+        assert stats['by_provider'] == {}
+
+    def test_summary_line(self):
+        from flow.llm import format_call_stats
+        stats = {'by_provider': {'openrouter': {'calls': 3, 'failed': 1,
+                                                'prompt_tokens': 900, 'completion_tokens': 100},
+                                 'ollama': {'calls': 40, 'failed': 2,
+                                            'prompt_tokens': 512_000, 'completion_tokens': 30_500}},
+                 'by_model': {}}
+        assert format_call_stats(stats) == (
+            'llm calls: ollama=40 (2 failed, 512.0k in / 30.5k out), '
+            'openrouter=3 (1 failed, 0.9k in / 0.1k out)')
+        assert format_call_stats({'by_provider': {}, 'by_model': {}}) == 'llm calls: none'
+
+    def test_token_usage_is_tallied(self):
+        from flow.llm import chat_completion, count_calls
+        reply = _reply('hi')
+        reply.json.return_value['usage'] = {
+            'prompt_tokens': 100, 'completion_tokens': 20,
+            'completion_tokens_details': {'reasoning_tokens': 5},
+            'prompt_tokens_details': {'cached_tokens': 40},
+        }
+        with patch('flow.llm.httpx.post', return_value=reply):
+            with count_calls() as stats:
+                chat_completion([], 'ollama/gpt-oss:20b')
+                chat_completion([], 'ollama/gpt-oss:20b')
+
+        entry = stats['by_model']['ollama/gpt-oss:20b']
+        assert (entry['prompt_tokens'], entry['completion_tokens'],
+                entry['reasoning_tokens'], entry['cached_tokens']) == (200, 40, 10, 80)
+        assert stats['by_provider']['ollama']['prompt_tokens'] == 200
+
+    def test_missing_usage_counts_zero_tokens(self):
+        from flow.llm import chat_completion, count_calls
+        with patch('flow.llm.httpx.post', return_value=_reply('hi')):
+            with count_calls() as stats:
+                chat_completion([], 'ollama/a')
+
+        assert stats['by_model']['ollama/a']['prompt_tokens'] == 0
+
+
+class TestAgentReasoningEffort:
+    def test_agent_effort_is_sent_on_the_single_model_path(self, monkeypatch):
+        monkeypatch.setenv('RESEARCH_REASONING_EFFORT', 'high')
+        with patch('flow.llm.httpx.post', return_value=_reply(json.dumps(VALID))) as post:
+            complete_structured("describe", ResearchOutput,
+                                agent_model_env='RESEARCH_MODEL')
+
+        assert post.call_args.kwargs['json']['reasoning_effort'] == 'high'
+
+    def test_no_effort_unless_configured(self, monkeypatch):
+        monkeypatch.delenv('RESEARCH_REASONING_EFFORT', raising=False)
+        with patch('flow.llm.httpx.post', return_value=_reply(json.dumps(VALID))) as post:
+            complete_structured("describe", ResearchOutput,
+                                agent_model_env='RESEARCH_MODEL')
+
+        assert 'reasoning_effort' not in post.call_args.kwargs['json']

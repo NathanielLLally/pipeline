@@ -74,6 +74,13 @@ class TestDefaults:
     def test_default_batch_size_matches_the_spec(self):
         assert DEFAULT_BATCH_SIZE == 50
 
+    def test_batch_default_is_tied_to_the_worker_count(self):
+        from flow.agents.selector import BATCH_PER_WORKER, DEFAULT_CONCURRENCY
+        # 5 workers: the knee of the 2026-10-13 sweep (5 single-slot Ollama
+        # accounts behind the proxy); 8 added latency, not throughput.
+        assert DEFAULT_CONCURRENCY == 5
+        assert DEFAULT_BATCH_SIZE == DEFAULT_CONCURRENCY * BATCH_PER_WORKER
+
 
 class TestShapeCandidate:
     def _row(self, **over):

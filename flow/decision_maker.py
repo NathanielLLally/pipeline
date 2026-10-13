@@ -1,7 +1,7 @@
 """
 Write the person research found back to leads.businesses.
 
-The research node extracts contact_name/contact_title from the live pages,
+The research node extracts its contacts (name, title) from the live pages,
 and that is the better source: decision_maker_name is populated for only 16%
 of Tier 1 and 5% of Tier 2 businesses (measured 2026-10-06). Writing it back
 means the next run -- and every other consumer of leads.businesses -- gets

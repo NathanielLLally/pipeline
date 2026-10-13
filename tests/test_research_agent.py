@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from flow.agents.research import (
     CONFIDENCE_THRESHOLD,
     build_research_prompt,
+    live_pool,
     research_agent,
 )
 from flow.schemas import ResearchOutput
@@ -259,9 +260,9 @@ class TestDecisionMakerWriteback:
 
     def test_writes_back_an_extracted_person(self):
         with patch('flow.agents.research.complete_structured',
-                   return_value=_out(confidence=0.9,
-                                     contact_name='Wyatt Smith',
-                                     contact_title='Owner')), \
+                   return_value=_out(confidence=0.9, contacts=[
+                       {'name': 'Wyatt Smith', 'title': 'Owner',
+                        'is_decision_maker': True}])), \
              patch('flow.agents.research.record_decision_maker_sync') as record:
             research_agent.fn(BUSINESS, EMAILS, "text")
 
@@ -272,7 +273,7 @@ class TestDecisionMakerWriteback:
 
     def test_no_person_means_no_write(self):
         with patch('flow.agents.research.complete_structured',
-                   return_value=_out(confidence=0.9, contact_name=None)), \
+                   return_value=_out(confidence=0.9, contacts=[])), \
              patch('flow.agents.research.record_decision_maker_sync') as record:
             research_agent.fn(BUSINESS, EMAILS, "text")
 
@@ -280,7 +281,7 @@ class TestDecisionMakerWriteback:
 
     def test_a_rejected_business_still_writes_back_a_found_person(self):
         """The name is true regardless of whether the hook was good enough."""
-        low = _out(confidence=0.2, contact_name='Megan Fields',
+        low = _out(confidence=0.2, contacts=[{'name': 'Megan Fields'}],
                    next_url_to_check=None)
         with patch('flow.agents.research.complete_structured',
                    return_value=low), \
@@ -293,9 +294,194 @@ class TestDecisionMakerWriteback:
     def test_a_writeback_failure_does_not_fail_research(self):
         with patch('flow.agents.research.complete_structured',
                    return_value=_out(confidence=0.9,
-                                     contact_name='Wyatt Smith')), \
+                                     contacts=[{'name': 'Wyatt Smith'}])), \
              patch('flow.agents.research.record_decision_maker_sync',
                    side_effect=RuntimeError('db down')):
             result = research_agent.fn(BUSINESS, EMAILS, "text")
 
         assert result['status'] == 'researched'
+
+    def test_writes_back_the_decision_maker_not_the_first_name_listed(self):
+        """leads.businesses has one decision_maker column; the owner gets it."""
+        contacts = [
+            {'name': 'Megan Fields', 'title': 'Head Trainer'},
+            {'name': 'Wyatt Smith', 'title': 'Owner',
+             'is_decision_maker': True},
+        ]
+        with patch('flow.agents.research.complete_structured',
+                   return_value=_out(confidence=0.9, contacts=contacts)), \
+             patch('flow.agents.research.record_decision_maker_sync') as record:
+            research_agent.fn(BUSINESS, EMAILS, "text")
+
+        record.assert_called_once()
+        assert record.call_args.args[1:3] == ('Wyatt Smith', 'Owner')
+
+
+def _emails(*addresses):
+    return [{"email": a, "verified_at": "2026-10-03T00:00:00Z",
+             "source": "leads.business_email"} for a in addresses]
+
+
+POOL = _emails("owner@happytails.example", "info@happytails.example",
+               "old@happytails.example")
+
+
+class TestLivePool:
+    """
+    A verified address the site no longer shows is probably dead.
+
+    Verification is a point-in-time MX check; the site is the current truth.
+    When the page shows some of the pool, it is evidently listing its
+    addresses, so the ones it omits are treated as gone. When it shows none,
+    there is no signal either way and the whole pool stands.
+    """
+
+    def test_partial_match_keeps_only_the_addresses_on_the_page(self):
+        kept, excluded = live_pool(
+            POOL, "Email owner@happytails.example or info@happytails.example")
+
+        assert [e['email'] for e in kept] == [
+            "owner@happytails.example", "info@happytails.example"]
+        assert excluded == ["old@happytails.example"]
+
+    def test_no_match_keeps_the_whole_pool(self):
+        kept, excluded = live_pool(POOL, "Call us to book.")
+
+        assert kept == POOL
+        assert excluded == []
+
+    def test_full_match_excludes_nothing(self):
+        text = ("owner@happytails.example info@happytails.example "
+                "old@happytails.example")
+        kept, excluded = live_pool(POOL, text)
+
+        assert kept == POOL
+        assert excluded == []
+
+    def test_matching_ignores_case(self):
+        kept, excluded = live_pool(POOL, "Write to OWNER@HappyTails.example")
+
+        assert [e['email'] for e in kept] == ["owner@happytails.example"]
+
+    def test_an_address_inside_a_longer_one_is_not_a_match(self):
+        """'info@x' must not match inside 'myinfo@x'."""
+        kept, excluded = live_pool(
+            POOL, "myinfo@happytails.example and owner@happytails.example")
+
+        assert [e['email'] for e in kept] == ["owner@happytails.example"]
+        assert "info@happytails.example" in excluded
+
+    def test_any_of_several_texts_counts(self):
+        kept, _ = live_pool(POOL, "owner@happytails.example",
+                            "info@happytails.example")
+
+        assert {e['email'] for e in kept} == {
+            "owner@happytails.example", "info@happytails.example"}
+
+    def test_none_text_is_tolerated(self):
+        kept, excluded = live_pool(POOL, None)
+
+        assert kept == POOL
+        assert excluded == []
+
+
+class TestStaleEmailsAreExcluded:
+    TEXT = "Contact owner@happytails.example to book."
+
+    def test_prompt_shows_only_the_live_pool(self):
+        with patch('flow.agents.research.complete_structured',
+                   return_value=_out(confidence=0.9)) as llm:
+            research_agent.fn(BUSINESS, POOL, self.TEXT)
+
+        prompt = llm.call_args.args[0]
+        assert "owner@happytails.example" in prompt
+        assert "old@happytails.example" not in prompt
+        assert "info@happytails.example" not in prompt
+
+    def test_result_carries_the_live_pool_and_the_exclusions(self):
+        with patch('flow.agents.research.complete_structured',
+                   return_value=_out(confidence=0.9)):
+            result = research_agent.fn(BUSINESS, POOL, self.TEXT)
+
+        assert [e['email'] for e in result['verified_emails']] == [
+            "owner@happytails.example"]
+        assert sorted(result['excluded_emails']) == [
+            "info@happytails.example", "old@happytails.example"]
+
+    def test_rejections_carry_the_live_pool_too(self):
+        with patch('flow.agents.research.complete_structured',
+                   return_value=_out(confidence=0.1, next_url_to_check=None)):
+            result = research_agent.fn(BUSINESS, POOL, self.TEXT)
+
+        assert result['status'] == 'rejected'
+        assert [e['email'] for e in result['verified_emails']] == [
+            "owner@happytails.example"]
+
+    def test_a_stale_suggested_email_is_replaced_from_the_live_pool(self):
+        with patch('flow.agents.research.complete_structured',
+                   return_value=_out(confidence=0.9,
+                                     suggested_email="old@happytails.example")):
+            result = research_agent.fn(BUSINESS, POOL, self.TEXT)
+
+        assert result['research']['suggested_email'] == \
+            "owner@happytails.example"
+
+    def test_a_contact_email_that_is_stale_is_dropped(self):
+        contacts = [{'name': 'Wyatt Smith', 'title': 'Owner',
+                     'email': 'old@happytails.example',
+                     'is_decision_maker': True}]
+        with patch('flow.agents.research.complete_structured',
+                   return_value=_out(confidence=0.9, contacts=contacts)):
+            result = research_agent.fn(BUSINESS, POOL, self.TEXT)
+
+        assert result['research']['contacts'][0]['email'] is None
+        assert result['research']['contacts'][0]['name'] == 'Wyatt Smith'
+
+    def test_a_contact_email_from_the_page_is_kept(self):
+        """An address the page states is evidence, pool or not."""
+        text = self.TEXT + " Trainer Megan: megan@happytails.example"
+        contacts = [{'name': 'Megan Fields',
+                     'email': 'megan@happytails.example'}]
+        with patch('flow.agents.research.complete_structured',
+                   return_value=_out(confidence=0.9, contacts=contacts)):
+            result = research_agent.fn(BUSINESS, POOL, text)
+
+        assert result['research']['contacts'][0]['email'] == \
+            'megan@happytails.example'
+
+    def test_an_invented_contact_email_is_dropped(self):
+        contacts = [{'name': 'Wyatt Smith',
+                     'email': 'wyatt@happytails.example'}]
+        with patch('flow.agents.research.complete_structured',
+                   return_value=_out(confidence=0.9, contacts=contacts)):
+            result = research_agent.fn(BUSINESS, POOL, self.TEXT)
+
+        assert result['research']['contacts'][0]['email'] is None
+
+    def test_pass_two_recomputes_the_pool_with_the_extra_page(self):
+        """An address shown only on the escalation page is live too."""
+        low = _out(confidence=0.3,
+                   next_url_to_check="https://happytails.example/contact")
+        with patch('flow.agents.research.complete_structured',
+                   side_effect=[low, _out(confidence=0.9)]) as llm, \
+             patch('flow.agents.research.fetch_html',
+                   return_value="info@happytails.example"):
+            result = research_agent.fn(BUSINESS, POOL, self.TEXT)
+
+        second_prompt = llm.call_args_list[1].args[0]
+        assert "info@happytails.example" in second_prompt
+        assert "old@happytails.example" not in second_prompt
+        assert result['excluded_emails'] == ["old@happytails.example"]
+
+
+class TestPromptAsksForEveryPerson:
+    def test_prompt_asks_for_contacts_and_decision_makers(self):
+        prompt = build_research_prompt(BUSINESS, EMAILS, "text")
+
+        assert 'contacts' in prompt
+        assert 'is_decision_maker' in prompt
+
+    def test_prompt_still_forbids_inventing_a_person(self):
+        prompt = build_research_prompt(BUSINESS, EMAILS, "text").lower()
+
+        assert 'rather than inventing' in prompt

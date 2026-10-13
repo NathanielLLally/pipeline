@@ -29,6 +29,11 @@ Deployments:
   candidate-selector  batch query: what would the next batch be, without
                       spending a token.
 
+Models: each LLM agent uses its own RESEARCH_MODEL / DRAFTING_MODEL /
+ANALYSIS_MODEL, else LLM_MODEL. Setting any of them to 'multi-agent' answers
+that agent through the router/specialist/critic/evaluator graph in
+flow/multi_agent.py instead of a single model. Read per call, so no restart.
+
 Must run on the same host as whatever triggers these: PREFECT_API_URL reads
 127.0.0.1:4200 on both the workstation and the prod host while meaning
 different servers.
@@ -72,6 +77,12 @@ if __name__ == "__main__":
 
     # Optionally serve run_agents as the scheduled entry point
     if os.getenv("SERVE_RUN_AGENTS", "").lower() in ("1", "true", "yes"):
-        deployments.insert(0, run_agents.to_deployment(name="run-agents"))
+        # One batch at a time: a batch already fills the Ollama slots
+        # (DEFAULT_CONCURRENCY), so an overlapping one only adds queueing.
+        # RUN_AGENTS_CRON (e.g. "0 * * * *") schedules it; batches claim
+        # their businesses, so a run that overlaps a manual one is still safe.
+        cron = os.getenv("RUN_AGENTS_CRON") or None
+        deployments.insert(0, run_agents.to_deployment(
+            name="run-agents", concurrency_limit=1, cron=cron))
 
     serve(*deployments)

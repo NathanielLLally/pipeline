@@ -45,7 +45,7 @@ RESEARCH = {
     'inferred_tone': 'warm', 'confidence': 0.88,
     'pain_signals': ['no online booking', 'no lead form'],
     'evidence': ['Call us to book'], 'suggested_email': 'a@b.com',
-    'contact_name': None, 'contact_title': None,
+    'contacts': [],
 }
 DRAFT = {
     'selected_emails': ['training@homedogtraining.com'],
@@ -282,14 +282,28 @@ class TestPersonPrecedence:
     """Research reads the live page; the DB column is a prior enrichment pass."""
 
     def test_research_extracted_person_wins(self):
-        research = dict(RESEARCH, contact_name='Megan Fields',
-                        contact_title='Head Trainer')
+        research = dict(RESEARCH, contacts=[
+            {'name': 'Megan Fields', 'title': 'Head Trainer',
+             'is_decision_maker': False}])
 
         p = build_contact_payloads(BUSINESS, research, DRAFT)[0]
 
         assert p['first_name'] == 'Megan'
         assert p['last_name'] == 'Fields'
         assert p['custom_fields']['decision_maker_title'] == 'Head Trainer'
+
+    def test_research_decision_maker_wins_among_several_contacts(self):
+        research = dict(RESEARCH, contacts=[
+            {'name': 'Megan Fields', 'title': 'Head Trainer',
+             'is_decision_maker': False},
+            {'name': 'Dana Cruz', 'title': 'Owner',
+             'is_decision_maker': True},
+        ])
+
+        p = build_contact_payloads(BUSINESS, research, DRAFT)[0]
+
+        assert p['first_name'] == 'Dana'
+        assert p['custom_fields']['decision_maker_title'] == 'Owner'
 
     def test_falls_back_to_the_database_column(self):
         p = build_contact_payloads(BUSINESS, RESEARCH, DRAFT)[0]

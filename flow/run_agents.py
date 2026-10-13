@@ -16,26 +16,43 @@ own state, and can be retried on its own without re-running its batch.
 Two modes:
   business_ids=None  -> select a batch (tiers, batch_size)
   business_ids=[...] -> research exactly those, bypassing the batch filters
+
+From the command line, with .env sourced:
+
+    $ python flow/run_agents.py --batch-size 3
+    $ python flow/run_agents.py --business-ids <id> <id> --research-tier frontier
+
+Research runs at reasoning effort 'high' from here unless told otherwise; a
+--research-tier also switches research to the multi-agent graph, the only
+place a tier exists. Both are set as RESEARCH_* environment variables for
+this process, so they reach research and nothing else.
 """
 
+import argparse
+import asyncio
+import json
+import os
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from prefect import flow, tags
 
 from flow.agents.analysis import analysis_agent
+from flow.llm import MULTI_AGENT_MODEL, count_calls, format_call_stats
 from flow.agents.drafting import drafting_agent
 from flow.agents.import_contacts import import_contacts
 from flow.agents.research import research_agent
 from flow.jina_crawl import jina_crawl
 from flow.mx_check import verify_business_emails
+from flow.outreach_state import claim_businesses, record_outcome
 from flow.agents.selector import (
+    BATCH_PER_WORKER,
+    DEFAULT_CONCURRENCY,
     needs_email_verification,
     needs_jina_crawl,
-    DEFAULT_BATCH_SIZE,
     DEFAULT_TIERS,
     fetch_candidates,
 )
@@ -102,14 +119,38 @@ async def run_agents(
     template_slug: str = 'default',
     offer: Optional[str] = None,
     preflight: bool = True,
+    concurrency: Optional[int] = None,
 ) -> dict:
     """
     Select businesses, research each, draft for the ones that pass, analyze
     each draft, and finally import each drafted business to Warmbly as contacts.
 
+    Up to `concurrency` businesses (default DEFAULT_CONCURRENCY) go through
+    that chain at once, each on its own worker thread.
+
     Imported contacts are not assigned to a campaign: that is the human review
     gate, so nothing sends until someone assigns them.
+
+    The result's llm_calls counts every proxy call the batch made, by provider
+    and by model, failures and tokens included -- see flow.llm.count_calls.
     """
+    concurrency = max(1, concurrency or DEFAULT_CONCURRENCY)
+    with count_calls() as llm_calls:
+        result = await _run_batch(tiers, batch_size, business_ids,
+                                  template_slug, offer, preflight, concurrency)
+    print(format_call_stats(llm_calls))
+    return {**result, 'concurrency': concurrency, 'llm_calls': llm_calls}
+
+
+async def _run_batch(
+    tiers: Optional[List[str]],
+    batch_size: Optional[int],
+    business_ids: Optional[List[str]],
+    template_slug: str,
+    offer: Optional[str],
+    preflight: bool,
+    concurrency: int,
+) -> dict:
     if business_ids:
         print(f'researching {len(business_ids)} named business(es)')
         candidates = await fetch_candidates(
@@ -123,132 +164,67 @@ async def run_agents(
             print(f'NOT FOUND, skipped: {not_found}')
     else:
         tiers = tiers or DEFAULT_TIERS
-        batch_size = batch_size or DEFAULT_BATCH_SIZE
+        # Sized to the workers, not fixed: a default batch is about an hour.
+        batch_size = batch_size or concurrency * BATCH_PER_WORKER
         print(f'selecting up to {batch_size} from tiers {tiers}')
         candidates = await fetch_candidates(
             tiers=tiers, batch_size=batch_size, include_ids=None)
         not_found = []
 
-    print(f'selected {len(candidates)}')
+    # Claim before any work, so a concurrent run cannot take the same
+    # businesses. Named businesses are claimed whatever their state.
+    selected_ids = [c['business']['id'] for c in candidates]
+    claimed = set(await claim_businesses(selected_ids, _flow_run_id(),
+                                         force=bool(business_ids)))
+    if len(claimed) < len(selected_ids):
+        print(f'{len(selected_ids) - len(claimed)} business(es) already claimed by '
+              f'another run; skipped')
+    candidates = [c for c in candidates if c['business']['id'] in claimed]
+
+    print(f'selected {len(candidates)}; running {min(concurrency, len(candidates) or 1)} at a time')
 
     if preflight and candidates:
         candidates = await run_preflight(candidates)
 
+    # The agents are sync flows; each business's chain runs on a worker
+    # thread. asyncio.to_thread copies the context, so the parent flow run,
+    # the per-business tags() and the count_calls() tally all carry over.
+    # The semaphore is the number of businesses in flight -- and so, since a
+    # business makes its model calls one after another, the number of
+    # concurrent model calls the batch puts on the proxy.
+    slots = asyncio.Semaphore(concurrency)
+
+    async def worker(candidate: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
+        async with slots:
+            try:
+                result = await asyncio.to_thread(
+                    _process_business, candidate, template_slug, offer)
+            except Exception as exc:
+                # _process_business handles each stage's failures; this is
+                # for a bug in it, which must still cost only this business.
+                business = candidate['business']
+                print(f"worker errored for {business.get('business_name')}: "
+                      f"{type(exc).__name__}: {exc}")
+                result = ({'business_id': business.get('id'),
+                           'business_name': business.get('business_name'),
+                           'research_status': 'error', 'draft_status': None,
+                           'error': f'{type(exc).__name__}: {exc}'}, ['errored'])
+        # Recorded as each business finishes, so a batch that dies part way
+        # leaves an accurate record of what it got through.
+        await record_outcome(result[0])
+        return result
+
+    # gather returns in candidate order, and the tallies are applied here on
+    # the event loop, so no thread ever touches `counts` or `outcomes`.
+    results = await asyncio.gather(*(worker(c) for c in candidates))
+
     outcomes: List[Dict[str, Any]] = []
     counts = {'researched': 0, 'rejected': 0, 'drafted': 0, 'imported': 0,
               'import_failed': 0, 'analyzed': 0, 'errored': 0}
-
-    for candidate in candidates:
-        business = candidate['business']
-        emails = candidate['candidate_emails']
-        outcome: Dict[str, Any] = {
-            'business_id': business.get('id'),
-            'business_name': business.get('business_name'),
-            'research_status': None,
-            'draft_status': None,
-        }
-
-        # The subflows name their artifacts from the ambient flow run tags
-        # (flow/artifacts.py: artifact_filename). Untagged, every stage of
-        # every business writes to 'unknown-input.json'/'unknown-output.json'
-        # and overwrites whatever ran before it, so a 50-business batch leaves
-        # two files behind. Tagging the call site -- which is what Prefect
-        # reads, not the callee -- gives each one
-        # '{business_id}-{stage}-{input|output}.json'.
-        stage_tags = (str(business.get('id') or 'unknown'),)
-
-        try:
-            # Subflow: its own flow run, retryable on its own. The crawl text
-            # goes through whole -- no truncation anywhere in this path.
-            with tags(*stage_tags, 'research'):
-                researched = research_agent(
-                    business, emails, candidate['crawl_excerpt'], offer)
-        except Exception as exc:
-            # One bad business must not cost the other 49 in the batch.
-            print(f"research errored for {business.get('business_name')}: "
-                  f"{type(exc).__name__}: {exc}")
-            outcome['research_status'] = 'error'
-            outcome['error'] = f'{type(exc).__name__}: {exc}'
-            counts['errored'] += 1
-            outcomes.append(outcome)
-            continue
-
-        outcome['research_status'] = researched['status']
-
-        if researched['status'] != 'researched':
-            outcome['rejection_reason'] = researched.get('reason')
-            counts['rejected'] += 1
-            outcomes.append(outcome)
-            continue
-
-        counts['researched'] += 1
-
-        try:
-            with tags(*stage_tags, 'drafting'):
-                drafted = drafting_agent(
-                    researched['research'], emails, template_slug, offer)
-        except Exception as exc:
-            print(f"drafting errored for {business.get('business_name')}: "
-                  f"{type(exc).__name__}: {exc}")
-            outcome['draft_status'] = 'error'
-            outcome['error'] = f'{type(exc).__name__}: {exc}'
-            counts['errored'] += 1
-            outcomes.append(outcome)
-            continue
-
-        outcome['draft_status'] = drafted['status']
-        outcome['analysis_status'] = None
-        if drafted['status'] == 'drafted':
-            counts['drafted'] += 1
-            outcome['draft'] = drafted['draft']
-            outcome['outside_known_pool'] = drafted.get('outside_known_pool', [])
-
-            # Analyze before import, so the import is the last thing a
-            # business does. Analysis is a quality report, not a gate: a slow
-            # or failing LLM here is recorded and the import still runs. The
-            # contact lands unassigned to any campaign.
-            try:
-                with tags(*stage_tags, 'analysis'):
-                    analyzed = analysis_agent(
-                        research=researched['research'],
-                        draft=drafted['draft'],
-                        business=business
-                    )
-            except Exception as exc:
-                print(f"analysis errored for {business.get('business_name')}: "
-                      f"{type(exc).__name__}: {exc}")
-                outcome['analysis_status'] = 'error'
-                outcome['analysis_error'] = f'{type(exc).__name__}: {exc}'
-            else:
-                outcome['analysis_status'] = analyzed.get('status')
-                if analyzed.get('status') == 'analyzed':
-                    counts['analyzed'] += 1
-                    outcome['analysis'] = analyzed.get('analysis')
-
-            try:
-                with tags(*stage_tags, 'import'):
-                    imported = import_contacts(
-                        business=business,
-                        research=researched['research'],
-                        draft=drafted['draft'],
-                        candidate_emails=emails,
-                    )
-            except Exception as exc:
-                print(f"import errored for {business.get('business_name')}: "
-                      f"{type(exc).__name__}: {exc}")
-                outcome['import_status'] = 'error'
-                outcome['import_error'] = f'{type(exc).__name__}: {exc}'
-                counts['import_failed'] += 1
-            else:
-                outcome['import_status'] = imported.get('status')
-                if imported.get('status') == 'imported':
-                    counts['imported'] += 1
-                    outcome['contacts_created'] = len(imported.get('created') or [])
-                else:
-                    counts['import_failed'] += 1
-                    outcome['import_reason'] = imported.get('reason')
-
+    for outcome, tallies in results:
         outcomes.append(outcome)
+        for key in tallies:
+            counts[key] += 1
 
     print(f"selected={len(candidates)} researched={counts['researched']} "
           f"rejected={counts['rejected']} drafted={counts['drafted']} "
@@ -261,3 +237,193 @@ async def run_agents(
         'outcomes': outcomes,
         **counts,
     }
+
+
+def _flow_run_id() -> Optional[str]:
+    """This run's Prefect id, for the claim record; None outside a flow run."""
+    try:
+        from prefect.runtime import flow_run
+        return str(flow_run.id) if flow_run.id else None
+    except Exception:
+        return None
+
+
+def _process_business(
+    candidate: Dict[str, Any],
+    template_slug: str,
+    offer: Optional[str],
+) -> Tuple[Dict[str, Any], List[str]]:
+    """
+    One business through research, drafting, analysis and import.
+
+    Runs on a worker thread. Returns its outcome and the names of the
+    counters it adds to; it touches no shared state.
+    """
+    business = candidate['business']
+    emails = candidate['candidate_emails']
+    tallies: List[str] = []
+    outcome: Dict[str, Any] = {
+        'business_id': business.get('id'),
+        'business_name': business.get('business_name'),
+        'research_status': None,
+        'draft_status': None,
+    }
+
+    # The subflows name their artifacts from the ambient flow run tags
+    # (flow/artifacts.py: artifact_filename). Untagged, every stage of
+    # every business writes to 'unknown-input.json'/'unknown-output.json'
+    # and overwrites whatever ran before it, so a 50-business batch leaves
+    # two files behind. Tagging the call site -- which is what Prefect
+    # reads, not the callee -- gives each one
+    # '{business_id}-{stage}-{input|output}.json'.
+    stage_tags = (str(business.get('id') or 'unknown'),)
+
+    try:
+        # Subflow: its own flow run, retryable on its own. The crawl text
+        # goes through whole -- no truncation anywhere in this path.
+        with tags(*stage_tags, 'research'):
+            researched = research_agent(
+                business, emails, candidate['crawl_excerpt'], offer)
+    except Exception as exc:
+        # One bad business must not cost the other 49 in the batch.
+        print(f"research errored for {business.get('business_name')}: "
+              f"{type(exc).__name__}: {exc}")
+        outcome['research_status'] = 'error'
+        outcome['error'] = f'{type(exc).__name__}: {exc}'
+        return outcome, ['errored']
+
+    outcome['research_status'] = researched['status']
+
+    if researched['status'] != 'researched':
+        outcome['rejection_reason'] = researched.get('reason')
+        return outcome, ['rejected']
+
+    tallies.append('researched')
+    # Research drops pool addresses the site no longer shows; drafting
+    # and import must not resurrect them from the original pool.
+    emails = researched.get('verified_emails', emails)
+
+    try:
+        with tags(*stage_tags, 'drafting'):
+            drafted = drafting_agent(
+                researched['research'], emails, template_slug, offer)
+    except Exception as exc:
+        print(f"drafting errored for {business.get('business_name')}: "
+              f"{type(exc).__name__}: {exc}")
+        outcome['draft_status'] = 'error'
+        outcome['error'] = f'{type(exc).__name__}: {exc}'
+        return outcome, tallies + ['errored']
+
+    outcome['draft_status'] = drafted['status']
+    outcome['analysis_status'] = None
+    if drafted['status'] != 'drafted':
+        return outcome, tallies
+
+    tallies.append('drafted')
+    outcome['draft'] = drafted['draft']
+    outcome['outside_known_pool'] = drafted.get('outside_known_pool', [])
+
+    # Analyze before import, so the import is the last thing a
+    # business does. Analysis is a quality report, not a gate: a slow
+    # or failing LLM here is recorded and the import still runs. The
+    # contact lands unassigned to any campaign.
+    try:
+        with tags(*stage_tags, 'analysis'):
+            analyzed = analysis_agent(
+                research=researched['research'],
+                draft=drafted['draft'],
+                business=business
+            )
+    except Exception as exc:
+        print(f"analysis errored for {business.get('business_name')}: "
+              f"{type(exc).__name__}: {exc}")
+        outcome['analysis_status'] = 'error'
+        outcome['analysis_error'] = f'{type(exc).__name__}: {exc}'
+    else:
+        outcome['analysis_status'] = analyzed.get('status')
+        if analyzed.get('status') == 'analyzed':
+            tallies.append('analyzed')
+            outcome['analysis'] = analyzed.get('analysis')
+
+    try:
+        with tags(*stage_tags, 'import'):
+            imported = import_contacts(
+                business=business,
+                research=researched['research'],
+                draft=drafted['draft'],
+                candidate_emails=emails,
+            )
+    except Exception as exc:
+        print(f"import errored for {business.get('business_name')}: "
+              f"{type(exc).__name__}: {exc}")
+        outcome['import_status'] = 'error'
+        outcome['import_error'] = f'{type(exc).__name__}: {exc}'
+        tallies.append('import_failed')
+    else:
+        outcome['import_status'] = imported.get('status')
+        if imported.get('status') == 'imported':
+            tallies.append('imported')
+            created = imported.get('created') or []
+            outcome['contacts_created'] = len(created)
+            outcome['warmbly_contact_ids'] = [c.get('id') for c in created if c.get('id')]
+            outcome['warmbly_draft_ids'] = list(imported.get('drafts') or [])
+        else:
+            tallies.append('import_failed')
+            outcome['import_reason'] = imported.get('reason')
+
+    return outcome, tallies
+
+
+def main(argv: Optional[List[str]] = None) -> dict:
+    """Run one batch in this process. See the module docstring."""
+    from flow.multi_agent import TIERS
+
+    parser = argparse.ArgumentParser(
+        prog='run_agents', description='Research, draft, analyze and import a batch.')
+    parser.add_argument('--batch-size', type=int,
+                        help=f'businesses to select (default: {BATCH_PER_WORKER} per worker)')
+    parser.add_argument('--tiers', nargs='+', metavar='TIER',
+                        help=f'ICP tiers to select from (default: {DEFAULT_TIERS})')
+    parser.add_argument('--business-ids', nargs='+', metavar='ID',
+                        help='research exactly these businesses')
+    parser.add_argument('--template-slug', default='default')
+    parser.add_argument('--offer')
+    parser.add_argument('--concurrency', type=int,
+                        help=f'businesses in flight at once (default: {DEFAULT_CONCURRENCY})')
+    parser.add_argument('--no-preflight', action='store_true',
+                        help='skip mx_check and the Jina crawl')
+    parser.add_argument('--research-reasoning-effort', default='high',
+                        choices=['low', 'medium', 'high', 'none'],
+                        help="reasoning effort for research's answering calls "
+                             "(default: high, the strongest every model honors; "
+                             "'none' sends none)")
+    parser.add_argument('--research-tier', choices=TIERS,
+                        help='answer research with this multi-agent tier, skipping '
+                             'the router; implies RESEARCH_MODEL=multi-agent')
+    args = parser.parse_args(argv)
+
+    if args.research_reasoning_effort == 'none':
+        os.environ.pop('RESEARCH_REASONING_EFFORT', None)
+    else:
+        os.environ['RESEARCH_REASONING_EFFORT'] = args.research_reasoning_effort
+    if args.research_tier:
+        os.environ['RESEARCH_TIER'] = args.research_tier
+        os.environ['RESEARCH_MODEL'] = MULTI_AGENT_MODEL
+
+    print(f"research: model={os.environ.get('RESEARCH_MODEL') or os.environ.get('LLM_MODEL')} "
+          f"tier={os.environ.get('RESEARCH_TIER') or 'router'} "
+          f"effort={os.environ.get('RESEARCH_REASONING_EFFORT') or 'default'}")
+
+    return asyncio.run(run_agents(
+        tiers=args.tiers,
+        batch_size=args.batch_size,
+        business_ids=args.business_ids,
+        template_slug=args.template_slug,
+        offer=args.offer,
+        preflight=not args.no_preflight,
+        concurrency=args.concurrency,
+    ))
+
+
+if __name__ == '__main__':
+    print(json.dumps(main(), indent=1, default=str))

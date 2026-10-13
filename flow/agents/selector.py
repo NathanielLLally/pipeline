@@ -22,8 +22,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 import asyncpg
 from prefect import flow
 
+from flow.outreach_state import STALE_CLAIM, TABLE as OUTREACH_TABLE
+from flow.outreach_state import table_exists as outreach_table_exists
+
 DEFAULT_TIERS = ['Tier 1', 'Tier 2']
-DEFAULT_BATCH_SIZE = 50
+# Businesses run_agents works on at once. Each makes its model calls one after
+# another, so this is also the number of concurrent calls on the proxy. Set
+# from the 2026-10-13 sweep: the proxy fronts 5 single-slot Ollama accounts,
+# and research throughput went 35/h (1 worker) -> 104/h (5) -> 101/h (8, with
+# p95 latency doubled). Raise it only with more Ollama slots behind the proxy.
+DEFAULT_CONCURRENCY = int(os.environ.get('RUN_AGENTS_CONCURRENCY', '5'))
+# A worker finishes roughly 10 businesses an hour, so a default batch is
+# about an hour's work whatever the worker count.
+BATCH_PER_WORKER = 10
+DEFAULT_BATCH_SIZE = 5 * BATCH_PER_WORKER
 
 # No cap on crawl text, deliberately and by instruction. The research agent
 # reads everything available: a hook invented from half a page is worthless,
@@ -90,6 +102,7 @@ def build_candidate_query(
     batch_size: Optional[int],
     exclude_ids: Optional[List[str]] = None,
     include_ids: Optional[List[str]] = None,
+    exclude_processed: bool = False,
 ) -> tuple:
     """
     Build the selection SQL and its bound parameters.
@@ -98,6 +111,10 @@ def build_candidate_query(
     naming a business has already decided it is worth researching, so the
     tier, email and crawl-text predicates are bypassed rather than silently
     dropping it. Otherwise select a batch by tier.
+
+    `exclude_processed` (batch mode only) skips businesses the pipeline has
+    already taken -- see flow/outreach_state.py. It needs that table, so the
+    caller sets it only when the table exists.
 
     Returns (sql, params). Everything variable is a bound parameter: a batch
     size or id list spliced into the text would be an injection vector.
@@ -117,6 +134,15 @@ def build_candidate_query(
     if exclude_ids:
         params.append([str(i) for i in exclude_ids])
         exclusion = f'  and b.id::text != all(${len(params)})\n'
+    if exclude_processed:
+        exclusion += f"""          and not exists (
+                select 1 from {OUTREACH_TABLE} p
+                where p.business_id = b.id
+                  and p.status <> 'failed'
+                  and not (p.status = 'claimed'
+                           and p.claimed_at < now() - interval '{STALE_CLAIM}')
+            )
+"""
 
     sql = _SELECT_BODY + f"""
         from leads.businesses b
@@ -220,16 +246,25 @@ async def fetch_candidates(
     batch_size: Optional[int] = None,
     exclude_ids: Optional[List[str]] = None,
     include_ids: Optional[List[str]] = None,
+    exclude_processed: bool = True,
 ) -> List[Dict[str, Any]]:
-    """Run the selection query and shape the rows. Needs a live database."""
+    """
+    Run the selection query and shape the rows. Needs a live database.
+
+    In batch mode, businesses the pipeline already took are skipped, once
+    leads.outreach_pipeline exists (db/migrations/015).
+    """
     url = os.environ.get('LEADS_DB_URL')
     if not url:
         raise RuntimeError('LEADS_DB_URL is not set')
 
-    sql, params = build_candidate_query(
-        tiers, batch_size, exclude_ids, include_ids)
     conn = await asyncpg.connect(url.replace('postgres://', 'postgresql://'))
     try:
+        if exclude_processed and not include_ids:
+            exclude_processed = await outreach_table_exists(conn)
+        sql, params = build_candidate_query(
+            tiers, batch_size, exclude_ids, include_ids,
+            exclude_processed=exclude_processed and not include_ids)
         rows = await conn.fetch(sql, *params)
     finally:
         await conn.close()

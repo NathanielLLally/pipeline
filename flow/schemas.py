@@ -11,7 +11,7 @@ interpreter.
 
 from datetime import datetime
 import re
-from typing import List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -30,22 +30,19 @@ class VerifiedEmail(BaseModel):
     mx_server: Optional[str] = None
 
 
-class ResearchOutput(BaseModel):
-    business_name: str
-    # The person to write to, extracted from the crawled pages. Optional
-    # because plenty of sites never name anyone, and an invented name is
-    # worse than none -- hence the placeholder validator below.
-    contact_name: Optional[str] = None
-    contact_title: Optional[str] = None
-    pain_signals: List[str]
-    personalization_hook: str
-    inferred_tone: Literal['clinical', 'warm', 'premium', 'casual', 'sparse']
-    confidence: float = Field(ge=0.0, le=1.0)
-    evidence: List[str]
-    suggested_email: str
-    next_url_to_check: Optional[str] = None
+class Contact(BaseModel):
+    """A person the crawled pages actually name."""
 
-    @field_validator('contact_name', 'contact_title')
+    name: str
+    title: Optional[str] = None
+    # Only an address the page states or the live verified pool holds; the
+    # research node nulls anything else after parsing.
+    email: Optional[str] = None
+    # Set from the title: owner, founder, director, practice manager and the
+    # like decide whether to buy; a trainer or groomer usually does not.
+    is_decision_maker: bool = False
+
+    @field_validator('name', 'title')
     @classmethod
     def no_invented_person(cls, value: Optional[str]) -> Optional[str]:
         """Reject '[Owner Name]' and friends; no name beats a fake one."""
@@ -54,10 +51,44 @@ class ResearchOutput(BaseModel):
         found = find_placeholder(value)
         if found:
             raise ValueError(
-                f'invented person {found!r}: leave contact_name null unless '
+                f'invented person {found!r}: leave contacts empty unless '
                 'the page actually names someone'
             )
         return value
+
+
+class ResearchOutput(BaseModel):
+    business_name: str
+    # The people to write to, extracted from the crawled pages. Empty is
+    # normal: plenty of sites never name anyone, and an invented name is
+    # worse than none -- hence the placeholder validator on Contact.
+    contacts: List[Contact] = Field(default_factory=list)
+    pain_signals: List[str]
+    personalization_hook: str
+    inferred_tone: Literal['clinical', 'warm', 'premium', 'casual', 'sparse']
+    confidence: float = Field(ge=0.0, le=1.0)
+    evidence: List[str]
+    suggested_email: str
+    next_url_to_check: Optional[str] = None
+
+
+def primary_contact(research: Dict[str, Any]) -> Tuple[Optional[str],
+                                                       Optional[str]]:
+    """
+    The (name, title) downstream writes to: the first decision maker, else
+    the first named contact.
+
+    Takes the dumped dict, not the model, because that is what flows between
+    nodes and what earlier runs stored -- and those carry the single
+    contact_name/contact_title pair this list replaced, so it is read too.
+    """
+    contacts = research.get('contacts') or []
+    chosen = next((c for c in contacts if c.get('is_decision_maker')), None)
+    if chosen is None and contacts:
+        chosen = contacts[0]
+    if chosen is not None:
+        return chosen.get('name'), chosen.get('title')
+    return research.get('contact_name'), research.get('contact_title')
 
 
 # A placeholder is a token the model left for a human to fill: [Your Name],

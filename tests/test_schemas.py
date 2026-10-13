@@ -1,7 +1,13 @@
 import pytest
 from pydantic import ValidationError
 
-from flow.schemas import DraftingOutput, ResearchOutput, VerifiedEmail
+from flow.schemas import (
+    Contact,
+    DraftingOutput,
+    ResearchOutput,
+    VerifiedEmail,
+    primary_contact,
+)
 
 
 def _research(**over):
@@ -134,28 +140,84 @@ class TestNoPlaceholders:
 
 
 class TestResearchExtractsPeople:
-    """The research node extracts the person to write to, not just the hook.
+    """The research node extracts the people to write to, not just the hook.
 
     A contact needs a name, and the crawled pages are where it is stated
     ("you'll work directly with an experienced trainer", an about page, a
     signature). leads.businesses has a decision_maker_name from an earlier
     enrichment pass, but research reading the live page is the better source.
+    A page often names several people -- owner, head trainer, office manager
+    -- and the title is what says which of them decides.
     """
 
-    def test_contact_name_is_optional(self):
+    def test_contacts_default_to_empty(self):
         out = ResearchOutput(**_research())
 
-        assert out.contact_name is None
-        assert out.contact_title is None
+        assert out.contacts == []
 
-    def test_carries_an_extracted_person(self):
-        out = ResearchOutput(**_research(contact_name='Wyatt Smith',
-                                         contact_title='Owner'))
+    def test_carries_several_people(self):
+        out = ResearchOutput(**_research(contacts=[
+            {'name': 'Wyatt Smith', 'title': 'Owner',
+             'is_decision_maker': True},
+            {'name': 'Megan Fields', 'title': 'Head Trainer'},
+        ]))
 
-        assert out.contact_name == 'Wyatt Smith'
-        assert out.contact_title == 'Owner'
+        assert [c.name for c in out.contacts] == ['Wyatt Smith', 'Megan Fields']
+        assert out.contacts[0].is_decision_maker is True
+        assert out.contacts[1].is_decision_maker is False
+
+    def test_title_and_email_are_optional(self):
+        contact = Contact(name='Megan Fields')
+
+        assert contact.title is None
+        assert contact.email is None
 
     def test_rejects_a_placeholder_person(self):
         """An invented '[Owner Name]' is worse than no name at all."""
         with pytest.raises(ValidationError):
-            ResearchOutput(**_research(contact_name='[Owner Name]'))
+            ResearchOutput(**_research(contacts=[{'name': '[Owner Name]'}]))
+
+    def test_rejects_a_placeholder_title(self):
+        with pytest.raises(ValidationError):
+            Contact(name='Wyatt Smith', title='[Title]')
+
+    def test_strict_schema_closes_the_nested_contact(self):
+        from flow.llm import strict_json_schema
+
+        schema = strict_json_schema(ResearchOutput)
+        contact = schema['$defs']['Contact']
+
+        assert contact['additionalProperties'] is False
+        assert set(contact['required']) == {
+            'name', 'title', 'email', 'is_decision_maker'}
+
+
+class TestPrimaryContact:
+    """The one person downstream writes to: a decision maker first."""
+
+    def test_prefers_a_decision_maker_over_earlier_contacts(self):
+        research = {'contacts': [
+            {'name': 'Megan Fields', 'title': 'Head Trainer',
+             'is_decision_maker': False},
+            {'name': 'Wyatt Smith', 'title': 'Owner',
+             'is_decision_maker': True},
+        ]}
+
+        assert primary_contact(research) == ('Wyatt Smith', 'Owner')
+
+    def test_falls_back_to_the_first_named_contact(self):
+        research = {'contacts': [
+            {'name': 'Megan Fields', 'title': 'Head Trainer',
+             'is_decision_maker': False},
+        ]}
+
+        assert primary_contact(research) == ('Megan Fields', 'Head Trainer')
+
+    def test_no_contacts_is_none(self):
+        assert primary_contact({'contacts': []}) == (None, None)
+
+    def test_reads_research_stored_before_contacts_existed(self):
+        """Artifacts and variables from earlier runs carry contact_name."""
+        research = {'contact_name': 'Wyatt Smith', 'contact_title': 'Owner'}
+
+        assert primary_contact(research) == ('Wyatt Smith', 'Owner')

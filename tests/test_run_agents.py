@@ -52,6 +52,21 @@ def _no_live_analysis():
         yield
 
 
+@pytest.fixture(autouse=True)
+def _no_live_tracking():
+    """
+    run_agents claims businesses and records outcomes in
+    leads.outreach_pipeline. Unit tests must not reach Postgres: claiming
+    returns every id offered, and recording does nothing.
+    """
+    async def claim_all(ids, run_id=None, force=False):
+        return list(ids)
+
+    with patch('flow.run_agents.claim_businesses', side_effect=claim_all), \
+         patch('flow.run_agents.record_outcome', new_callable=AsyncMock):
+        yield
+
+
 def _run(**kwargs):
     """Run with preflight OFF unless a test asks for it.
 
@@ -152,6 +167,57 @@ class TestSequencing:
             _run()
 
         assert research.call_args.args[2] == big
+
+
+class TestStaleEmailsStayExcluded:
+    """Research drops pool addresses the site no longer shows.
+
+    Drafting and import must see that filtered pool, not the original one,
+    or a dead address is drafted to and imported anyway.
+    """
+
+    LIVE = [{'email': 'owner@happytails.example', 'source': 'website'}]
+
+    def _candidate(self):
+        return dict(CANDIDATE, candidate_emails=self.LIVE + [
+            {'email': 'old@happytails.example', 'source': 'website'}])
+
+    def _researched(self):
+        return dict(RESEARCHED, verified_emails=self.LIVE,
+                    excluded_emails=['old@happytails.example'])
+
+    def test_drafting_gets_the_live_pool(self):
+        with patch('flow.run_agents.fetch_candidates', new_callable=AsyncMock,
+                   return_value=[self._candidate()]), \
+             patch('flow.run_agents.research_agent',
+                   return_value=self._researched()), \
+             patch('flow.run_agents.drafting_agent',
+                   return_value=DRAFTED) as draft:
+            _run()
+
+        assert draft.call_args.args[1] == self.LIVE
+
+    def test_import_gets_the_live_pool(self):
+        with patch('flow.run_agents.fetch_candidates', new_callable=AsyncMock,
+                   return_value=[self._candidate()]), \
+             patch('flow.run_agents.research_agent',
+                   return_value=self._researched()), \
+             patch('flow.run_agents.drafting_agent', return_value=DRAFTED), \
+             patch('flow.run_agents.import_contacts',
+                   return_value=IMPORTED) as imp:
+            _run()
+
+        assert imp.call_args.kwargs['candidate_emails'] == self.LIVE
+
+    def test_research_without_a_pool_leaves_the_candidates_alone(self):
+        with patch('flow.run_agents.fetch_candidates', new_callable=AsyncMock,
+                   return_value=[CANDIDATE]), \
+             patch('flow.run_agents.research_agent', return_value=RESEARCHED), \
+             patch('flow.run_agents.drafting_agent',
+                   return_value=DRAFTED) as draft:
+            _run()
+
+        assert draft.call_args.args[1] == CANDIDATE['candidate_emails']
 
 
 class TestAccounting:
@@ -268,8 +334,9 @@ class TestArtifactTagging:
                    return_value={'status': 'analyzed', 'analysis': {}}):
             _run()
 
-        assert seen == [{'b0', 'research'}, {'b1', 'research'},
-                        {'b2', 'research'}]
+        # Workers run concurrently, so the order they record in is not fixed.
+        assert sorted(seen, key=sorted) == [{'b0', 'research'}, {'b1', 'research'},
+                                            {'b2', 'research'}]
 
     def test_tags_do_not_leak_past_the_business(self):
         """A stage's tags must not still be ambient on the next business."""
@@ -567,3 +634,300 @@ class TestPreflightRefetch:
         mocks['verify_business_emails'].assert_not_awaited()
         mocks['jina_crawl'].assert_not_awaited()
         assert mocks['fetch_candidates'].await_count == 1
+
+
+class TestLLMCallAccounting:
+    def test_batch_reports_llm_calls_per_provider(self, capsys):
+        from flow.llm import record_call
+
+        def research(*args, **kwargs):
+            record_call('ollama/gpt-oss:120b', ok=True)
+            record_call('ollama/gemma4:31b', ok=False)
+            return RESEARCHED
+
+        def draft(*args, **kwargs):
+            record_call('openrouter/x/y:free', ok=True)
+            return DRAFTED
+
+        with patch('flow.run_agents.fetch_candidates',
+                   new_callable=AsyncMock, return_value=[CANDIDATE]), \
+             patch('flow.run_agents.research_agent', side_effect=research), \
+             patch('flow.run_agents.drafting_agent', side_effect=draft):
+            result = _run()
+
+        providers = result['llm_calls']['by_provider']
+        assert {k: (v['calls'], v['failed']) for k, v in providers.items()} == {
+            'ollama': (2, 1), 'openrouter': (1, 0)}
+        assert 'llm calls: ollama=2 (1 failed' in capsys.readouterr().out
+
+    def test_batches_do_not_share_counts(self):
+        from flow.llm import record_call
+
+        def research(*args, **kwargs):
+            record_call('ollama/a', ok=True)
+            return RESEARCHED
+
+        with patch('flow.run_agents.fetch_candidates',
+                   new_callable=AsyncMock, return_value=[CANDIDATE]), \
+             patch('flow.run_agents.research_agent', side_effect=research), \
+             patch('flow.run_agents.drafting_agent', return_value=DRAFTED):
+            _run()
+            second = _run()
+
+        assert second['llm_calls']['by_provider']['ollama']['calls'] == 1
+
+
+class TestCommandLine:
+    """python flow/run_agents.py [options]: research knobs set through the env."""
+
+    KEYS = ('RESEARCH_MODEL', 'RESEARCH_TIER', 'RESEARCH_REASONING_EFFORT')
+
+    @pytest.fixture(autouse=True)
+    def _restore_env(self, monkeypatch):
+        for key in self.KEYS:
+            monkeypatch.setenv(key, 'sentinel')
+            monkeypatch.delenv(key)
+
+    def _main(self, *argv):
+        import os
+        from flow import run_agents as module
+        with patch.object(module, 'run_agents', new_callable=AsyncMock,
+                          return_value={'selected': 0}) as flow_mock:
+            module.main(list(argv))
+        return flow_mock, {k: os.environ.get(k) for k in self.KEYS}
+
+    def test_research_effort_defaults_to_high(self):
+        flow_mock, env = self._main('--batch-size', '3')
+        assert env['RESEARCH_REASONING_EFFORT'] == 'high'
+        assert env['RESEARCH_TIER'] is None
+        assert flow_mock.await_args.kwargs['batch_size'] == 3
+        assert flow_mock.await_args.kwargs['preflight'] is True
+
+    def test_effort_none_leaves_it_unset(self):
+        _, env = self._main('--research-reasoning-effort', 'none')
+        assert env['RESEARCH_REASONING_EFFORT'] is None
+
+    def test_tier_also_switches_research_to_the_multi_agent(self):
+        """A tier only exists in the graph; on a single model it would do nothing."""
+        _, env = self._main('--research-tier', 'frontier')
+        assert env['RESEARCH_TIER'] == 'frontier'
+        assert env['RESEARCH_MODEL'] == 'multi-agent'
+
+    def test_unknown_tier_is_rejected(self):
+        with pytest.raises(SystemExit):
+            self._main('--research-tier', 'ultra')
+
+    def test_named_businesses_are_passed_through(self):
+        flow_mock, _ = self._main('--business-ids', 'a', 'b', '--no-preflight')
+        assert flow_mock.await_args.kwargs['business_ids'] == ['a', 'b']
+        assert flow_mock.await_args.kwargs['preflight'] is False
+
+
+def _candidate(i):
+    return {
+        'business': {'id': f'biz-{i}', 'business_name': f'Biz {i}',
+                     'website': f'https://biz{i}.example'},
+        'candidate_emails': [{'email': f'owner@biz{i}.example', 'source': 'website'}],
+        'crawl_excerpt': 'Call us to book.',
+    }
+
+
+class TestConcurrency:
+    """Businesses run in parallel workers; accounting stays exact and ordered."""
+
+    def _batch(self, n, research, concurrency, **kwargs):
+        with patch('flow.run_agents.fetch_candidates', new_callable=AsyncMock,
+                   return_value=[_candidate(i) for i in range(n)]), \
+             patch('flow.run_agents.research_agent', side_effect=research), \
+             patch('flow.run_agents.drafting_agent', return_value=DRAFTED):
+            return _run(concurrency=concurrency, **kwargs)
+
+    def test_businesses_overlap(self):
+        """Two researches must be in flight at once, or the barrier never trips."""
+        import threading
+        barrier = threading.Barrier(2, timeout=5)
+
+        def research(*args, **kwargs):
+            barrier.wait()
+            return RESEARCHED
+
+        result = self._batch(2, research, concurrency=2)
+        assert result['researched'] == 2
+        assert result['errored'] == 0
+
+    def test_in_flight_never_exceeds_the_limit(self):
+        import threading
+        import time
+        lock = threading.Lock()
+        state = {'now': 0, 'peak': 0}
+
+        def research(*args, **kwargs):
+            with lock:
+                state['now'] += 1
+                state['peak'] = max(state['peak'], state['now'])
+            time.sleep(0.05)
+            with lock:
+                state['now'] -= 1
+            return RESEARCHED
+
+        result = self._batch(6, research, concurrency=2)
+        assert result['researched'] == 6
+        assert state['peak'] == 2
+
+    def test_outcomes_keep_candidate_order(self):
+        import time
+
+        def research(business, *args, **kwargs):
+            # The first business finishes last.
+            time.sleep(0.2 if business['id'] == 'biz-0' else 0.0)
+            return RESEARCHED
+
+        result = self._batch(3, research, concurrency=3)
+        assert [o['business_id'] for o in result['outcomes']] == ['biz-0', 'biz-1', 'biz-2']
+
+    def test_one_failure_does_not_cost_the_others(self):
+        def research(business, *args, **kwargs):
+            if business['id'] == 'biz-1':
+                raise RuntimeError('boom')
+            return RESEARCHED
+
+        result = self._batch(3, research, concurrency=3)
+        assert result['errored'] == 1
+        assert result['researched'] == 2
+        assert result['imported'] == 2
+
+    def test_llm_calls_add_up_across_workers(self):
+        from flow.llm import record_call
+
+        def research(*args, **kwargs):
+            record_call('ollama/a', ok=True)
+            return RESEARCHED
+
+        result = self._batch(4, research, concurrency=4)
+        assert result['llm_calls']['by_provider']['ollama']['calls'] == 4
+
+    def test_each_worker_keeps_its_own_tags(self):
+        from prefect.context import TagsContext
+
+        seen = {}
+
+        def research(business, *args, **kwargs):
+            import time
+            time.sleep(0.05)
+            seen[business['id']] = set(TagsContext.get().current_tags)
+            return RESEARCHED
+
+        self._batch(3, research, concurrency=3)
+        for i in range(3):
+            assert f'biz-{i}' in seen[f'biz-{i}']
+            assert not ({f'biz-{j}' for j in range(3) if j != i} & seen[f'biz-{i}'])
+
+    def test_default_concurrency_applies_when_unset(self, monkeypatch):
+        from flow.agents import selector
+        monkeypatch.setattr('flow.run_agents.DEFAULT_CONCURRENCY', 3)
+        import threading
+        import time
+        lock = threading.Lock()
+        state = {'now': 0, 'peak': 0}
+
+        def research(*args, **kwargs):
+            with lock:
+                state['now'] += 1
+                state['peak'] = max(state['peak'], state['now'])
+            time.sleep(0.05)
+            with lock:
+                state['now'] -= 1
+            return RESEARCHED
+
+        self._batch(6, research, concurrency=None)
+        assert state['peak'] == 3
+
+    def test_result_reports_the_concurrency_used(self):
+        result = self._batch(1, lambda *a, **k: RESEARCHED, concurrency=2)
+        assert result['concurrency'] == 2
+
+
+class TestConcurrencyCommandLine:
+    def test_concurrency_flag_is_passed_through(self, monkeypatch):
+        from flow import run_agents as module
+        for key in ('RESEARCH_MODEL', 'RESEARCH_TIER', 'RESEARCH_REASONING_EFFORT'):
+            monkeypatch.setenv(key, 'x')
+            monkeypatch.delenv(key)
+        with patch.object(module, 'run_agents', new_callable=AsyncMock,
+                          return_value={'selected': 0}) as flow_mock:
+            module.main(['--concurrency', '4'])
+        assert flow_mock.await_args.kwargs['concurrency'] == 4
+
+
+class TestOutreachTracking:
+    def _batch(self, n, **patches):
+        return patch('flow.run_agents.fetch_candidates', new_callable=AsyncMock,
+                     return_value=[_candidate(i) for i in range(n)])
+
+    def test_only_claimed_businesses_are_processed(self):
+        async def claim_some(ids, run_id=None, force=False):
+            return [i for i in ids if i != 'biz-1']
+
+        with self._batch(3), \
+             patch('flow.run_agents.claim_businesses', side_effect=claim_some), \
+             patch('flow.run_agents.research_agent', return_value=RESEARCHED) as research, \
+             patch('flow.run_agents.drafting_agent', return_value=DRAFTED):
+            result = _run()
+
+        researched_ids = [c.args[0]['id'] for c in research.call_args_list]
+        assert sorted(researched_ids) == ['biz-0', 'biz-2']
+        assert result['selected'] == 2
+
+    def test_named_runs_claim_by_force(self):
+        seen = {}
+
+        async def claim(ids, run_id=None, force=False):
+            seen['force'] = force
+            return list(ids)
+
+        with self._batch(1), \
+             patch('flow.run_agents.claim_businesses', side_effect=claim), \
+             patch('flow.run_agents.research_agent', return_value=RESEARCHED), \
+             patch('flow.run_agents.drafting_agent', return_value=DRAFTED):
+            _run(business_ids=['biz-0'])
+
+        assert seen['force'] is True
+
+    def test_every_finished_business_is_recorded(self):
+        with self._batch(2), \
+             patch('flow.run_agents.record_outcome', new_callable=AsyncMock) as record, \
+             patch('flow.run_agents.research_agent', return_value=RESEARCHED), \
+             patch('flow.run_agents.drafting_agent', return_value=DRAFTED):
+            _run(concurrency=2)
+
+        recorded = sorted(c.args[0]['business_id'] for c in record.await_args_list)
+        assert recorded == ['biz-0', 'biz-1']
+
+    def test_outcome_carries_the_warmbly_ids(self):
+        imported = dict(IMPORTED, created=[{'id': 'c-1'}, {'id': 'c-2'}], drafts=['d-1'])
+        with self._batch(1), \
+             patch('flow.run_agents.import_contacts', return_value=imported), \
+             patch('flow.run_agents.research_agent', return_value=RESEARCHED), \
+             patch('flow.run_agents.drafting_agent', return_value=DRAFTED):
+            result = _run()
+
+        outcome = result['outcomes'][0]
+        assert outcome['warmbly_contact_ids'] == ['c-1', 'c-2']
+        assert outcome['warmbly_draft_ids'] == ['d-1']
+
+
+class TestBatchDefaults:
+    """The default batch is sized to the worker count: about an hour's work."""
+
+    def test_default_batch_scales_with_concurrency(self):
+        from flow.agents.selector import BATCH_PER_WORKER
+        with patch('flow.run_agents.fetch_candidates', new_callable=AsyncMock,
+                   return_value=[]) as sel:
+            _run(concurrency=3)
+        assert sel.await_args.kwargs['batch_size'] == 3 * BATCH_PER_WORKER
+
+    def test_explicit_batch_size_wins(self):
+        with patch('flow.run_agents.fetch_candidates', new_callable=AsyncMock,
+                   return_value=[]) as sel:
+            _run(concurrency=3, batch_size=7)
+        assert sel.await_args.kwargs['batch_size'] == 7

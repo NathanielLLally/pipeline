@@ -45,3 +45,22 @@ jsonargparse==4.52.0
 
 # Tests
 pytest==9.1.1
+# Core dependencies for multi-agent system
+langchain-core>=0.2.0
+langgraph>=0.2.0
+pyyaml>=6.0
+litellm>=1.40.0
+autogen-agentchat>=0.2.0
+autogen-core>=0.2.0
+mlflow>=2.10.0
+mlflow-skinny>=2.10.0
+
+# Supporting libraries
+python-dotenv>=1.0.0
+pydantic>=2.0.0
+typing-extensions>=4.8.0
+termcolor>=3.3.0
+
+# Optional: for development/testing
+# pytest>=7.0.0
+# pytest-asyncio>=0.21.0
