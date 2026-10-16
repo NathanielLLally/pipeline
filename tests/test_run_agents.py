@@ -705,7 +705,8 @@ class TestLLMCallAccounting:
 class TestCommandLine:
     """python flow/run_agents.py [options]: research knobs set through the env."""
 
-    KEYS = ('RESEARCH_MODEL', 'RESEARCH_TIER', 'RESEARCH_REASONING_EFFORT')
+    KEYS = ('RESEARCH_MODEL', 'RESEARCH_TIER', 'RESEARCH_REASONING_EFFORT',
+            'DRAFTING_MODEL')
 
     @pytest.fixture(autouse=True)
     def _restore_env(self, monkeypatch):
@@ -738,6 +739,16 @@ class TestCommandLine:
         assert env['RESEARCH_TIER'] == 'frontier'
         assert env['RESEARCH_MODEL'] == 'multi-agent'
 
+    def test_claude_hands_research_and_drafting_to_claude_tmux(self):
+        _, env = self._main('--claude')
+        assert env['RESEARCH_MODEL'] == 'claude-tmux'
+        assert env['DRAFTING_MODEL'] == 'claude-tmux'
+
+    def test_claude_and_a_research_tier_conflict(self):
+        """A tier means the multi-agent graph; --claude means not it."""
+        with pytest.raises(SystemExit):
+            self._main('--claude', '--research-tier', 'frontier')
+
     def test_unknown_tier_is_rejected(self):
         with pytest.raises(SystemExit):
             self._main('--research-tier', 'ultra')
@@ -753,7 +764,7 @@ class TestUsage:
 
     OPTIONS = ('--concurrency', '--batch-size', '--tiers', '--business-ids',
                '--template-slug', '--offer', '--no-preflight',
-               '--research-reasoning-effort', '--research-tier')
+               '--research-reasoning-effort', '--research-tier', '--claude')
 
     def _main(self, *argv):
         from flow import run_agents as module

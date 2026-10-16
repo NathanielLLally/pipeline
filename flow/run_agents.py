@@ -21,6 +21,10 @@ From the command line, with .env sourced:
 
     $ python flow/run_agents.py --batch-size 3
     $ python flow/run_agents.py --business-ids <id> <id> --research-tier frontier
+    $ python flow/run_agents.py --business-ids <id> --claude
+
+--claude has a Claude Code session in tmux answer research and drafting
+(flow/claude_tmux.py); analysis stays on ANALYSIS_MODEL / LLM_MODEL.
 
 Research runs at reasoning effort 'high' from here unless told otherwise; a
 --research-tier also switches research to the multi-agent graph, the only
@@ -41,7 +45,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from prefect import flow, tags
 
 from flow.agents.analysis import analysis_agent
-from flow.llm import MULTI_AGENT_MODEL, count_calls, format_call_stats
+from flow.llm import (CLAUDE_TMUX_MODEL, MULTI_AGENT_MODEL, count_calls,
+                      format_call_stats)
 from flow.agents.drafting import drafting_agent
 from flow.agents.import_contacts import import_contacts
 from flow.agents.research import research_agent
@@ -400,6 +405,8 @@ def _usage_rows() -> List[Tuple[str, str, str]]:
         ('--research-tier', '-',
          f"Pin research to one multi-agent tier ({', '.join(TIERS)}); "
          'implies RESEARCH_MODEL=multi-agent'),
+        ('--claude', 'off',
+         'Research and draft with Claude Code in tmux (flow/claude_tmux.py)'),
     ]
 
 
@@ -460,12 +467,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--research-tier', choices=TIERS,
                         help='answer research with this multi-agent tier, skipping '
                              'the router; implies RESEARCH_MODEL=multi-agent')
+    parser.add_argument('--claude', action='store_true',
+                        help='research and draft with an interactive Claude Code '
+                             'session over tmux; sets RESEARCH_MODEL and '
+                             f'DRAFTING_MODEL={CLAUDE_TMUX_MODEL}')
     return parser
 
 
 def main(argv: Optional[List[str]] = None) -> dict:
     """Run one batch in this process. See the module docstring, or --help."""
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.claude and args.research_tier:
+        parser.error('--claude and --research-tier conflict: a tier is the '
+                     'multi-agent graph')
 
     if args.research_reasoning_effort == 'none':
         os.environ.pop('RESEARCH_REASONING_EFFORT', None)
@@ -474,6 +489,10 @@ def main(argv: Optional[List[str]] = None) -> dict:
     if args.research_tier:
         os.environ['RESEARCH_TIER'] = args.research_tier
         os.environ['RESEARCH_MODEL'] = MULTI_AGENT_MODEL
+    if args.claude:
+        # One pane, so businesses take turns there (flow/claude_tmux.py).
+        os.environ['RESEARCH_MODEL'] = CLAUDE_TMUX_MODEL
+        os.environ['DRAFTING_MODEL'] = CLAUDE_TMUX_MODEL
 
     print(f"research: model={os.environ.get('RESEARCH_MODEL') or os.environ.get('LLM_MODEL')} "
           f"tier={os.environ.get('RESEARCH_TIER') or 'router'} "

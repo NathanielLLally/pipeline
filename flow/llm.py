@@ -40,6 +40,11 @@ TRANSIENT_STATUSES = frozenset({408, 425, 429, 500, 502, 503, 504, 529})
 # model: route, specialist, critic, evaluator, frontier on failure.
 MULTI_AGENT_MODEL = 'multi-agent'
 
+# Setting LLM_MODEL or an agent's own *_MODEL variable to this value has an
+# interactive Claude Code session answer its calls, over tmux
+# (flow/claude_tmux.py), instead of the proxy.
+CLAUDE_TMUX_MODEL = 'claude-tmux'
+
 # The proxy key goes in its own header, not Authorization. LiteLLM reserves
 # Authorization for the UPSTREAM provider credential and passes it through, so
 # putting the proxy key there makes it offer our proxy key to Anthropic as an
@@ -573,6 +578,11 @@ def complete_structured(
             prompt, schema_model, system=system, max_attempts=max_attempts,
             tier=agent_setting(agent_model_env, 'TIER'),
             reasoning_effort=reasoning_effort)
+
+    if model == CLAUDE_TMUX_MODEL:
+        from flow import claude_tmux
+        return claude_tmux.complete_structured(
+            prompt, schema_model, system=system, max_attempts=max_attempts)
 
     messages = []
     if system:
