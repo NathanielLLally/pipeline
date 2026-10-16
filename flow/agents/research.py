@@ -33,11 +33,11 @@ from flow.artifacts import (
 )
 from flow.fetch import fetch_html
 from flow.llm import LLMSchemaError, LLMTransportError, complete_structured
-from flow.schemas import failure_reason
 from flow.decision_maker import record_decision_maker_sync
 from flow.email_pool import deliverability, describe_address
 from flow.offer import resolve_offer
-from flow.schemas import ResearchOutput, find_payment_terms, primary_contact
+from flow.schemas import (ResearchOutput, failure_reason, find_payment_terms,
+                          primary_contact)
 
 CONFIDENCE_THRESHOLD = float(
     os.environ.get('CONFIDENCE_THRESHOLD', '0.7')

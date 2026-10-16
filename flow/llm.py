@@ -391,6 +391,7 @@ def chat_completion(
     api_key: Optional[str] = None,
     deadline: Optional[float] = None,
     timeout_name: Optional[str] = None,
+    retry: bool = True,
     **params: Any,
 ) -> Tuple[str, float]:
     """
@@ -405,9 +406,11 @@ def chat_completion(
 
     Inside a flow run the call is the llm-call Prefect task, retried on a
     transient failure (is_transient) after retry_delays(), each attempt
-    with longer limits (attempt_limits). Outside one it is a single attempt.
+    with longer limits (attempt_limits). Outside one it is a single attempt,
+    and so is `retry=False`, for a caller with its own failover
+    (flow.multi_agent tries the next model and holds a run-wide deadline).
     """
-    if _llm_call_task is not None and _in_prefect_run():
+    if retry and _llm_call_task is not None and _in_prefect_run():
         delays = retry_delays()
         call = _llm_call_task.with_options(
             retries=len(delays), retry_delay_seconds=delays,

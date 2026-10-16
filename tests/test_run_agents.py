@@ -262,6 +262,18 @@ class TestAccounting:
         assert outcome['research_status'] == 'researched'
         assert outcome['draft_status'] == 'drafted'
 
+    def test_a_drafts_rejection_reason_is_kept(self):
+        """outreach_state reads it: llm_unavailable is retryable."""
+        unavailable = {'status': 'rejected', 'reason': 'llm_unavailable',
+                       'draft': None}
+        with patch('flow.run_agents.fetch_candidates',
+                   new_callable=AsyncMock, return_value=[CANDIDATE]), \
+             patch('flow.run_agents.research_agent', return_value=RESEARCHED), \
+             patch('flow.run_agents.drafting_agent', return_value=unavailable):
+            result = _run()
+
+        assert result['outcomes'][0]['draft_reason'] == 'llm_unavailable'
+
     def test_empty_selection_is_not_an_error(self):
         with patch('flow.run_agents.fetch_candidates',
                    new_callable=AsyncMock, return_value=[]), \

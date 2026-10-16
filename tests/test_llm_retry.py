@@ -214,3 +214,29 @@ class TestRealPrefectRetry:
                 one_call()
 
         assert post.call_count == 1
+
+
+class TestCallersWithTheirOwnFailover:
+    """multi_agent tries the next model on a failure and holds a run-wide
+    deadline; retrying one model for minutes, with deadlines doubled past
+    what is left, would break both. It passes retry=False."""
+
+    def test_retry_false_is_one_attempt_even_in_a_flow(self):
+        with patch('flow.llm._in_prefect_run', return_value=True), \
+                patch('flow.llm._llm_call_task') as task, \
+                patch('flow.llm.httpx.post', return_value=_status(503)) as post:
+            with pytest.raises(LLMTransportError):
+                llm.chat_completion([{'role': 'user', 'content': 'hi'}], 'm',
+                                    retry=False)
+
+        task.with_options.assert_not_called()
+        assert post.call_count == 1
+
+    def test_multi_agent_does_not_retry_through_prefect(self):
+        from flow import multi_agent
+
+        with patch.object(multi_agent, 'chat_completion',
+                          return_value=('{}', 0.0)) as call:
+            multi_agent.chat(['m'], 'hi')
+
+        assert call.call_args.kwargs['retry'] is False

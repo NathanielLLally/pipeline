@@ -30,11 +30,10 @@ from flow.artifacts import (
     write_artifact,
 )
 from flow.llm import LLMSchemaError, LLMTransportError, complete_structured
-from flow.schemas import failure_reason
 from flow.email_pool import (address_rank, choose_recipient, describe_address,
                               greeting_name)
 from flow.offer import build_outreach_goal, resolve_offer
-from flow.schemas import DraftingOutput
+from flow.schemas import DraftingOutput, failure_reason
 
 SYSTEM_PROMPT = (
     'You write short, specific first-contact emails to small service business '

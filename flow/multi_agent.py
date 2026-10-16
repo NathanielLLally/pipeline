@@ -366,7 +366,9 @@ def chat(
             content, cost = chat_completion(
                 messages, model, response_format=response_format,
                 base_url=proxy_url(), api_key=proxy_key(), deadline=limit,
-                timeout_name=limit_name, **params,
+                # Not retried in place: the next model is the retry, and
+                # flow.llm's backoff would outlast MULTI_AGENT_CALL_TIMEOUT.
+                timeout_name=limit_name, retry=False, **params,
             )
             if not content or not content.strip():
                 raise ValueError("empty response")
