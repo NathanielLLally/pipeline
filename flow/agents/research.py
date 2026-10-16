@@ -12,6 +12,8 @@ Can be called with dict params or from a JSON input artifact:
 """
 
 import asyncio
+import html
+import unicodedata
 import os
 import re
 import sys
@@ -31,9 +33,11 @@ from flow.artifacts import (
 )
 from flow.fetch import fetch_html
 from flow.llm import LLMSchemaError, LLMTransportError, complete_structured
+from flow.schemas import failure_reason
 from flow.decision_maker import record_decision_maker_sync
+from flow.email_pool import deliverability, describe_address
 from flow.offer import resolve_offer
-from flow.schemas import ResearchOutput, primary_contact
+from flow.schemas import ResearchOutput, find_payment_terms, primary_contact
 
 CONFIDENCE_THRESHOLD = float(
     os.environ.get('CONFIDENCE_THRESHOLD', '0.7')
@@ -75,14 +79,53 @@ def live_pool(
     business's addresses, so a pool address they omit is presumed retired and
     excluded. If they show none, or all, there is nothing to conclude and the
     pool stands unchanged.
+
+    Omission is weak evidence, though, so two omitted addresses are kept: one
+    the mailbox accepted, and a person's own address whose local part is the
+    first name of someone the pages name. Home Dog Training's site printed a
+    typo'd shared inbox and another business's address, and not
+    wyatt@ -- their own domain, for a trainer named three times.
     """
     on_page = emails_in(*texts)
     shown = [e for e in verified_emails if e['email'].lower() in on_page]
     if not shown or len(shown) == len(verified_emails):
         return list(verified_emails), []
-    excluded = [e['email'] for e in verified_emails
-                if e['email'].lower() not in on_page]
-    return shown, excluded
+    kept = [e for e in verified_emails
+            if e['email'].lower() in on_page
+            or deliverability(e) == 'valid'
+            or _named_on_page(e, texts)]
+    excluded = [e['email'] for e in verified_emails if e not in kept]
+    return kept, excluded
+
+
+def _named_on_page(entry: dict, texts: Tuple[Optional[str], ...]) -> bool:
+    """
+    True for a person's own address whose first local-part segment is a
+    whole word on the pages: wyatt@ or wyatt.smith@ where the page says
+    'Wyatt'. Only for is_role False -- 'info', 'hello' and 'training' are
+    words on every page -- and not for entries that do not say.
+    """
+    if entry.get('is_role') is not False:
+        return False
+    first = re.split(r'[._+-]', entry['email'].split('@', 1)[0])[0]
+    if len(first) < 3 or not first.isalpha():
+        return False
+    word = re.compile(rf'\b{re.escape(first)}\b', re.IGNORECASE)
+    return any(word.search(t) for t in texts if t)
+
+
+def split_undeliverable(pool: list) -> Tuple[list, List[str]]:
+    """
+    (usable, the addresses the email check proved dead).
+
+    Only 'invalid' goes: a catch-all domain or a check that never finished
+    says nothing against the mailbox. Done before live_pool, because a dead
+    address printed on the page would otherwise count as evidence of which
+    addresses are live.
+    """
+    usable = [e for e in pool if deliverability(e) != 'invalid']
+    dead = [e['email'] for e in pool if deliverability(e) == 'invalid']
+    return usable, dead
 
 
 def build_research_prompt(
@@ -93,14 +136,15 @@ def build_research_prompt(
     offer: Optional[str] = None,
 ) -> str:
     """Assemble the research prompt. Pure, so it can be asserted on."""
-    pool = ', '.join(e['email'] for e in verified_emails) or '(none)'
+    pool = [f'- {describe_address(e, business)}' for e in verified_emails]
 
     parts = [
         f"What we are offering them: {resolve_offer(offer)}",
         '',
         f"Business: {business.get('business_name')}",
         f"Website: {business.get('website')}",
-        f"Verified email pool: {pool}",
+        'Email pool, with what our email check found:',
+        *(pool or ['(none)']),
         '',
         'Site text:',
         crawl_excerpt or '(none available)',
@@ -114,19 +158,42 @@ def build_research_prompt(
         'actually name (owner, founder, director, manager, trainer, groomer, '
         'vet). Leave the list empty rather than inventing anyone. For each, '
         'give name; title exactly as the page states it, or null; email only '
-        'if the page ties an address to that person, or null; and '
-        'is_decision_maker true when the title marks someone who decides on '
-        'spending (owner, co-owner, founder, president, CEO, director, '
-        'partner, general or practice manager, medical director), otherwise '
-        'false. List decision makers first. '
+        'if the page ties an address to that person, or null; evidence, '
+        'the one passage copied verbatim from the text that best shows '
+        'their role, or null; and is_decision_maker true when the title or '
+        'that passage shows they own or run the business -- owner, '
+        'co-owner, founder, president, CEO, director, partner, general or '
+        'practice manager, medical director, or in other words: they speak '
+        'of starting it, or of it as their family business -- not merely '
+        'that they work there; otherwise false. For a decision maker, the '
+        'evidence must be the passage that shows the ownership (for '
+        'example "the dog who started everything for Laura and me"), not '
+        'one that only lists them among the staff. List decision makers '
+        'first. '
         'Return pain_signals as a list of short strings, a '
         'personalization_hook, and inferred_tone as exactly one of: '
         'clinical, warm, premium, casual, sparse -- one of those five words '
         'and nothing else, not a description of the tone. Also a '
         'confidence between 0 and 1, evidence as a list of strings quoted '
         'verbatim from the text above, and '
-        'suggested_email chosen from the verified pool. If confidence is low '
-        'and another page on the site would help, set next_url_to_check.',
+        'suggested_email chosen from the email pool -- one the mailbox '
+        'accepted over one the check could not confirm, and a decision '
+        "maker's own address over a shared inbox. "
+        'Also return outreach_angle: the one thing about their business '
+        "itself -- not their customers' problems -- that our offer speaks "
+        'to. Either a problem they state (lost marketing budget, slow '
+        'months, empty classes, a closed location, trainers to keep busy) or '
+        'a growth move (hiring, a new location or program, free lessons or '
+        'classes that need filling). Give problem as one plain sentence; '
+        'evidence as a quote copied verbatim from the text above that shows '
+        'it; and caution as what the pitch must not trip over given what '
+        'they have been through (for example, if paid ads burned them, say '
+        'so), or null. The caution says what to avoid, not what to promise: '
+        'never payment terms, pricing, guarantees or features we have not '
+        'stated. Set outreach_angle to null when the text says '
+        'nothing about the business itself. '
+        'If confidence is low and another page on the site would help, set '
+        'next_url_to_check.',
     ]
     return '\n'.join(parts)
 
@@ -148,6 +215,14 @@ def _write_back_person(business: dict, research: Any) -> None:
     """
     name, title = primary_contact(research.model_dump())
     if not name:
+        return
+    # With no decision maker, the primary contact is just whoever was listed
+    # first -- a trainer as easily as an owner. That guess must not replace
+    # a name the business already has.
+    if business.get('decision_maker_name') and not any(
+            c.is_decision_maker for c in research.contacts):
+        print(f'no decision maker found; keeping '
+              f"{business['decision_maker_name']!r} over {name!r}")
         return
     try:
         record_decision_maker_sync(
@@ -188,6 +263,137 @@ def _enforce_pool(research: ResearchOutput, kept: list,
     ]
     return research.model_copy(
         update={'suggested_email': suggested, 'contacts': contacts})
+
+
+def _norm(text: str) -> str:
+    """Text for matching a quote against a page: entities decoded, curly
+    quotes straightened, emoji and other pictographs removed (models drop
+    them when quoting), whitespace collapsed, case folded."""
+    text = unicodedata.normalize('NFKC', html.unescape(text or ''))
+    text = text.translate({0x2018: "'", 0x2019: "'", 0x201c: '"', 0x201d: '"'})
+    text = ''.join(ch for ch in text
+                   if unicodedata.category(ch) not in _PICTOGRAPH)
+    return re.sub(r'\s+', ' ', text).strip().casefold()
+
+
+# Emoji, their joiners and variation selectors, and modifier symbols.
+_PICTOGRAPH = {'So', 'Sk', 'Cf', 'Mn', 'Cs'}
+
+# Words that show someone owns or runs the business, as opposed to working
+# in it. An evidence quote has to carry one to make its person a decision
+# maker: the model cited 'Charles & Wyatt will be leading all group classes'
+# for that, and leading a class is not owning the business.
+_OWNERSHIP = re.compile(
+    r'(?<!\w)(own|owns|owned|owner|owners|co-owner|co-owners|founder|'
+    r'founders|co-founder|founded|started|start|ceo|president|director|'
+    r'partner|partners|manager|family business|our business|my business)'
+    r'(?!\w)')
+
+
+# How far from a person's name their title may sit and still be theirs.
+TITLE_WINDOW = 80
+
+
+def _title_stated(title: str, name: str, page: str) -> bool:
+    """
+    True if `title` appears as a whole phrase within TITLE_WINDOW characters
+    of `name` (or its first word) on the normalised page. Anywhere on the
+    page is not enough: every pet site says 'owner', as in 'dog owners'.
+    """
+    wanted = _norm(title)
+    phrase = re.compile(rf'(?<!\w){re.escape(wanted)}(?!\w)')
+    full = _norm(name)
+    for who in dict.fromkeys([full, full.split(' ')[0]]):
+        if not who:
+            continue
+        for hit in re.finditer(rf'(?<!\w){re.escape(who)}(?!\w)', page):
+            nearby = page[max(0, hit.start() - TITLE_WINDOW):
+                          hit.end() + TITLE_WINDOW]
+            if phrase.search(nearby):
+                return True
+    return False
+
+
+def _pieces(quote: str) -> List[str]:
+    """
+    The verbatim passages in a quote. Models join passages with '...' (or
+    '\u2026', which _norm turns into '...'); each passage is on the page
+    though the joined whole is not.
+    """
+    return [p for p in re.split(r'\s*\.\.\.\s*', _norm(quote)) if p]
+
+
+def _on_page(quote: str, page: str) -> bool:
+    """Every passage of the quote is on the normalised page."""
+    pieces = _pieces(quote)
+    return bool(pieces) and all(p in page for p in pieces)
+
+
+def _shows_ownership(quote: str, name: str) -> bool:
+    """One passage both names the person and carries an ownership word --
+    in the same passage, so a name from one place and 'started' from
+    another cannot be stitched into an owner."""
+    return any(_names(p, name) and _OWNERSHIP.search(p) is not None
+               for p in _pieces(quote))
+
+
+def _names(quote: str, name: str) -> bool:
+    """True if the quote names the person: their first name, whole word."""
+    first = _norm(name).split(' ')[0]
+    return bool(first) and re.search(
+        rf'(?<!\w){re.escape(first)}(?!\w)', _norm(quote)) is not None
+
+
+def _enforce_page(research: ResearchOutput,
+                  *texts: Optional[str]) -> ResearchOutput:
+    """
+    Strip what the pages do not support, before anything is written back.
+
+    A title must be stated beside the person's name, else it is nulled. A
+    contact's evidence quote must be on the page, else it is nulled. A
+    decision maker must keep one of the two -- a stated title, or a quote
+    that names them -- because a family business shows ownership in other
+    words ('started everything for Laura and me') far more often than it
+    prints 'Owner' beside a name.
+    An outreach_angle whose quote is not on the page is dropped whole: it
+    would be an invented fact in the email's opening line.
+    """
+    page = _norm('\n'.join(t for t in texts if t))
+
+    contacts = []
+    for c in research.contacts:
+        title = c.title if c.title and _title_stated(c.title, c.name, page) \
+            else None
+        if c.title and title is None:
+            print(f'title {c.title!r} for {c.name!r} is not on the page; '
+                  f'nulled')
+        evidence = c.evidence if c.evidence and _on_page(c.evidence, page) \
+            else None
+        if c.evidence and evidence is None:
+            print(f'evidence for {c.name!r} is not on the page; nulled')
+        shown = title is not None or (
+            evidence is not None and _shows_ownership(evidence, c.name))
+        contacts.append(c.model_copy(update={
+            'title': title, 'evidence': evidence,
+            'is_decision_maker': c.is_decision_maker and shown}))
+
+    angle = research.outreach_angle
+    if angle is not None and not _on_page(angle.evidence, page):
+        print(f'outreach_angle quote not on the page; dropped: '
+              f'{angle.evidence[:120]!r}')
+        angle = None
+    # Told the caution is what to avoid, the model still wrote 'pay-per-lead
+    # safety' into it, and the drafter copied that into the email. Customers
+    # pay upfront; a caution carrying payment terms goes. Only terms: 'do
+    # not pitch ad spend or guarantee results' is what a caution is for.
+    if angle is not None and angle.caution and \
+            find_payment_terms(angle.caution):
+        print(f'outreach_angle caution carries payment terms; '
+              f'dropped: {angle.caution[:120]!r}')
+        angle = angle.model_copy(update={'caution': None})
+
+    return research.model_copy(
+        update={'contacts': contacts, 'outreach_angle': angle})
 
 
 def _set_research_output(result: dict, business_id: str) -> dict:
@@ -252,7 +458,8 @@ def research_agent(
         print(f'Warning: could not write input artifact: {e}')
 
     business_id = business.get('id', 'unknown')
-    kept, excluded = live_pool(verified_emails, crawl_excerpt)
+    usable, undeliverable = split_undeliverable(verified_emails)
+    kept, excluded = live_pool(usable, crawl_excerpt)
     texts: Tuple[Optional[str], ...] = (crawl_excerpt,)
 
     def finish(result: dict) -> dict:
@@ -262,12 +469,22 @@ def research_agent(
                 result['research'], kept, *texts).model_dump(mode='json')
         result['verified_emails'] = kept
         result['excluded_emails'] = excluded
+        result['undeliverable_emails'] = undeliverable
         if excluded:
             print(f'excluded verified emails absent from the site: {excluded}')
+        if undeliverable:
+            print(f'dropped addresses the email check found do not exist: '
+                  f'{undeliverable}')
         _set_research_output(result, business_id)
         write_artifact(result, suffix='output')
         register_artifact(result, suffix='output', description='output')
         return result
+
+    # Every address is dead: drafting would have to invent one, so stop
+    # before paying for a model call.
+    if verified_emails and not usable:
+        return finish({'status': 'rejected', 'reason': 'no_verified_emails',
+                       'research': None, 'passes': 0})
 
     prompt = build_research_prompt(business, kept, crawl_excerpt, offer=offer)
 
@@ -277,9 +494,10 @@ def research_agent(
                                     agent_model_env='RESEARCH_MODEL')
     except (LLMSchemaError, LLMTransportError) as exc:
         print(f'pass 1 failed: {type(exc).__name__}: {exc}')
-        return finish({'status': 'rejected', 'reason': 'llm_schema_failure',
+        return finish({'status': 'rejected', 'reason': failure_reason(exc),
                        'research': None, 'passes': 1})
 
+    first = _enforce_page(first, *texts)
     _write_back_person(business, first)
 
     print(f'pass 1 confidence {first.confidence} '
@@ -301,7 +519,7 @@ def research_agent(
     # The extra page is more evidence of which addresses are live, so the
     # pool is recomputed over both texts and pass 2 sees only that.
     texts = (crawl_excerpt, extra)
-    kept, excluded = live_pool(verified_emails, *texts)
+    kept, excluded = live_pool(usable, *texts)
 
     second_prompt = build_research_prompt(
         business, kept, crawl_excerpt,
@@ -313,10 +531,11 @@ def research_agent(
                                      agent_model_env='RESEARCH_MODEL')
     except (LLMSchemaError, LLMTransportError) as exc:
         print(f'pass 2 failed: {type(exc).__name__}: {exc}')
-        return finish({'status': 'rejected', 'reason': 'llm_schema_failure',
+        return finish({'status': 'rejected', 'reason': failure_reason(exc),
                        'research': first, 'passes': 2})
 
     # Pass 2 may name someone pass 1 missed, or name them better.
+    second = _enforce_page(second, *texts)
     _write_back_person(business, second)
 
     print(f'pass 2 confidence {second.confidence}')

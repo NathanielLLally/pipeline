@@ -306,7 +306,9 @@ def _process_business(
     try:
         with tags(*stage_tags, 'drafting'):
             drafted = drafting_agent(
-                researched['research'], emails, template_slug, offer)
+                researched['research'], emails, template_slug, offer,
+                website=business.get('website'),
+                business_id=business.get('id'))
     except Exception as exc:
         print(f"drafting errored for {business.get('business_name')}: "
               f"{type(exc).__name__}: {exc}")
@@ -315,6 +317,8 @@ def _process_business(
         return outcome, tallies + ['errored']
 
     outcome['draft_status'] = drafted['status']
+    if drafted.get('reason'):
+        outcome['draft_reason'] = drafted['reason']
     outcome['analysis_status'] = None
     if drafted['status'] != 'drafted':
         return outcome, tallies
@@ -374,13 +378,69 @@ def _process_business(
     return outcome, tallies
 
 
-def main(argv: Optional[List[str]] = None) -> dict:
-    """Run one batch in this process. See the module docstring."""
+EFFORTS = ['low', 'medium', 'high', 'none']
+
+
+def _usage_rows() -> List[Tuple[str, str, str]]:
+    from flow.multi_agent import TIERS
+    return [
+        ('--concurrency N', f'{DEFAULT_CONCURRENCY} (RUN_AGENTS_CONCURRENCY)',
+         'Businesses in flight at once'),
+        ('--batch-size N', f'concurrency x {BATCH_PER_WORKER}',
+         'Businesses to select'),
+        ('--tiers TIER ...', ' '.join(f'"{t}"' for t in DEFAULT_TIERS),
+         'ICP tiers to select from'),
+        ('--business-ids ID ...', '-',
+         'Run exactly these; skips selection and claims them even if already processed'),
+        ('--template-slug SLUG', 'default', 'Drafting template'),
+        ('--offer TEXT', '-', 'Offer text passed to the drafter'),
+        ('--no-preflight', 'off', 'Skip the MX check and the Jina crawl'),
+        ('--research-reasoning-effort', 'high',
+         f"Research answering-call effort: {', '.join(EFFORTS)}"),
+        ('--research-tier', '-',
+         f"Pin research to one multi-agent tier ({', '.join(TIERS)}); "
+         'implies RESEARCH_MODEL=multi-agent'),
+    ]
+
+
+def print_usage(file=None) -> None:
+    """The options table, printed for --help and under any command-line error."""
+    file = file or sys.stdout
+    rows = [('Option', 'Default', 'What it does')] + _usage_rows()
+    widths = [max(len(r[i]) for r in rows) for i in range(3)]
+    line = lambda r: '| ' + ' | '.join(c.ljust(w) for c, w in zip(r, widths)) + ' |'
+    print('usage: python flow/run_agents.py [options]\n', file=file)
+    print(line(rows[0]), file=file)
+    print('|' + '|'.join('-' * (w + 2) for w in widths) + '|', file=file)
+    for row in rows[1:]:
+        print(line(row), file=file)
+
+
+class _UsageParser(argparse.ArgumentParser):
+    """argparse with its help and error output replaced by print_usage."""
+
+    def print_help(self, file=None):
+        print_usage(file)
+
+    def error(self, message):
+        print(f'{self.prog}: error: {message}\n', file=sys.stderr)
+        print_usage(sys.stderr)
+        self.exit(2)
+
+
+def _positive_int(value: str) -> int:
+    number = int(value)
+    if number < 1:
+        raise argparse.ArgumentTypeError(f'must be at least 1, got {number}')
+    return number
+
+
+def build_parser() -> argparse.ArgumentParser:
     from flow.multi_agent import TIERS
 
-    parser = argparse.ArgumentParser(
+    parser = _UsageParser(
         prog='run_agents', description='Research, draft, analyze and import a batch.')
-    parser.add_argument('--batch-size', type=int,
+    parser.add_argument('--batch-size', type=_positive_int,
                         help=f'businesses to select (default: {BATCH_PER_WORKER} per worker)')
     parser.add_argument('--tiers', nargs='+', metavar='TIER',
                         help=f'ICP tiers to select from (default: {DEFAULT_TIERS})')
@@ -388,19 +448,24 @@ def main(argv: Optional[List[str]] = None) -> dict:
                         help='research exactly these businesses')
     parser.add_argument('--template-slug', default='default')
     parser.add_argument('--offer')
-    parser.add_argument('--concurrency', type=int,
+    parser.add_argument('--concurrency', type=_positive_int,
                         help=f'businesses in flight at once (default: {DEFAULT_CONCURRENCY})')
     parser.add_argument('--no-preflight', action='store_true',
                         help='skip mx_check and the Jina crawl')
     parser.add_argument('--research-reasoning-effort', default='high',
-                        choices=['low', 'medium', 'high', 'none'],
+                        choices=EFFORTS,
                         help="reasoning effort for research's answering calls "
                              "(default: high, the strongest every model honors; "
                              "'none' sends none)")
     parser.add_argument('--research-tier', choices=TIERS,
                         help='answer research with this multi-agent tier, skipping '
                              'the router; implies RESEARCH_MODEL=multi-agent')
-    args = parser.parse_args(argv)
+    return parser
+
+
+def main(argv: Optional[List[str]] = None) -> dict:
+    """Run one batch in this process. See the module docstring, or --help."""
+    args = build_parser().parse_args(argv)
 
     if args.research_reasoning_effort == 'none':
         os.environ.pop('RESEARCH_REASONING_EFFORT', None)

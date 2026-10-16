@@ -29,6 +29,17 @@ class TestOutcomeStatus:
         assert outcome_status({'research_status': 'researched', 'draft_status': 'error',
                                'error': 'Boom'})[0] == 'failed'
 
+    def test_an_unavailable_model_is_retryable(self):
+        """Research or drafting that never reached the model is not a
+        verdict on the business: 'failed', which a later batch takes."""
+        assert outcome_status({'research_status': 'rejected',
+                               'rejection_reason': 'llm_unavailable'}) == (
+            'failed', 'llm_unavailable')
+        assert outcome_status({'research_status': 'researched',
+                               'draft_status': 'rejected',
+                               'draft_reason': 'llm_unavailable'}) == (
+            'failed', 'draft llm_unavailable')
+
     def test_failed_import_is_retryable(self):
         status, reason = outcome_status({'research_status': 'researched', 'draft_status': 'drafted',
                                          'import_status': 'error', 'import_error': '429'})

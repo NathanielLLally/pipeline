@@ -66,6 +66,16 @@ _SELECT_BODY = """
                         from leads.email_verification v
                         where v.business_email_id = e.id
                         order by v.verified_at desc nulls last
+                        limit 1),
+                    -- The same verdict's error: false covers a mailbox that
+                    -- does not exist, a catch-all domain and a check that
+                    -- never finished, and only this says which
+                    -- (flow/email_pool.py: deliverability).
+                    'verification_error', (
+                        select v.error
+                        from leads.email_verification v
+                        where v.business_email_id = e.id
+                        order by v.verified_at desc nulls last
                         limit 1)))
                 from leads.business_email e
                 where e.business_id = b.id

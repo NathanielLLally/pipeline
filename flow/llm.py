@@ -29,6 +29,12 @@ REQUEST_TIMEOUT = float(os.environ.get('LLM_REQUEST_TIMEOUT', '120'))
 # This caps the whole call.
 CALL_TIMEOUT = float(os.environ.get('LLM_CALL_TIMEOUT', '180'))
 
+# Statuses worth another try: the upstream was overloaded, rate-limited or
+# unreachable. The free nemotron model 503s with "Upstream error from Nvidia:
+# Service temporarily overloaded" often enough to cost a business a batch.
+# A 400/401/403/404 is configuration and fails the same way every time.
+TRANSIENT_STATUSES = frozenset({408, 425, 429, 500, 502, 503, 504, 529})
+
 # Setting LLM_MODEL or an agent's own *_MODEL variable to this value sends its
 # calls through the multi-agent graph (flow/multi_agent.py) instead of to one
 # model: route, specialist, critic, evaluator, frontier on failure.
@@ -262,6 +268,121 @@ def _post_with_deadline(url: str, deadline: Optional[float] = None,
     return outcome['response']
 
 
+def is_transient(exc: BaseException) -> bool:
+    """True for a transport failure another attempt may not repeat: an
+    overload, rate-limit or gateway status, or no status at all (the
+    deadline passed or the connection dropped)."""
+    if not isinstance(exc, LLMTransportError):
+        return False
+    return exc.status_code is None or exc.status_code in TRANSIENT_STATUSES
+
+
+def _env_number(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, '').strip() or default)
+    except ValueError:
+        return default
+
+
+def retry_delays() -> list:
+    """
+    Seconds to wait before each retry: LLM_RETRY_DELAY (15) doubling up to
+    LLM_RETRY_MAX_DELAY (300), LLM_RETRIES (6) of them -- about 13 minutes of
+    waiting in all. Bounded on purpose: a free model can stay overloaded for
+    hours, and a waiting business holds one of the batch's worker slots.
+    Read per call.
+    """
+    retries = max(0, int(_env_number('LLM_RETRIES', 6)))
+    base = _env_number('LLM_RETRY_DELAY', 15)
+    cap = _env_number('LLM_RETRY_MAX_DELAY', 300)
+    return [min(base * 2 ** i, cap) for i in range(retries)]
+
+
+def attempt_limits(attempt: int, base_deadline: Optional[float] = None
+                   ) -> Tuple[float, float]:
+    """
+    (call deadline, per-read timeout) for attempt `attempt`, 1-based. Both
+    double on every retry -- a model that ran out of time under load runs
+    out again at the same limit -- up to LLM_MAX_CALL_TIMEOUT (900s). The
+    read timeout grows too: it alone would otherwise end every attempt at
+    LLM_REQUEST_TIMEOUT however long the deadline.
+    """
+    cap = _env_number('LLM_MAX_CALL_TIMEOUT', 900)
+    factor = 2 ** max(0, attempt - 1)
+    deadline = min((base_deadline or CALL_TIMEOUT) * factor, cap)
+    return deadline, min(REQUEST_TIMEOUT * factor, deadline)
+
+
+def retry_condition(task: Any, task_run: Any, state: Any) -> bool:
+    """Prefect's retry_condition_fn: retry only what is_transient allows."""
+    try:
+        state.result(raise_on_failure=True)
+    except BaseException as exc:
+        return is_transient(exc)
+    return False
+
+
+def _in_prefect_run() -> bool:
+    """Whether a flow run is active. Outside one a task call tries to start
+    an ephemeral server, which this deployment does not allow."""
+    try:
+        from prefect.context import FlowRunContext
+    except ImportError:
+        return False
+    return FlowRunContext.get() is not None
+
+
+def _run_count() -> int:
+    from prefect.runtime import task_run
+    return int(task_run.run_count or 1)
+
+
+def _attempt(messages: list, model: str, response_format: Optional[dict],
+             base_url: Optional[str], api_key: Optional[str],
+             deadline: Optional[float], timeout_name: Optional[str],
+             request_timeout: Optional[float] = None,
+             **params: Any) -> Tuple[str, float, Optional[dict]]:
+    """One proxy call, tallied for count_calls(); an empty reply counts as
+    failed. Each retry is its own attempt and its own tally."""
+    try:
+        content, cost, usage = _chat_completion(
+            messages, model, response_format=response_format,
+            base_url=base_url, api_key=api_key, deadline=deadline,
+            timeout_name=timeout_name, request_timeout=request_timeout,
+            **params)
+    except BaseException:
+        record_call(model, ok=False)
+        raise
+    record_call(model, ok=bool(content and content.strip()), usage=usage)
+    return content, cost, usage
+
+
+def _llm_call(messages: list, model: str, response_format: Optional[dict],
+              base_url: Optional[str], api_key: Optional[str],
+              deadline: Optional[float], timeout_name: Optional[str],
+              params: dict) -> Tuple[str, float, Optional[dict]]:
+    """The body of the llm-call task: this attempt's limits, then the call."""
+    limit, read = attempt_limits(_run_count(), base_deadline=deadline)
+    return _attempt(messages, model, response_format, base_url, api_key,
+                    deadline=limit, timeout_name=timeout_name,
+                    request_timeout=read, **params)
+
+
+try:
+    from prefect import task as _prefect_task
+    from prefect.cache_policies import NO_CACHE
+
+    # A task, so each attempt and each wait shows on the flow run in the UI.
+    # NO_CACHE: the default policy keys on inputs and the flow run, and the
+    # same prompt twice in one run must be two calls. persist_result=False:
+    # the reply is already in the agent's own artifacts.
+    _llm_call_task = _prefect_task(
+        _llm_call, name='llm-call', task_run_name='llm-call {model}',
+        cache_policy=NO_CACHE, persist_result=False, log_prints=True)
+except ImportError:  # pragma: no cover -- prefect is a dependency
+    _llm_call_task = None
+
+
 def chat_completion(
     messages: list,
     model: str,
@@ -281,16 +402,21 @@ def chat_completion(
     The cost is the proxy's x-litellm-response-cost header, 0.0 when absent.
     `params` (temperature, max_tokens, ...) go into the request body as-is.
     Every call is tallied for count_calls(); an empty reply counts as failed.
+
+    Inside a flow run the call is the llm-call Prefect task, retried on a
+    transient failure (is_transient) after retry_delays(), each attempt
+    with longer limits (attempt_limits). Outside one it is a single attempt.
     """
-    try:
-        content, cost, usage = _chat_completion(
-            messages, model, response_format=response_format,
-            base_url=base_url, api_key=api_key, deadline=deadline,
-            timeout_name=timeout_name, **params)
-    except BaseException:
-        record_call(model, ok=False)
-        raise
-    record_call(model, ok=bool(content and content.strip()), usage=usage)
+    if _llm_call_task is not None and _in_prefect_run():
+        delays = retry_delays()
+        call = _llm_call_task.with_options(
+            retries=len(delays), retry_delay_seconds=delays,
+            retry_jitter_factor=0.2, retry_condition_fn=retry_condition)
+        content, cost, _ = call(messages, model, response_format, base_url,
+                                api_key, deadline, timeout_name, params)
+        return content, cost
+    content, cost, _ = _attempt(messages, model, response_format, base_url,
+                                api_key, deadline, timeout_name, **params)
     return content, cost
 
 
@@ -302,6 +428,7 @@ def _chat_completion(
     api_key: Optional[str],
     deadline: Optional[float],
     timeout_name: Optional[str],
+    request_timeout: Optional[float] = None,
     **params: Any,
 ) -> Tuple[str, float, Optional[dict]]:
     base_url = base_url or PROXY_URL
@@ -327,7 +454,8 @@ def _chat_completion(
         response = _post_with_deadline(
             f'{base_url}/v1/chat/completions', deadline=deadline,
             json=body, headers=headers,
-            timeout=min(REQUEST_TIMEOUT, limit) if deadline is not None
+            timeout=request_timeout if request_timeout is not None
+            else min(REQUEST_TIMEOUT, limit) if deadline is not None
             else REQUEST_TIMEOUT,
         )
         response.raise_for_status()

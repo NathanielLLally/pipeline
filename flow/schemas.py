@@ -20,7 +20,19 @@ REJECTION_REASONS = (
     'low_confidence_after_two_passes',
     'low_confidence_no_escalation_url',
     'llm_schema_failure',
+    # The model never answered: still down after flow.llm's retries. Not a
+    # verdict on the business, so the outreach state records it as
+    # 'failed' and a later batch takes it again.
+    'llm_unavailable',
 )
+
+
+def failure_reason(exc: BaseException) -> str:
+    """The rejection reason for an exception out of complete_structured:
+    llm_unavailable for a transport failure, llm_schema_failure otherwise."""
+    if type(exc).__name__ == 'LLMTransportError':
+        return 'llm_unavailable'
+    return 'llm_schema_failure'
 
 
 class VerifiedEmail(BaseModel):
@@ -38,9 +50,14 @@ class Contact(BaseModel):
     # Only an address the page states or the live verified pool holds; the
     # research node nulls anything else after parsing.
     email: Optional[str] = None
-    # Set from the title: owner, founder, director, practice manager and the
-    # like decide whether to buy; a trainer or groomer usually does not.
+    # Owner, founder, director, practice manager and the like decide whether
+    # to buy; a trainer or groomer usually does not. Shown by the title, or
+    # by `evidence` -- family businesses rarely print 'Owner' by a name.
     is_decision_maker: bool = False
+    # A quote, verbatim from the pages, that names this person and shows
+    # their role ('started everything for Laura and me'). Research nulls it
+    # when it is not on the page, and a decision maker needs it or a title.
+    evidence: Optional[str] = None
 
     @field_validator('name', 'title')
     @classmethod
@@ -57,6 +74,24 @@ class Contact(BaseModel):
         return value
 
 
+class OutreachAngle(BaseModel):
+    """
+    The one thing about the business itself -- not its customers -- that the
+    offer speaks to. Drafting builds the email's opening and its offer
+    sentence around it (flow.offer.build_outreach_goal).
+    """
+
+    # Their situation in one plain sentence: a stated problem (lost ad
+    # budget, empty classes, a closed location) or a growth move (hiring, a
+    # new location or program, free-lesson funnels that need filling).
+    problem: str
+    # Quoted verbatim from the crawled text; research drops the whole angle
+    # when the quote is not there.
+    evidence: str
+    # What the pitch must not trip over, given what they have been through.
+    caution: Optional[str] = None
+
+
 class ResearchOutput(BaseModel):
     business_name: str
     # The people to write to, extracted from the crawled pages. Empty is
@@ -70,6 +105,8 @@ class ResearchOutput(BaseModel):
     evidence: List[str]
     suggested_email: str
     next_url_to_check: Optional[str] = None
+    # Optional so research stored before it existed still validates.
+    outreach_angle: Optional[OutreachAngle] = None
 
 
 def primary_contact(research: Dict[str, Any]) -> Tuple[Optional[str],
@@ -158,7 +195,48 @@ class DraftingOutput(BaseModel):
                 'copy, and do not sign off with a name -- the sending system '
                 'adds the signature'
             )
+        claim = find_payment_or_promise(value)
+        if claim:
+            raise ValueError(
+                f'payment terms or a promise {claim!r}: say nothing about how '
+                'or when they pay, and promise nothing the offer does not '
+                'state'
+            )
         return value
+
+
+# Payment terms and promises a draft must not make. Customers pay upfront;
+# drafts said 'no upfront ad spend', 'you pay only for qualified leads' and
+# 'fraud protection built in'. Matched case-insensitively on the subject
+# and body.
+_PAYMENT_OR_PROMISE = re.compile(
+    r'up[\s-]?front|ad spend|\bpay(?:s|ing)? only\b|\bonly pay|'
+    r'\bpay(?:s|ing)?[\s-]per\b|\bper[\s-](?:qualified[\s-])?lead\b|'
+    r'risk[\s-]?free|'
+    r'\bno risk\b|guarantee|money[\s-]?back|refund|free trial',
+    re.IGNORECASE)
+
+
+# Payment terms alone: what a research caution must not carry. Narrower than
+# the draft check, because a caution names what to avoid -- 'do not pitch
+# ad spend or guarantee results' is a good caution.
+_PAYMENT_TERMS = re.compile(
+    r'up[\s-]?front|\bpay(?:s|ing)? only\b|\bonly pay|'
+    r'\bpay(?:s|ing)?[\s-]per\b|\bper[\s-](?:qualified[\s-])?lead\b|'
+    r'risk[\s-]?free|\bno risk\b|money[\s-]?back|refund',
+    re.IGNORECASE)
+
+
+def find_payment_terms(value: str) -> Optional[str]:
+    """The first payment term in `value`, or None."""
+    match = _PAYMENT_TERMS.search(value or '')
+    return match.group(0) if match else None
+
+
+def find_payment_or_promise(value: str) -> Optional[str]:
+    """The first payment term or promise in `value`, or None."""
+    match = _PAYMENT_OR_PROMISE.search(value or '')
+    return match.group(0) if match else None
 
 
 class DraftAnalysisOutput(BaseModel):

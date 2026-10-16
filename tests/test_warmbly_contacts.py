@@ -476,3 +476,97 @@ class TestComposeDrafts:
         with patch('flow.warmbly_contacts.httpx.put', return_value=bad), \
              pytest.raises(RuntimeError, match='WRITE_UNIBOX'):
             create_compose_drafts(build_compose_drafts(BUSINESS, DRAFT))
+
+
+class TestOnlyThisBusinessesAddressesAreImported:
+    """An unselected pool address on another business's domain is not this
+    business's contact.
+
+    hello@k9culturedogtraining.com sat in Home Dog Training's site header
+    (a page-builder leftover); it became a Warmbly contact carrying Home Dog
+    Training's company, research and decision maker.
+    """
+
+    def _emails(self, pool, draft=DRAFT, business=BUSINESS):
+        return [p['email'] for p in build_contact_payloads(
+            business, RESEARCH, draft, candidate_emails=pool)]
+
+    def test_another_business_domain_is_skipped(self):
+        pool = [{'email': 'hello@k9culturedogtraining.com', 'is_role': True}]
+
+        assert self._emails(pool) == ['training@homedogtraining.com']
+
+    def test_the_website_domain_is_imported(self):
+        pool = [{'email': 'wyatt@homedogtrainingllc.com', 'is_role': False}]
+
+        assert 'wyatt@homedogtrainingllc.com' in self._emails(pool)
+
+    def test_the_domain_of_a_selected_address_is_imported(self):
+        """training@homedogtraining.com is theirs -- that domain redirects to
+        their site -- and drafting chose it, so its siblings are theirs too."""
+        pool = [{'email': 'info@homedogtraining.com'}]
+
+        assert 'info@homedogtraining.com' in self._emails(pool)
+
+    def test_free_mail_is_imported(self):
+        pool = [{'email': 'homedogtraining@gmail.com'}]
+
+        assert 'homedogtraining@gmail.com' in self._emails(pool)
+
+    def test_a_selected_address_is_imported_whatever_its_domain(self):
+        """Drafting chose it; the draft must land."""
+        draft = dict(DRAFT, selected_emails=['owner@elsewhere.example'])
+
+        assert self._emails([], draft=draft) == ['owner@elsewhere.example']
+
+    def test_an_address_the_check_proved_dead_is_skipped(self):
+        pool = [{'email': 'old@homedogtrainingllc.com', 'verified': False,
+                 'verification_error': '5.1.1 does not exist'}]
+
+        assert 'old@homedogtrainingllc.com' not in self._emails(pool)
+
+    def test_no_check_fields_reach_the_payload(self):
+        pool = [{'email': 'wyatt@homedogtrainingllc.com', 'verified': False,
+                 'verification_error': 'false positive check failed'}]
+
+        for p in build_contact_payloads(BUSINESS, RESEARCH, DRAFT,
+                                        candidate_emails=pool):
+            assert 'verification_error' not in p
+            assert 'verification_error' not in p['custom_fields']
+
+
+class TestEachAddressGetsItsOwnPerson:
+    """One person stamped on every payload put Laura's name on Wyatt's
+    address and on another business's inbox."""
+
+    CONTACTS = [
+        {'name': 'Laura', 'title': None, 'email': None,
+         'is_decision_maker': False},
+        {'name': 'Wyatt Smith', 'title': 'Trainer',
+         'email': None, 'is_decision_maker': False},
+        {'name': 'Megan Fields', 'title': 'Groomer',
+         'email': 'megs@homedogtrainingllc.com', 'is_decision_maker': False},
+    ]
+
+    def _by_email(self, pool):
+        research = dict(RESEARCH, contacts=self.CONTACTS)
+        return {p['email']: p for p in build_contact_payloads(
+            BUSINESS, research, DRAFT, candidate_emails=pool)}
+
+    def test_an_address_research_tied_to_a_person_gets_that_person(self):
+        p = self._by_email([{'email': 'megs@homedogtrainingllc.com'}])[
+            'megs@homedogtrainingllc.com']
+
+        assert (p['first_name'], p['last_name']) == ('Megan', 'Fields')
+        assert p['custom_fields']['decision_maker_title'] == 'Groomer'
+
+    def test_a_local_part_that_is_a_named_persons_first_name(self):
+        p = self._by_email([{'email': 'wyatt@homedogtrainingllc.com'}])[
+            'wyatt@homedogtrainingllc.com']
+
+        assert (p['first_name'], p['last_name']) == ('Wyatt', 'Smith')
+
+    def test_a_shared_inbox_gets_the_primary_contact(self):
+        p = self._by_email([])['training@homedogtraining.com']
+
+        assert p['first_name'] == 'Laura'

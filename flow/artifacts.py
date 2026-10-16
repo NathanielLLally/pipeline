@@ -5,6 +5,9 @@ Files are named by sorting `prefect.runtime.flow_run.tags` and joining with '-':
   input:  {tags_joined}-input.json
   output: {tags_joined}-output.json
 
+Files go in data/ at the repo root (ARTIFACT_DIR overrides it), not the
+current directory, which a batch run used to fill with hundreds of them.
+
 Tags are set at the *call site*, not inside the agent -- see the
 `with tags(business_id, stage)` wrappers in flow/run_agents.py. An agent
 invoked without them writes to 'unknown-input.json'/'unknown-output.json'.
@@ -16,11 +19,13 @@ This is useful for:
 """
 
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT))
 
 import re
 
@@ -47,6 +52,11 @@ def variable_safe_name(raw: str) -> str:
     separator -- dashes, spaces, punctuation -- with '_'.
     """
     return slugify(raw, separator='_', lowercase=True)
+
+
+def artifact_dir() -> Path:
+    """Where artifacts live: $ARTIFACT_DIR, else data/ at the repo root."""
+    return Path(os.environ.get('ARTIFACT_DIR') or REPO_ROOT / 'data')
 
 
 def artifact_filename(suffix: str = 'output') -> str:
@@ -88,7 +98,8 @@ def write_artifact(data: Dict[str, Any], suffix: str = 'output',
     Args:
         data: dict to serialize
         suffix: 'input' or 'output'
-        directory: where to write (default: current directory)
+        directory: where to write (default: artifact_dir(); created if
+                   missing)
 
     Returns:
         Path to the written file
@@ -96,10 +107,8 @@ def write_artifact(data: Dict[str, Any], suffix: str = 'output',
     Raises:
         ValueError: if data cannot be JSON-serialized
     """
-    if directory is None:
-        directory = Path('.')
-    else:
-        directory = Path(directory)
+    directory = artifact_dir() if directory is None else Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
 
     filename = artifact_filename(suffix)
     filepath = directory / filename
@@ -165,7 +174,9 @@ def read_artifact(filepath: str, suffix: Optional[str] = None) -> Dict[str, Any]
     Read a JSON artifact.
 
     Args:
-        filepath: path to the JSON file. Can be absolute or relative.
+        filepath: path to the JSON file. Can be absolute or relative; a
+                 relative path that does not exist is looked up in
+                 artifact_dir(), so a bare written filename replays.
                  If suffix is provided and filepath has no extension,
                  append '-{suffix}.json'.
         suffix: optional suffix to append if filepath has no extension
@@ -183,6 +194,11 @@ def read_artifact(filepath: str, suffix: Optional[str] = None) -> Dict[str, Any]
     # If no extension, try appending suffix
     if path.suffix == '' and suffix:
         path = path.with_name(f'{path.name}-{suffix}.json')
+
+    if not path.exists() and not path.is_absolute():
+        stored = artifact_dir() / path
+        if stored.exists():
+            path = stored
 
     if not path.exists():
         raise FileNotFoundError(f'Artifact not found: {path}')

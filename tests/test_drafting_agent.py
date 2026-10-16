@@ -131,6 +131,16 @@ class TestLLMFailuresStillReject:
         assert result['status'] == 'rejected'
         assert result['reason'] == 'llm_schema_failure'
 
+    def test_transport_failure_is_llm_unavailable(self):
+        from flow.llm import LLMTransportError
+
+        with patch('flow.agents.drafting.complete_structured',
+                   side_effect=LLMTransportError("503", status_code=503)):
+            result = drafting_agent.fn(RESEARCH, EMAILS)
+
+        assert result['status'] == 'rejected'
+        assert result['reason'] == 'llm_unavailable'
+
 
 class TestOfferContext:
     """Without the offer, the agent invents what we sell -- and gets it wrong.
@@ -275,3 +285,238 @@ class TestJSONArtifactInput:
             input_call = mock_write.call_args_list[0]
             data = input_call.args[0]
             assert data['template_slug'] == 'json-template'
+
+
+CONTACTS = [
+    {'name': 'Laura', 'title': None, 'email': None, 'is_decision_maker': False},
+    {'name': 'Charles', 'title': 'Owner', 'email': None,
+     'is_decision_maker': True},
+    {'name': 'Wyatt', 'title': 'Trainer', 'email': 'wyatt@happytails.example',
+     'is_decision_maker': False},
+]
+
+
+class TestDrafterSeesThePeople:
+    """Research found the owners; the drafter was never told.
+
+    build_drafting_prompt read hook, tone, pain and evidence but not
+    contacts, so the 2026-10-14 Home Dog Training draft greeted nobody
+    although research had named Laura and Charles.
+    """
+
+    def test_prompt_lists_every_named_person(self):
+        prompt = build_drafting_prompt(dict(RESEARCH, contacts=CONTACTS), EMAILS)
+
+        for name in ('Laura', 'Charles', 'Wyatt'):
+            assert name in prompt
+
+    def test_prompt_marks_who_decides_and_what_title_the_page_gives(self):
+        prompt = build_drafting_prompt(dict(RESEARCH, contacts=CONTACTS), EMAILS)
+
+        assert 'Charles (Owner; decides on spending)' in prompt
+        assert 'Laura (no title stated)' in prompt
+        assert 'wyatt@happytails.example' in prompt
+
+    def test_prompt_says_who_to_greet(self):
+        prompt = build_drafting_prompt(dict(RESEARCH, contacts=CONTACTS),
+                                       EMAILS).lower()
+
+        assert 'greet' in prompt
+        assert 'first name' in prompt
+
+    def test_no_contacts_says_so_and_asks_for_no_name(self):
+        prompt = build_drafting_prompt(dict(RESEARCH, contacts=[]), EMAILS)
+
+        assert 'People named on their site: none' in prompt
+
+    def test_legacy_research_without_contacts_still_builds(self):
+        assert 'none' in build_drafting_prompt(RESEARCH, EMAILS)
+
+
+class TestDrafterSeesWhatTheEmailCheckFound:
+    POOL = [
+        {'email': 'info@happytails.example', 'verified': False,
+         'verification_error': '[Net::SMTP] Connection closed', 'is_role': True},
+        {'email': 'wyatt@happytails.example', 'verified': False,
+         'verification_error': 'false positive check failed for mx x',
+         'is_role': False},
+    ]
+
+    def test_pool_is_no_longer_called_verified(self):
+        prompt = build_drafting_prompt(RESEARCH, self.POOL)
+
+        assert 'Verified addresses' not in prompt
+
+    def test_each_address_carries_its_status(self):
+        prompt = build_drafting_prompt(RESEARCH, self.POOL)
+
+        assert 'info@happytails.example' in prompt
+        assert 'unknown' in prompt
+        assert 'catch_all' in prompt
+        assert 'shared inbox' in prompt
+
+
+ANGLE = {
+    'problem': 'A click-fraud attack drained their ad budget and closed '
+               'their Carrollton facility.',
+    'evidence': 'After a criminal click-fraud attack drained our ad budget',
+    'caution': 'Paid ads burned them; do not lead with running ads.',
+}
+
+
+class TestGoalIsBuiltFromTheResearch:
+    """With an outreach_angle the opening is theirs, not a generic chain."""
+
+    def test_prompt_opens_on_the_angle(self):
+        prompt = build_drafting_prompt(dict(RESEARCH, outreach_angle=ANGLE),
+                                       EMAILS)
+
+        assert ANGLE['problem'] in prompt
+        assert ANGLE['caution'] in prompt
+
+    def test_the_hook_is_not_a_second_competing_steer(self):
+        prompt = build_drafting_prompt(dict(RESEARCH, outreach_angle=ANGLE),
+                                       EMAILS)
+
+        assert 'Why this matters to them' not in prompt
+
+    def test_without_an_angle_the_hook_and_default_goal_stay(self):
+        from flow.offer import OUTREACH_GOAL
+
+        prompt = build_drafting_prompt(RESEARCH, EMAILS)
+
+        assert 'Why this matters to them: phone only' in prompt
+        assert OUTREACH_GOAL in prompt
+
+
+class TestOffDomainNoteNeedsTheWebsite:
+    POOL = [{'email': 'wyatt@homedogtrainingllc.com', 'verified': None},
+            {'email': 'hello@k9culture.example', 'verified': None}]
+
+    def test_with_the_website_only_the_foreign_address_is_flagged(self):
+        prompt = build_drafting_prompt(
+            RESEARCH, self.POOL, website='https://www.homedogtrainingllc.com/')
+        # The recipient has its own 'Write to:' line; the rest are listed.
+        lines = {a: next(l for l in prompt.splitlines() if a + ' (' in l)
+                 for a in ('hello@k9culture.example',
+                           'wyatt@homedogtrainingllc.com')}
+
+        assert "not on their website's domain" in lines['hello@k9culture.example']
+        assert "not on their website's domain" not in \
+            lines['wyatt@homedogtrainingllc.com']
+
+    def test_without_the_website_nothing_is_flagged(self):
+        """Guessing the domain from the suggested address flags the wrong one."""
+        prompt = build_drafting_prompt(RESEARCH, self.POOL)
+
+        assert "not on their website's domain" not in prompt
+
+    def test_the_website_is_kept_in_the_input_artifact_for_replay(self):
+        with TemporaryDirectory() as tmp, \
+             patch('flow.agents.drafting.complete_structured',
+                   return_value=_draft()), \
+             patch('flow.agents.drafting.write_artifact') as write:
+            drafting_agent.fn(RESEARCH, EMAILS, website='https://x.example')
+
+        assert write.call_args_list[0].args[0]['website'] == 'https://x.example'
+
+
+class TestOutputVariableIsPerBusiness:
+    """Every business wrote drafting_agent_output_unknown: ResearchOutput
+    has no business_id, which is where the key came from."""
+
+    def _stored_under(self, **kwargs):
+        with patch('flow.agents.drafting.complete_structured',
+                   return_value=_draft()), \
+             patch('flow.agents.drafting.write_artifact'), \
+             patch('flow.agents.drafting._set_drafting_output',
+                   side_effect=lambda r, b: r) as store:
+            drafting_agent.fn(RESEARCH, EMAILS, **kwargs)
+        return store.call_args.args[1]
+
+    def test_keyed_by_the_business_id_it_is_given(self):
+        assert self._stored_under(business_id='biz-1') == 'biz-1'
+
+    def test_research_carrying_an_id_still_works(self):
+        with patch('flow.agents.drafting.complete_structured',
+                   return_value=_draft()), \
+             patch('flow.agents.drafting.write_artifact'), \
+             patch('flow.agents.drafting._set_drafting_output',
+                   side_effect=lambda r, b: r) as store:
+            drafting_agent.fn(dict(RESEARCH, business_id='biz-9'), EMAILS)
+
+        assert store.call_args.args[1] == 'biz-9'
+
+    def test_a_failed_draft_is_keyed_by_it_too(self):
+        from flow.llm import LLMSchemaError
+
+        with patch('flow.agents.drafting.complete_structured',
+                   side_effect=LLMSchemaError('x')), \
+             patch('flow.agents.drafting.write_artifact'), \
+             patch('flow.agents.drafting._set_drafting_output',
+                   side_effect=lambda r, b: r) as store:
+            drafting_agent.fn(RESEARCH, EMAILS, business_id='biz-1')
+
+        assert store.call_args.args[1] == 'biz-1'
+
+    def test_the_id_is_kept_in_the_input_artifact_for_replay(self):
+        with patch('flow.agents.drafting.complete_structured',
+                   return_value=_draft()), \
+             patch('flow.agents.drafting.write_artifact') as write:
+            drafting_agent.fn(RESEARCH, EMAILS, business_id='biz-1')
+
+        assert write.call_args_list[0].args[0]['business_id'] == 'biz-1'
+
+
+SHARED_INBOX = {'email': 'training@homedogtraining.com', 'is_role': True,
+                'verified': False,
+                'verification_error': '[Net::SMTP] Connection closed'}
+WYATTS = {'email': 'wyatt@homedogtrainingllc.com', 'is_role': False,
+          'verified': False,
+          'verification_error': 'false positive check failed for mx x'}
+OWNERS = [{'name': 'Laura', 'title': None, 'email': None,
+           'is_decision_maker': True},
+          {'name': 'Wyatt', 'title': None, 'email': None,
+           'is_decision_maker': False}]
+
+
+class TestRecipientIsChosenInCode:
+    """The prompt rule 'decision maker, then shared inbox, then anyone else'
+    was ignored: with the owners known, the replay wrote to a trainer."""
+
+    RESEARCH = dict(RESEARCH, contacts=OWNERS,
+                    suggested_email='wyatt@homedogtrainingllc.com')
+    POOL = [WYATTS, SHARED_INBOX]
+
+    def test_prompt_names_the_recipient_and_who_to_greet(self):
+        prompt = build_drafting_prompt(self.RESEARCH, self.POOL)
+
+        assert 'Write to: training@homedogtraining.com' in prompt
+        assert 'Greet Laura by first name' in prompt
+
+    def test_no_decision_maker_on_a_shared_inbox_greets_nobody(self):
+        research = dict(self.RESEARCH, contacts=[OWNERS[1]])
+
+        prompt = build_drafting_prompt(research, self.POOL)
+
+        assert 'Greet no one by name' in prompt
+
+    def test_the_researcher_suggestion_is_not_a_competing_steer(self):
+        prompt = build_drafting_prompt(self.RESEARCH, self.POOL)
+
+        assert 'Researcher suggested' not in prompt
+
+    def test_a_lower_ranked_pick_is_replaced_by_the_recipient(self):
+        with patch('flow.agents.drafting.complete_structured',
+                   return_value=_draft(selected_emails=[WYATTS['email']])):
+            result = drafting_agent.fn(self.RESEARCH, self.POOL)
+
+        assert result['draft']['selected_emails'] == [SHARED_INBOX['email']]
+
+    def test_an_equally_ranked_pick_is_kept(self):
+        other = dict(SHARED_INBOX, email='info@homedogtraining.com')
+        with patch('flow.agents.drafting.complete_structured',
+                   return_value=_draft(selected_emails=[other['email']])):
+            result = drafting_agent.fn(self.RESEARCH, [SHARED_INBOX, other])
+
+        assert result['draft']['selected_emails'] == [other['email']]

@@ -189,7 +189,7 @@ class TestResearchExtractsPeople:
 
         assert contact['additionalProperties'] is False
         assert set(contact['required']) == {
-            'name', 'title', 'email', 'is_decision_maker'}
+            'name', 'title', 'email', 'is_decision_maker', 'evidence'}
 
 
 class TestPrimaryContact:
@@ -221,3 +221,33 @@ class TestPrimaryContact:
         research = {'contact_name': 'Wyatt Smith', 'contact_title': 'Owner'}
 
         assert primary_contact(research) == ('Wyatt Smith', 'Owner')
+
+
+class TestDraftMakesNoPaymentClaims:
+    """A draft that states payment terms or promises is re-asked, like one
+    with a placeholder. Customers pay upfront; drafts said 'no upfront ad
+    spend', 'you pay only for qualified leads', 'fraud protection built in'."""
+
+    def _draft(self, body):
+        return dict(selected_emails=['a@b.com'], subject='Hi', rationale='r',
+                    email_text=body)
+
+    import pytest as _pytest
+
+    @_pytest.mark.parametrize('body', [
+        'Qualified leads with no upfront ad spend.',
+        'Zero up-front cost to you.',
+        'You pay only for qualified leads.',
+        'You only pay per lead.',
+        'Risk-free, guaranteed results.',
+        'Money-back if they do not convert.',
+    ])
+    def test_payment_terms_and_promises_are_rejected(self, body):
+        with pytest.raises(ValueError, match='payment terms or a promise'):
+            DraftingOutput(**self._draft(body))
+
+    def test_an_ordinary_draft_passes(self):
+        DraftingOutput(**self._draft(
+            'People in Rockwall are looking for help with reactive dogs. We '
+            'run the ads, screen the inquiries, and pass you the serious '
+            'ones. Reply if interested.'))

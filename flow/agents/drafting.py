@@ -30,7 +30,10 @@ from flow.artifacts import (
     write_artifact,
 )
 from flow.llm import LLMSchemaError, LLMTransportError, complete_structured
-from flow.offer import OUTREACH_GOAL, resolve_offer
+from flow.schemas import failure_reason
+from flow.email_pool import (address_rank, choose_recipient, describe_address,
+                              greeting_name)
+from flow.offer import build_outreach_goal, resolve_offer
 from flow.schemas import DraftingOutput
 
 SYSTEM_PROMPT = (
@@ -45,29 +48,95 @@ def build_drafting_prompt(
     verified_emails: list,
     template_slug: str = 'default',
     offer: Optional[str] = None,
+    website: Optional[str] = None,
 ) -> str:
     """Assemble the drafting prompt. Pure, so it can be asserted on."""
-    pool = ', '.join(e['email'] for e in verified_emails) or '(none)'
+    # Without the website the off-domain note is left out rather than
+    # guessed: the researcher's pick can itself be on a sibling domain.
+    business = {'website': website}
+    contacts = research.get('contacts') or []
+    recipient = choose_recipient(verified_emails, contacts)
 
-    return '\n'.join([
+    lines = [
         f"What we are offering them: {resolve_offer(offer)}",
         '',
-        OUTREACH_GOAL,
+        build_outreach_goal(research),
         '',
         f"Business: {research.get('business_name')}",
         f"Tone observed on their site: {research.get('inferred_tone')}",
-        f"Why this matters to them: {research.get('personalization_hook')}",
+    ]
+    # With an outreach_angle the goal above already says what this matters
+    # to them; the hook alongside it was a second, competing steer.
+    if not research.get('outreach_angle'):
+        lines.append(
+            f"Why this matters to them: {research.get('personalization_hook')}")
+    lines += [
         f"Pain signals: {'; '.join(research.get('pain_signals') or [])}",
         f"Evidence: {'; '.join(research.get('evidence') or [])}",
-        f"Researcher suggested: {research.get('suggested_email')}",
+        f"People named on their site: {_people(contacts)}",
         f"Template: {template_slug}",
         '',
-        f"Verified addresses you may write to: {pool}",
-        '',
-        'Choose selected_emails from the verified addresses above and only '
-        'those. Return subject, email_text (the email body), and a rationale '
-        'for the framing.',
-    ])
+    ]
+    # Who to write to and who to greet are decided here, not by the model:
+    # told the rule in words, it wrote to a trainer while the owners were
+    # known. drafting_agent holds the selection to it afterwards too.
+    if recipient is None:
+        lines += ['Addresses you may write to: (none)', '']
+    else:
+        others = [e for e in verified_emails if e is not recipient]
+        name = greeting_name(recipient['email'], contacts)
+        lines += [
+            f"Write to: {describe_address(recipient, business)}",
+            *(['Other addresses on file, for reference only:']
+              + [f'- {describe_address(e, business)}' for e in others]
+              if others else []),
+            '',
+            f'Greet {name} by first name.' if name else
+            'Greet no one by name: no decision maker is named for this '
+            'address.',
+            '',
+        ]
+    lines.append(
+        'Put that address in selected_emails, and only addresses given '
+        'above. Return subject, email_text (the email body), and a '
+        'rationale for the framing.')
+    return '\n'.join(lines)
+
+
+def hold_to_recipient(selected: list, verified_emails: list,
+                      contacts: list) -> list:
+    """
+    The selection, held to the address build_drafting_prompt named.
+
+    A pick from the pool ranked below that address is dropped, and if no
+    pool address is left the named one is put first. Equally ranked picks
+    and addresses outside the pool pass through -- the pool is not an
+    allowlist (see drafting_agent).
+    """
+    recipient = choose_recipient(verified_emails, contacts)
+    if recipient is None:
+        return list(selected)
+    best = address_rank(recipient, contacts)
+    by_address = {e['email'].lower(): e for e in verified_emails}
+    kept = [a for a in selected
+            if a.lower() not in by_address
+            or address_rank(by_address[a.lower()], contacts) <= best]
+    if not any(a.lower() in by_address for a in kept):
+        kept.insert(0, recipient['email'])
+    return kept
+
+
+def _people(contacts: Optional[list]) -> str:
+    """'Charles (Owner; decides on spending), Laura (no title stated)'."""
+    described = []
+    for c in contacts or []:
+        notes = [c.get('title') or 'no title stated']
+        if c.get('is_decision_maker'):
+            notes.append('decides on spending')
+        if c.get('email'):
+            notes.append(c['email'])
+        described.append(f"{c.get('name')} ({'; '.join(notes)})")
+    return ', '.join(described) or 'none'
 
 
 def _set_drafting_output(result: dict, business_id: str) -> dict:
@@ -89,6 +158,8 @@ def drafting_agent(
     template_slug: str = 'default',
     offer: Optional[str] = None,
     json_input_file: Optional[str] = None,
+    website: Optional[str] = None,
+    business_id: Optional[str] = None,
 ) -> dict:
     """
     Draft one outreach email for a researched business.
@@ -108,6 +179,8 @@ def drafting_agent(
             verified_emails = input_data.get('verified_emails', [])
             template_slug = input_data.get('template_slug', 'default')
             offer = input_data.get('offer')
+            website = input_data.get('website')
+            business_id = input_data.get('business_id')
         except Exception as e:
             print(f'Failed to load input artifact: {e}')
             raise
@@ -122,6 +195,8 @@ def drafting_agent(
             'verified_emails': verified_emails,
             'template_slug': template_slug,
             'offer': offer,
+            'website': website,
+            'business_id': business_id,
         }
 
     # Write input artifact
@@ -131,10 +206,13 @@ def drafting_agent(
     except Exception as e:
         print(f'Warning: could not write input artifact: {e}')
 
-    business_id = research.get('business_id', 'unknown')
+    # Given by the caller: research output carries no business id, and
+    # keying on it alone stored every business under
+    # 'drafting_agent_output_unknown', the last to finish winning.
+    business_id = business_id or research.get('business_id') or 'unknown'
     pool = {e['email'] for e in verified_emails}
     prompt = build_drafting_prompt(
-        research, verified_emails, template_slug, offer)
+        research, verified_emails, template_slug, offer, website=website)
 
     try:
         draft = complete_structured(prompt, DraftingOutput,
@@ -142,12 +220,19 @@ def drafting_agent(
                                     agent_model_env='DRAFTING_MODEL')
     except (LLMSchemaError, LLMTransportError) as exc:
         print(f'drafting failed: {type(exc).__name__}: {exc}')
-        result = {'status': 'rejected', 'reason': 'llm_schema_failure',
+        result = {'status': 'rejected', 'reason': failure_reason(exc),
                   'draft': None}
         _set_drafting_output(result, business_id)
         write_artifact(result, suffix='output')
         register_artifact(result, suffix='output', description='output')
         return result
+
+    held = hold_to_recipient(draft.selected_emails, verified_emails,
+                             research.get('contacts') or [])
+    if held != list(draft.selected_emails):
+        print(f'selection {draft.selected_emails} held to the chosen '
+              f'recipient: {held}')
+        draft = draft.model_copy(update={'selected_emails': held})
 
     # Warmbly will not send to an address it has not itself verified, and it
     # has its own verification. So the pool is an input and a prompt steer,

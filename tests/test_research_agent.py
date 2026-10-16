@@ -133,6 +133,19 @@ class TestLLMFailures:
 
         assert result['status'] == 'rejected'
         assert result['research']['confidence'] == 0.3
+        assert result['reason'] == 'llm_unavailable'
+
+    def test_transport_failure_on_pass_one_is_llm_unavailable(self):
+        """A 503 that outlasted the retries is the model being down, not
+        the business failing: a distinct reason, so it is offered again."""
+        from flow.llm import LLMTransportError
+
+        with patch('flow.agents.research.complete_structured',
+                   side_effect=LLMTransportError("503", status_code=503)):
+            result = research_agent.fn(BUSINESS, EMAILS, "text")
+
+        assert result['status'] == 'rejected'
+        assert result['reason'] == 'llm_unavailable'
 
 
 class TestJSONArtifactInput:
@@ -308,10 +321,13 @@ class TestDecisionMakerWriteback:
             {'name': 'Wyatt Smith', 'title': 'Owner',
              'is_decision_maker': True},
         ]
+        # The page has to state the titles: an unstated one is nulled, and
+        # with it the decision-maker flag (TestTitlesMustBeOnThePage).
+        text = "Megan Fields, Head Trainer. Wyatt Smith, Owner."
         with patch('flow.agents.research.complete_structured',
                    return_value=_out(confidence=0.9, contacts=contacts)), \
              patch('flow.agents.research.record_decision_maker_sync') as record:
-            research_agent.fn(BUSINESS, EMAILS, "text")
+            research_agent.fn(BUSINESS, EMAILS, text)
 
         record.assert_called_once()
         assert record.call_args.args[1:3] == ('Wyatt Smith', 'Owner')
@@ -485,3 +501,419 @@ class TestPromptAsksForEveryPerson:
         prompt = build_research_prompt(BUSINESS, EMAILS, "text").lower()
 
         assert 'rather than inventing' in prompt
+
+
+def _checked(address, verified, error=None, is_role=None):
+    entry = {"email": address, "verified_at": "2026-10-03T00:00:00Z",
+             "source": "crawl", "verified": verified,
+             "verification_error": error}
+    if is_role is not None:
+        entry["is_role"] = is_role
+    return entry
+
+
+def _pool_section(prompt):
+    return prompt.split('Email pool', 1)[1].split('Site text:', 1)[0]
+
+
+DEAD = _checked("hello@otherbiz.example", False,
+                "5.1.1 The email account that you tried to reach does not exist.",
+                is_role=True)
+SHARED = _checked("info@happytails.example", False,
+                  "[Net::SMTP] Connection closed", is_role=True)
+PERSONAL = _checked("wyatt@happytails.example", False,
+                    "false positive check failed for mx smtp.google.com",
+                    is_role=False)
+
+
+class TestUndeliverableAddressesAreDropped:
+    """An address the email check proved dead never reaches a model.
+
+    The 65 on a pool entry is how sure the scraper was that it read an
+    address off the page -- not whether mail to it arrives. A 5.1.1
+    'does not exist' address scored exactly the same as a live one, and was
+    passed to research, drafting and import as if it were usable.
+    """
+
+    TEXT = "Write to info@happytails.example or hello@otherbiz.example."
+
+    def test_research_prompt_omits_an_invalid_address(self):
+        with patch('flow.agents.research.complete_structured',
+                   return_value=_out(confidence=0.9,
+                                     suggested_email=SHARED['email'])) as llm:
+            research_agent.fn(BUSINESS, [SHARED, DEAD], self.TEXT)
+
+        # The page itself still prints the address; the pool must not.
+        pool = _pool_section(llm.call_args.args[0])
+        assert SHARED['email'] in pool
+        assert DEAD['email'] not in pool
+
+    def test_result_reports_it_as_undeliverable_not_in_the_pool(self):
+        with patch('flow.agents.research.complete_structured',
+                   return_value=_out(confidence=0.9,
+                                     suggested_email=SHARED['email'])):
+            result = research_agent.fn(BUSINESS, [SHARED, DEAD], self.TEXT)
+
+        assert [e['email'] for e in result['verified_emails']] == [
+            SHARED['email']]
+        assert result['undeliverable_emails'] == [DEAD['email']]
+
+    def test_an_inconclusive_check_is_not_dropped(self):
+        """Connection closed, catch-all: unknown, not dead."""
+        with patch('flow.agents.research.complete_structured',
+                   return_value=_out(confidence=0.9,
+                                     suggested_email=SHARED['email'])):
+            result = research_agent.fn(BUSINESS, [SHARED], "text")
+
+        assert [e['email'] for e in result['verified_emails']] == [
+            SHARED['email']]
+
+    def test_a_pool_that_is_all_invalid_is_rejected_without_a_model_call(self):
+        """Nothing left to write to: drafting would have to invent one."""
+        with patch('flow.agents.research.complete_structured') as llm:
+            result = research_agent.fn(BUSINESS, [DEAD], self.TEXT)
+
+        llm.assert_not_called()
+        assert result['status'] == 'rejected'
+        assert result['reason'] == 'no_verified_emails'
+        assert result['undeliverable_emails'] == [DEAD['email']]
+
+    def test_the_prompt_shows_what_the_check_found(self):
+        prompt = build_research_prompt(BUSINESS, [SHARED, PERSONAL], "text")
+
+        assert 'Verified email pool' not in prompt
+        assert 'catch_all' in prompt
+        assert 'unknown' in prompt
+
+
+class TestLivePoolKeepsNamedAndValidAddresses:
+    """The page omitting an address is weak evidence it is retired.
+
+    Home Dog Training's site printed a typo'd shared inbox and another
+    business's address, and not wyatt@ -- the one personal address on their
+    own domain, for a trainer the same pages name three times.
+    """
+
+    def test_a_personal_address_for_someone_the_page_names_is_kept(self):
+        text = "Write to info@happytails.example. Charles & Wyatt teach."
+
+        kept, excluded = live_pool([SHARED, PERSONAL], text)
+
+        assert [e['email'] for e in kept] == [SHARED['email'], PERSONAL['email']]
+        assert excluded == []
+
+    def test_the_name_must_be_a_whole_word(self):
+        text = "Write to info@happytails.example. Wyatton Park."
+
+        kept, excluded = live_pool([SHARED, PERSONAL], text)
+
+        assert excluded == [PERSONAL['email']]
+
+    def test_a_role_address_is_not_rescued_by_its_word_appearing(self):
+        """'info', 'training', 'hello' are on every page as plain words."""
+        text = "hello@happytails.example. Get info about training here."
+        hello = _checked("hello@happytails.example", None, is_role=True)
+
+        kept, excluded = live_pool([hello, SHARED], text)
+
+        assert excluded == [SHARED['email']]
+
+    def test_an_address_the_mailbox_accepted_is_kept(self):
+        valid = _checked("old@happytails.example", True, is_role=False)
+
+        kept, excluded = live_pool(
+            [SHARED, valid], "Write to info@happytails.example.")
+
+        assert excluded == []
+
+    def test_an_entry_without_role_information_is_not_rescued_by_name(self):
+        """The legacy pool has no is_role; behave as before for it."""
+        kept, excluded = live_pool(
+            POOL, "Email owner@happytails.example. Old friends welcome.")
+
+        assert "old@happytails.example" in excluded
+
+
+class TestTitlesMustBeOnThePage:
+    """'title exactly as the page states it, or null' -- enforced.
+
+    The model gave Laura and Charles 'Co-owner / Trainer', which appears
+    nowhere in the crawl, and the invented title marked both as decision
+    makers and was written back to leads.businesses.
+    """
+
+    TEXT = ("George started everything for Laura and me. "
+            "Wyatt, Lead Trainer, runs group class. "
+            "Happy dog owners love us.")
+
+    def _run(self, contacts, text=None):
+        with patch('flow.agents.research.complete_structured',
+                   return_value=_out(confidence=0.9, contacts=contacts)), \
+             patch('flow.agents.research.record_decision_maker_sync') as record:
+            result = research_agent.fn(BUSINESS, EMAILS, text or self.TEXT)
+        return result, record
+
+    def test_an_unstated_title_is_nulled_with_its_decision_maker_flag(self):
+        result, _ = self._run([{'name': 'Laura', 'title': 'Co-owner / Trainer',
+                                'is_decision_maker': True}])
+
+        contact = result['research']['contacts'][0]
+        assert contact['name'] == 'Laura'
+        assert contact['title'] is None
+        assert contact['is_decision_maker'] is False
+
+    def test_a_title_stated_beside_the_name_is_kept(self):
+        result, _ = self._run([{'name': 'Wyatt', 'title': 'Lead Trainer'}])
+
+        assert result['research']['contacts'][0]['title'] == 'Lead Trainer'
+
+    def test_a_title_elsewhere_on_the_page_does_not_count(self):
+        """'Owner' is on every pet site as 'dog owners'."""
+        result, _ = self._run([{'name': 'Laura', 'title': 'Owner',
+                                'is_decision_maker': True}])
+
+        assert result['research']['contacts'][0]['title'] is None
+
+    def test_matching_ignores_case_and_entities(self):
+        text = "Charles &amp; Laura -- CO-OWNER’S NOTE"
+        result, _ = self._run([{'name': 'Charles', 'title': "Co-owner's note"}],
+                              text)
+
+        assert result['research']['contacts'][0]['title'] == "Co-owner's note"
+
+    def test_the_writeback_gets_the_enforced_title(self):
+        _, record = self._run([{'name': 'Laura', 'title': 'Co-owner / Trainer',
+                                'is_decision_maker': True}])
+
+        record.assert_called_once()
+        assert record.call_args.args[1:3] == ('Laura', None)
+
+
+class TestDecisionMakerNeedsEvidenceNotATitle:
+    """A family business rarely prints 'Owner' beside a name. Ownership can
+    be shown in other words -- 'started everything for Laura and me' -- and
+    a quote that names the person and is on the page is enough to keep them
+    a decision maker. The title itself is still never invented."""
+
+    TEXT = ("George is 13 now. The dog who quietly started everything for "
+            "Laura and me. Charles & Wyatt will be leading all group classes.")
+
+    def _contacts(self, contacts):
+        with patch('flow.agents.research.complete_structured',
+                   return_value=_out(confidence=0.9, contacts=contacts)), \
+             patch('flow.agents.research.record_decision_maker_sync'):
+            result = research_agent.fn(BUSINESS, EMAILS, self.TEXT)
+        return result['research']['contacts']
+
+    def test_a_quote_naming_them_keeps_the_flag_without_a_title(self):
+        [laura] = self._contacts([{
+            'name': 'Laura', 'title': 'Co-owner', 'is_decision_maker': True,
+            'evidence': 'The dog who quietly started everything for Laura and me.'}])
+
+        assert laura['is_decision_maker'] is True
+        assert laura['title'] is None
+        assert laura['evidence'].startswith('The dog who')
+
+    def test_a_quote_not_on_the_page_does_not(self):
+        [laura] = self._contacts([{
+            'name': 'Laura', 'is_decision_maker': True,
+            'evidence': 'Laura founded Home Dog Training in 2015.'}])
+
+        assert laura['is_decision_maker'] is False
+        assert laura['evidence'] is None
+
+    def test_a_quote_that_does_not_name_them_does_not(self):
+        [charles] = self._contacts([{
+            'name': 'Charles', 'is_decision_maker': True,
+            'evidence': 'The dog who quietly started everything for Laura and me.'}])
+
+        assert charles['is_decision_maker'] is False
+
+    def test_a_quote_that_only_shows_them_working_there_does_not(self):
+        """Live replay: the model cited 'leading all group classes' to make
+        a trainer a decision maker. Teaching is not owning."""
+        [wyatt] = self._contacts([{
+            'name': 'Wyatt', 'is_decision_maker': True,
+            'evidence': 'Charles & Wyatt will be leading all group classes.'}])
+
+        assert wyatt['is_decision_maker'] is False
+        assert wyatt['evidence'] is not None
+
+    def test_a_quote_that_drops_an_emoji_still_matches(self):
+        """The site wrote 'fresh start. \U0001f305 We\u2019re now...'; the
+        model quoted it without the emoji, and the quote was thrown out."""
+        text = ("It\u2019s a fresh start. \U0001f305 We\u2019re training from "
+                "home, which Laura and I started together.")
+        with patch('flow.agents.research.complete_structured',
+                   return_value=_out(confidence=0.9, contacts=[{
+                       'name': 'Laura', 'is_decision_maker': True,
+                       'evidence': "It's a fresh start. We're training from "
+                                   "home, which Laura and I started together."
+                   }])), \
+             patch('flow.agents.research.record_decision_maker_sync'):
+            result = research_agent.fn(BUSINESS, EMAILS, text)
+
+        assert result['research']['contacts'][0]['is_decision_maker'] is True
+
+    def test_passages_joined_with_an_ellipsis_match_piece_by_piece(self):
+        """Live replay: every quote stitched two passages with '...', so
+        none was verbatim and all were thrown out."""
+        [laura] = self._contacts([{
+            'name': 'Laura', 'is_decision_maker': True,
+            'evidence': 'George is 13 now. ... started everything for Laura '
+                        'and me. \u2026 Charles & Wyatt will be leading'}])
+
+        assert laura['is_decision_maker'] is True
+
+    def test_one_invented_piece_rejects_the_whole_quote(self):
+        [laura] = self._contacts([{
+            'name': 'Laura', 'is_decision_maker': True,
+            'evidence': 'started everything for Laura and me. ... '
+                        'Laura owns the business outright.'}])
+
+        assert laura['evidence'] is None
+        assert laura['is_decision_maker'] is False
+
+    def test_the_name_and_the_ownership_word_must_share_a_piece(self):
+        """Otherwise 'Wyatt' from one passage and 'started' from another
+        make a trainer an owner."""
+        [wyatt] = self._contacts([{
+            'name': 'Wyatt', 'is_decision_maker': True,
+            'evidence': 'started everything for Laura and me. ... '
+                        'Charles & Wyatt will be leading all group classes.'}])
+
+        assert wyatt['is_decision_maker'] is False
+
+    def test_the_prompt_asks_for_the_quote(self):
+        prompt = build_research_prompt(BUSINESS, EMAILS, "text")
+
+        assert 'evidence' in prompt
+        assert 'own or run the business' in prompt
+
+
+ANGLE = {
+    'problem': 'A click-fraud attack drained their ad budget and closed '
+               'their Carrollton facility; they are rebuilding from home.',
+    'evidence': 'After a criminal click-fraud attack drained our ad budget, '
+                'we had to close our Carrollton training facility.',
+    'caution': 'Paid ads burned them; do not lead with running ads.',
+}
+ANGLE_TEXT = ("Big news. After a criminal click-fraud attack drained our ad "
+              "budget,   we had to close our Carrollton training facility.")
+
+
+class TestWritebackDoesNotDowngradeAKnownName:
+    """With titles enforced, most small sites yield no decision maker, and
+    the primary contact falls back to whoever is listed first -- a trainer
+    as easily as an owner. That guess must not replace a name the business
+    already has."""
+
+    KNOWN = dict(BUSINESS, decision_maker_name='Charles Smith')
+
+    def _run(self, business, contacts, text="Laura and Wyatt teach."):
+        with patch('flow.agents.research.complete_structured',
+                   return_value=_out(confidence=0.9, contacts=contacts)), \
+             patch('flow.agents.research.record_decision_maker_sync') as record:
+            research_agent.fn(business, EMAILS, text)
+        return record
+
+    def test_no_decision_maker_and_a_known_name_writes_nothing(self):
+        record = self._run(self.KNOWN, [{'name': 'Wyatt'}])
+
+        record.assert_not_called()
+
+    def test_no_decision_maker_and_no_known_name_still_writes(self):
+        record = self._run(BUSINESS, [{'name': 'Wyatt'}])
+
+        record.assert_called_once()
+
+    def test_a_supported_decision_maker_replaces_a_known_name(self):
+        record = self._run(self.KNOWN,
+                           [{'name': 'Laura', 'title': 'Owner',
+                             'is_decision_maker': True}],
+                           text="Laura, Owner, and Wyatt teach.")
+
+        assert record.call_args.args[1:3] == ('Laura', 'Owner')
+
+
+class TestOutreachAngle:
+    """Research names the one thing about *their business* the pitch should
+    open on, quoted from the site, so drafting stops defaulting to their
+    customers' problems."""
+
+    def test_prompt_asks_for_an_outreach_angle(self):
+        prompt = build_research_prompt(BUSINESS, EMAILS, "text")
+
+        assert 'outreach_angle' in prompt
+        assert 'caution' in prompt
+
+    def test_the_caution_is_told_not_to_carry_payment_terms(self):
+        """The caution said 'emphasize pay-per-qualified-lead with no upfront
+        budget risk', and the draft repeated it. Customers pay upfront."""
+        prompt = build_research_prompt(BUSINESS, EMAILS, "text").lower()
+
+        assert 'what to avoid, not what to promise' in prompt
+        assert 'never payment terms' in prompt
+
+    def test_a_caution_carrying_payment_terms_is_dropped(self):
+        """Told not to, the model still wrote 'pay-per-lead safety' into the
+        caution, and the drafter copied it ('only pay') into the email."""
+        angle = dict(ANGLE, caution='Burned by ads; stress pay-per-lead '
+                                    'safety and no upfront risk.')
+        with patch('flow.agents.research.complete_structured',
+                   return_value=_out(confidence=0.9, outreach_angle=angle)):
+            result = research_agent.fn(BUSINESS, EMAILS, ANGLE_TEXT)
+
+        kept = result['research']['outreach_angle']
+        assert kept['problem'] == ANGLE['problem']
+        assert kept['caution'] is None
+
+    def test_a_caution_warning_against_ads_and_guarantees_is_kept(self):
+        """Live replay: 'do not ... guarantee ad results' was dropped. A
+        caution exists to name what to avoid; only payment terms go."""
+        angle = dict(ANGLE, caution='Victims of click fraud: do not pitch '
+                                    'paid advertising, ad spend, or guarantee '
+                                    'ad results.')
+        with patch('flow.agents.research.complete_structured',
+                   return_value=_out(confidence=0.9, outreach_angle=angle)):
+            result = research_agent.fn(BUSINESS, EMAILS, ANGLE_TEXT)
+
+        assert result['research']['outreach_angle']['caution'] == \
+            angle['caution']
+
+    def test_a_clean_caution_is_kept(self):
+        with patch('flow.agents.research.complete_structured',
+                   return_value=_out(confidence=0.9, outreach_angle=ANGLE)):
+            result = research_agent.fn(BUSINESS, EMAILS, ANGLE_TEXT)
+
+        assert result['research']['outreach_angle']['caution'] == \
+            ANGLE['caution']
+
+    def test_the_schema_accepts_research_without_one(self):
+        """Stored research and replay artifacts predate the field."""
+        assert _out().outreach_angle is None
+
+    def test_an_angle_quoted_from_the_page_is_kept(self):
+        with patch('flow.agents.research.complete_structured',
+                   return_value=_out(confidence=0.9, outreach_angle=ANGLE)):
+            result = research_agent.fn(BUSINESS, EMAILS, ANGLE_TEXT)
+
+        assert result['research']['outreach_angle']['problem'] == \
+            ANGLE['problem']
+
+    def test_an_angle_quote_joined_with_an_ellipsis_is_kept(self):
+        angle = dict(ANGLE, evidence='Big news. ... After a criminal '
+                                     'click-fraud attack drained our ad budget')
+        with patch('flow.agents.research.complete_structured',
+                   return_value=_out(confidence=0.9, outreach_angle=angle)):
+            result = research_agent.fn(BUSINESS, EMAILS, ANGLE_TEXT)
+
+        assert result['research']['outreach_angle'] is not None
+
+    def test_an_angle_whose_quote_is_not_on_the_page_is_dropped(self):
+        """An unsupported angle is an invented fact in the opening line."""
+        with patch('flow.agents.research.complete_structured',
+                   return_value=_out(confidence=0.9, outreach_angle=ANGLE)):
+            result = research_agent.fn(BUSINESS, EMAILS, "Call us to book.")
+
+        assert result['research']['outreach_angle'] is None

@@ -343,6 +343,25 @@ class TestVerificationAndJinaExposure:
         assert emails[0]['verified'] is True
         assert emails[1]['verified'] is None
 
+    def test_query_carries_the_verification_error(self):
+        """verified=false means three different things -- the mailbox does
+        not exist, the domain accepts anything, the check never finished --
+        and only the error says which. Without it, a dead address and a live
+        one look the same to research and drafting."""
+        sql, _ = build_candidate_query(['Tier 1'], 10, None)
+
+        assert "'verification_error'" in sql
+        assert 'v.error' in sql
+
+    def test_emails_carry_the_verification_error(self):
+        row = self._row(emails=[
+            {'email': 'a@b.com', 'source': 'crawl', 'verified': False,
+             'verification_error': '5.1.1 does not exist'}])
+
+        emails = shape_candidate(row)['candidate_emails']
+
+        assert emails[0]['verification_error'] == '5.1.1 does not exist'
+
     def test_jina_pages_are_exposed_separately(self):
         row = self._row(jina_pages=[
             {'url': 'u', 'page_kind': 'home', 'text': 'jina text'}])

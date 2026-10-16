@@ -31,12 +31,14 @@ import os
 import sys
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import httpx
 
+from flow.email_pool import (deliverability, email_domain, is_free_mail,
+                              person_for, site_domain)
 from flow.schemas import primary_contact
 
 CONTACTS_PATH = '/v1/contacts'
@@ -88,21 +90,26 @@ def build_contact_payloads(
 ) -> List[Dict[str, Any]]:
     """
     One Warmbly contact per address drafting selected, then one per remaining
-    address in the research pool.
+    address in the research pool that is this business's own.
 
     Only the selected contacts carry the draft. The rest are imported without
     it and without our verification verdict: Warmbly verifies on its own and
-    may judge deliverability differently.
+    may judge deliverability differently. But an unselected address is
+    skipped when our check proved it dead, or when it sits on another
+    business's domain -- not the website's, not a selected address's, not
+    free mail. Home Dog Training's header carried
+    hello@k9culturedogtraining.com, and it was imported as their contact.
 
-    The person comes from the research node, which extracts it from the live
-    pages (its first decision maker, else the first person named), falling
-    back to leads.businesses.decision_maker_name from the
-    earlier enrichment pass.
+    Each address gets its own person (_person_for): the one research tied
+    the address to, else the named person whose first name is its local
+    part, else the primary contact -- research's first decision maker, else
+    the first person named -- falling back to
+    leads.businesses.decision_maker_name from the earlier enrichment pass.
     """
+    contacts = research.get('contacts') or []
     found_name, found_title = primary_contact(research)
-    person = found_name or business.get('decision_maker_name')
-    title = found_title or business.get('decision_maker_title')
-    first, last = split_person_name(person)
+    default_person = (found_name or business.get('decision_maker_name'),
+                      found_title or business.get('decision_maker_title'))
 
     draft_custom = {
         'draft_subject': draft.get('subject'),
@@ -115,7 +122,6 @@ def build_contact_payloads(
         'research_confidence': research.get('confidence'),
         'research_pain_signals': research.get('pain_signals'),
         'research_evidence': research.get('evidence'),
-        'decision_maker_title': title,
         'leads_business_id': business.get('id'),
         'business_website': business.get('website'),
         'business_city': business.get('city'),
@@ -130,6 +136,10 @@ def build_contact_payloads(
         return {k: _as_text(v) for k, v in fields.items() if _as_text(v) != ''}
 
     def payload(email: str, fields: Dict[str, str]) -> Dict[str, Any]:
+        person, title = _person_for(email, contacts, default_person)
+        first, last = split_person_name(person)
+        if _as_text(title):
+            fields = {**fields, 'decision_maker_title': _as_text(title)}
         return {
             'email': email,
             'first_name': first,
@@ -143,17 +153,42 @@ def build_contact_payloads(
     drafted_fields = non_empty({**draft_custom, **custom})
     pool_fields = non_empty(custom)
 
+    selected = list(draft.get('selected_emails') or [])
+    own_domains = {site_domain(business)} | {email_domain(e) for e in selected}
+    own_domains.discard('')
+
     payloads = []
     seen = set()
-    for email in draft.get('selected_emails') or []:
+    for email in selected:
         seen.add(email.lower())
         payloads.append(payload(email, dict(drafted_fields)))
     for entry in candidate_emails or []:
         email = (entry.get('email') or '').strip()
-        if email and email.lower() not in seen:
-            seen.add(email.lower())
+        if not email or email.lower() in seen:
+            continue
+        seen.add(email.lower())
+        domain = email_domain(email)
+        if deliverability(entry) == 'invalid':
+            print(f'not importing {email}: the email check found it does '
+                  f'not exist')
+        elif domain not in own_domains and not is_free_mail(domain):
+            print(f'not importing {email}: {domain} is not this '
+                  f"business's domain ({', '.join(sorted(own_domains))})")
+        else:
             payloads.append(payload(email, dict(pool_fields)))
     return payloads
+
+
+def _person_for(
+    email: str,
+    contacts: List[Dict[str, Any]],
+    default: Tuple[Optional[str], Optional[str]],
+) -> Tuple[Optional[str], Optional[str]]:
+    """(name, title) for one address; see build_contact_payloads."""
+    person = person_for(email, contacts)
+    if person is None:
+        return default
+    return person.get('name'), person.get('title')
 
 
 def contact_idempotency_key(

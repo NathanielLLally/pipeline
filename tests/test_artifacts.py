@@ -166,20 +166,34 @@ class TestWriteArtifact:
                 with pytest.raises(ValueError, match='not JSON-serializable'):
                     write_artifact(circular, directory=tmpdir)
 
-    def test_uses_current_directory_by_default(self, tmp_path):
-        """Writes to current directory if directory=None"""
-        import os
-        cwd = os.getcwd()
-        try:
-            os.chdir(tmp_path)
-            data = {'test': 'data'}
-            with patch('flow.artifacts.flow_run.tags', ['x']):
-                result = write_artifact(data, suffix='out')
+    def test_writes_to_the_data_directory_by_default(self, tmp_path,
+                                                     monkeypatch):
+        """Not the current directory: a run left hundreds of files in the
+        repo root. The default is data/ at the repo root, whatever the cwd."""
+        import flow.artifacts as artifacts
+        monkeypatch.delenv('ARTIFACT_DIR', raising=False)
+        monkeypatch.chdir(tmp_path)
+        with patch('flow.artifacts.flow_run.tags', ['x']), \
+                patch.object(artifacts, 'REPO_ROOT', tmp_path / 'repo'):
+            result = write_artifact({'test': 'data'}, suffix='out')
 
-            assert result.resolve().parent == tmp_path.resolve()
-            assert (tmp_path / 'x-out.json').exists()
-        finally:
-            os.chdir(cwd)
+        assert result == tmp_path / 'repo' / 'data' / 'x-out.json'
+        assert result.exists()
+        assert not (tmp_path / 'x-out.json').exists()
+
+    def test_artifact_dir_env_overrides_the_default(self, tmp_path,
+                                                    monkeypatch):
+        monkeypatch.setenv('ARTIFACT_DIR', str(tmp_path / 'elsewhere'))
+        with patch('flow.artifacts.flow_run.tags', ['x']):
+            result = write_artifact({'test': 'data'}, suffix='out')
+
+        assert result == tmp_path / 'elsewhere' / 'x-out.json'
+
+    def test_creates_the_directory(self, tmp_path):
+        with patch('flow.artifacts.flow_run.tags', ['x']):
+            result = write_artifact({'a': 1}, directory=tmp_path / 'new' / 'd')
+
+        assert result.exists()
 
 
 class TestReadArtifact:
@@ -207,6 +221,18 @@ class TestReadArtifact:
             result = read_artifact(str(Path(tmpdir) / 'biz-1-research'), suffix='input')
 
             assert result == data
+
+    def test_a_bare_filename_is_found_in_the_artifact_directory(
+            self, tmp_path, monkeypatch):
+        """Replay passes json_input_file='biz-1-research-input.json'; the
+        file now lives in data/, not the cwd."""
+        monkeypatch.setenv('ARTIFACT_DIR', str(tmp_path / 'data'))
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / 'data').mkdir()
+        (tmp_path / 'data' / 'biz-1-research-input.json').write_text('{"x": 1}')
+
+        assert read_artifact('biz-1-research-input.json') == {'x': 1}
+        assert read_artifact('biz-1-research', suffix='input') == {'x': 1}
 
     def test_raises_on_missing_file(self):
         """Raises FileNotFoundError for nonexistent file"""

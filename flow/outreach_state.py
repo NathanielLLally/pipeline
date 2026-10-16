@@ -19,6 +19,9 @@ import asyncpg
 TABLE = 'leads.outreach_pipeline'
 # A claim older than this belongs to a run that died; another run may take it.
 STALE_CLAIM = '6 hours'
+# The model never answered (flow.schemas.failure_reason): retryable, unlike
+# every other rejection.
+UNAVAILABLE = 'llm_unavailable'
 
 CLAIM_SQL = f"""
     insert into {TABLE} (business_id, status, flow_run_id)
@@ -66,16 +69,20 @@ def outcome_status(outcome: Dict[str, Any]) -> Tuple[str, Optional[str]]:
     """
     The (status, reason) a run_agents outcome leaves in the table.
 
-    'rejected' is final: the model looked and said no. Errors and failed
-    imports are 'failed', which selection offers again on a later batch.
+    'rejected' is final: the model looked and said no. Errors, failed
+    imports and a model that never answered are 'failed', which selection
+    offers again on a later batch.
     """
     if outcome.get('import_status') == 'imported':
         return 'imported', None
     if outcome.get('research_status') == 'error' or outcome.get('draft_status') == 'error':
         return 'failed', outcome.get('error')
     if outcome.get('research_status') not in (None, 'researched'):
-        return 'rejected', outcome.get('rejection_reason') or outcome['research_status']
+        reason = outcome.get('rejection_reason') or outcome['research_status']
+        return ('failed' if reason == UNAVAILABLE else 'rejected'), reason
     if outcome.get('draft_status') and outcome['draft_status'] != 'drafted':
+        if outcome.get('draft_reason') == UNAVAILABLE:
+            return 'failed', f'draft {UNAVAILABLE}'
         return 'rejected', f"draft {outcome['draft_status']}"
     if outcome.get('import_status') is not None:
         return 'failed', (outcome.get('import_error') or outcome.get('import_reason')

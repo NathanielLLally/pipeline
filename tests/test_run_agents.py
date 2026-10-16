@@ -145,6 +145,19 @@ class TestSequencing:
         assert draft.call_args.args[0] == RESEARCHED['research']
         assert draft.call_args.args[1] == CANDIDATE['candidate_emails']
 
+    def test_drafting_is_told_which_business_it_drafts_for(self):
+        """Research output carries no business id, so drafting keyed its
+        Prefect Variable 'drafting_agent_output_unknown' for every business
+        and, with several in flight, the last one to finish won."""
+        with patch('flow.run_agents.fetch_candidates',
+                   new_callable=AsyncMock, return_value=[CANDIDATE]), \
+             patch('flow.run_agents.research_agent', return_value=RESEARCHED), \
+             patch('flow.run_agents.drafting_agent',
+                   return_value=DRAFTED) as draft:
+            _run()
+
+        assert draft.call_args.kwargs['business_id'] == 'biz-1'
+
     def test_rejected_research_is_not_drafted(self):
         with patch('flow.run_agents.fetch_candidates',
                    new_callable=AsyncMock, return_value=[CANDIDATE]), \
@@ -721,6 +734,61 @@ class TestCommandLine:
         flow_mock, _ = self._main('--business-ids', 'a', 'b', '--no-preflight')
         assert flow_mock.await_args.kwargs['business_ids'] == ['a', 'b']
         assert flow_mock.await_args.kwargs['preflight'] is False
+
+
+class TestUsage:
+    """--help and a bad command line both print the options table, not argparse's."""
+
+    OPTIONS = ('--concurrency', '--batch-size', '--tiers', '--business-ids',
+               '--template-slug', '--offer', '--no-preflight',
+               '--research-reasoning-effort', '--research-tier')
+
+    def _main(self, *argv):
+        from flow import run_agents as module
+        with patch.object(module, 'run_agents', new_callable=AsyncMock,
+                          return_value={'selected': 0}) as flow_mock:
+            with pytest.raises(SystemExit) as exited:
+                module.main(list(argv))
+        flow_mock.assert_not_called()
+        return exited.value.code
+
+    def test_print_usage_lists_every_option_with_its_default(self, capsys):
+        from flow import run_agents as module
+        module.print_usage()
+        out = capsys.readouterr().out
+        for option in self.OPTIONS:
+            assert option in out
+        assert f'{module.DEFAULT_CONCURRENCY}' in out
+        assert 'Tier 1' in out and 'frontier' in out
+
+    def test_every_parser_option_is_in_the_table(self, capsys):
+        """A flag added to the parser but not the table would go undocumented."""
+        from flow import run_agents as module
+        flags = {f for a in module.build_parser()._actions for f in a.option_strings
+                 if f.startswith('--') and f != '--help'}
+        module.print_usage()
+        out = capsys.readouterr().out
+        assert flags == set(self.OPTIONS)
+        assert all(f in out for f in flags)
+
+    @pytest.mark.parametrize('flag', ['--help', '-h'])
+    def test_help_prints_the_table_and_exits_cleanly(self, flag, capsys):
+        assert self._main(flag) == 0
+        out = capsys.readouterr().out
+        assert '--research-tier' in out and '| Option' in out
+
+    @pytest.mark.parametrize('argv', [
+        ('--bogus',),
+        ('--concurrency', 'five'),
+        ('--research-tier', 'ultra'),
+        ('--concurrency', '0'),
+        ('--batch-size', '-1'),
+    ])
+    def test_misconfigured_options_print_the_error_and_the_table(self, argv, capsys):
+        assert self._main(*argv) == 2
+        err = capsys.readouterr().err
+        assert 'error:' in err
+        assert '| Option' in err
 
 
 def _candidate(i):

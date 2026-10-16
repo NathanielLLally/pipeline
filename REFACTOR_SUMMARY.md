@@ -14,13 +14,14 @@ Central artifact I/O utility. Uses `prefect.runtime.flow_run.tags` to name files
 
 ```python
 artifact_filename(suffix='output')  # → 'biz-1-research-output.json'
-write_artifact(data, suffix='output', directory=None)  # writes JSON
-read_artifact(filepath, suffix=None)  # reads JSON
+write_artifact(data, suffix='output', directory=None)  # writes JSON to data/
+read_artifact(filepath, suffix=None)  # reads JSON; bare names resolve in data/
 ```
 
 **Key features:**
 - Tags are joined with `-`: `['biz-1', 'research']` → `biz-1-research-{suffix}.json`
 - Falls back to `unknown-{suffix}.json` if no tags
+- Written to `data/` at the repo root (override with `ARTIFACT_DIR`), not the cwd
 - Stringifies non-JSON types via `default=str`
 - Catches both `TypeError` and `ValueError` during serialization
 
