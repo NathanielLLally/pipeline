@@ -3,8 +3,9 @@ The import-contacts-agent deployment.
 
 Takes drafting output (with research and business context), builds Warmbly
 contact payloads, imports them, then creates the email as a Warmbly compose
-draft (Unibox Drafts) for each selected address. Can be triggered standalone or as part of
-the pipeline.
+draft (Unibox Drafts) for each selected address. Only the addresses the draft
+is written to are imported (drafted_only); the business's other addresses
+stay out of Warmbly. Can be triggered standalone or as part of the pipeline.
 
 Can be called with dict params or from a JSON input artifact:
   import_contacts(business={...}, research={...}, draft={...}, ...)
@@ -29,6 +30,21 @@ from flow.warmbly_contacts import (
     create_compose_drafts,
     create_contacts,
 )
+
+
+def drafted_only(candidate_emails: Optional[List[Dict[str, Any]]],
+                 draft: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """The pool entries for the addresses the draft was written to. Their
+    verification verdicts still travel; every other address stays out of
+    Warmbly. An address drafting chose outside the pool is imported anyway,
+    by build_contact_payloads, from selected_emails."""
+    selected = {e.lower() for e in draft.get('selected_emails') or []}
+    kept = [e for e in candidate_emails or []
+            if (e.get('email') or '').strip().lower() in selected]
+    skipped = [e.get('email') for e in candidate_emails or [] if e not in kept]
+    if skipped:
+        print(f'not importing {skipped}: no draft is written to them')
+    return kept
 
 
 @flow(log_prints=True)
@@ -93,10 +109,14 @@ def import_contacts(
     business_id = business.get('id', 'unknown')
     business_name = business.get('business_name', 'unknown')
 
+    # Only an address the draft is written to becomes a contact: the rest
+    # of the pool used to be imported too, with no draft on it.
+    drafted = drafted_only(candidate_emails, draft)
+
     # Build payloads
     try:
         payloads = build_contact_payloads(business, research, draft,
-                                          candidate_emails=candidate_emails)
+                                          candidate_emails=drafted)
     except Exception as e:
         print(f'Failed to build contact payloads: {e}')
         result = {'status': 'rejected', 'reason': 'payload_build_failed', 'error': str(e)}

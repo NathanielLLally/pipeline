@@ -176,20 +176,45 @@ class TestImportContactsHappyPath:
             assert output_call.kwargs['suffix'] == 'output'
 
 
-class TestImportsTheWholePool:
-    def test_candidate_emails_reach_the_payloads(self):
-        pool = [{'email': 'owner@happytails.example', 'verified': True},
-                {'email': 'info@happytails.example', 'verified': False}]
+class TestImportsOnlyTheDraftedContact:
+    """Only an address the draft is written to becomes a Warmbly contact.
+    Other pool addresses at the business used to be imported too, without the
+    draft; they are left out now."""
 
+    POOL = [{'email': 'owner@happytails.example', 'verified': True},
+            {'email': 'info@happytails.example', 'verified': False}]
+
+    def _import(self, draft=DRAFT, pool=POOL):
         with patch('flow.agents.import_contacts.create_contacts',
                    side_effect=lambda p, **k: p) as create, \
              patch('flow.agents.import_contacts.write_artifact'):
-            result = import_contacts.fn(BUSINESS, RESEARCH, DRAFT,
+            result = import_contacts.fn(BUSINESS, RESEARCH, draft,
                                         candidate_emails=pool)
+        return result, [p['email'] for p in create.call_args.args[0]]
 
-        sent = [p['email'] for p in create.call_args.args[0]]
-        assert sent == ['owner@happytails.example', 'info@happytails.example']
-        assert result['payloads_sent'] == 2
+    def test_unselected_pool_addresses_are_not_imported(self):
+        result, sent = self._import()
+        assert sent == ['owner@happytails.example']
+        assert result['payloads_sent'] == 1
+
+    def test_the_imported_contact_carries_the_draft(self):
+        with patch('flow.agents.import_contacts.create_contacts',
+                   side_effect=lambda p, **k: p) as create, \
+             patch('flow.agents.import_contacts.write_artifact'):
+            import_contacts.fn(BUSINESS, RESEARCH, DRAFT, candidate_emails=self.POOL)
+        fields = create.call_args.args[0][0]['custom_fields']
+        assert fields['draft_body'] == DRAFT['body']
+
+    def test_a_selected_address_outside_the_pool_is_still_imported(self):
+        """Drafting may pick an address the pool lacks; it has the draft."""
+        draft = dict(DRAFT, selected_emails=['laura@happytails.example'])
+        _, sent = self._import(draft=draft)
+        assert sent == ['laura@happytails.example']
+
+    def test_matching_ignores_case(self):
+        draft = dict(DRAFT, selected_emails=['Owner@HappyTails.example'])
+        _, sent = self._import(draft=draft)
+        assert [e.lower() for e in sent] == ['owner@happytails.example']
 
 
 class TestImportContactsFailures:
