@@ -51,7 +51,7 @@ from flow.artifacts import (
     write_artifact,
 )
 from flow.llm import LLMSchemaError, LLMTransportError, complete_structured
-from flow.schemas import DraftAnalysisOutput
+from flow.schemas import DraftAnalysisOutput, find_sign_off
 
 # Scripts an English cold email may legitimately contain: Latin letters
 # (accents included) plus the punctuation, symbols and digits every script
@@ -97,14 +97,8 @@ def _foreign_chars(text: str) -> list:
     return sorted(found)
 
 
-_SIGN_OFF = re.compile(
-    r'^(thanks|thank you|best|best regards|regards|kind regards|warm regards|'
-    r'warmly|sincerely|cheers|all the best|talk soon)\b[\s,.!]*$', re.IGNORECASE)
-
-
 def _signs_off(body: str) -> bool:
-    lines = [ln.strip() for ln in body.rstrip().splitlines() if ln.strip()]
-    return len(lines) > 1 and bool(_SIGN_OFF.match(lines[-1]))
+    return find_sign_off(body) is not None
 
 
 def _ends_terminated(body: str) -> bool:
@@ -205,6 +199,15 @@ def build_analysis_prompt(
         f"Email Subject: {draft_subject}",
         f"Email Body: {draft_body}",
         f"Drafter's Rationale: {draft_rationale}",
+        '',
+        # The same fact qa_metrics' 'sign_off' check rests on. Not told it,
+        # the model scored trust 3/10 for a missing sender.
+        'The campaign template appends the sender\'s signature after the body, '
+        'so the body above is deliberately unsigned. Do not score it down for '
+        'having no sender name, sign-off or contact details -- the signature '
+        'supplies them. A sign-off line at the end of the body ("Thanks,", '
+        '"Best regards") or a sender name is a defect: it would sit above '
+        'the signature, and a drafted name is invented.',
         '',
         'Analyze this draft across multiple dimensions:',
         '',

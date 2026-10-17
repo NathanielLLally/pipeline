@@ -1,5 +1,6 @@
 import json
 import sys
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -12,6 +13,9 @@ from pydantic import BaseModel
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from flow import claude_tmux
+
+# Saved before the autouse fixture replaces subprocess.run for every test.
+REAL_RUN = subprocess.run
 from flow.llm import (CLAUDE_TMUX_MODEL, LLMSchemaError, LLMTransportError,
                       complete_structured)
 
@@ -199,6 +203,45 @@ class TestSession:
         for tool in ('Bash', 'WebFetch', 'WebSearch'):
             assert tool in launch
 
+    def test_claude_runs_in_the_handoff_directory_by_default(self, tmp_path):
+        """Outside the repo, the pane's context carries no CLAUDE.md or git
+        status: ~23.5k tokens every request re-wrote to the prompt cache."""
+        tmux = FakeTmux(has_session=False,
+                        on_submit=writes('{"name": "x", "score": 1}'))
+        _run(tmux)
+        launch = ' '.join(next(c for c in tmux.calls
+                               if c[:2] == ['tmux', 'send-keys'] and
+                               any('claude ' in str(x) for x in c)))
+        assert launch.split('&&')[0].strip().endswith(str(tmp_path / 'handoff'))
+
+    def test_launch_trims_what_the_prompt_cache_must_rewrite_per_session(self):
+        """Measured: the first turn's cache write fell 23.5k -> 17.2k tokens.
+        Not --disable-slash-commands: it disables /clear too, and then every
+        business lands in one conversation."""
+        launch = claude_tmux.launch_command('/x')
+        assert '--exclude-dynamic-system-prompt-sections' in launch
+        assert '--strict-mcp-config' in launch
+        assert '--disable-slash-commands' not in launch
+
+    def test_a_config_dir_is_set_on_the_claude_command_itself(self, monkeypatch):
+        """tmux panes inherit the tmux server's environment, not ours, so the
+        profile must be on the command line."""
+        monkeypatch.setenv('CLAUDE_TMUX_CONFIG_DIR', '/home/x/.claude pane')
+        launch = claude_tmux.launch_command('/x')
+        assert "&& CLAUDE_CONFIG_DIR='/home/x/.claude pane' claude " in launch
+
+    def test_no_config_dir_leaves_the_default_profile(self, monkeypatch):
+        monkeypatch.delenv('CLAUDE_TMUX_CONFIG_DIR', raising=False)
+        assert 'CLAUDE_CONFIG_DIR' not in claude_tmux.launch_command('/x')
+
+    def test_claude_tmux_cwd_overrides_the_directory(self, tmp_path, monkeypatch):
+        monkeypatch.setenv('CLAUDE_TMUX_CWD', '/somewhere/else')
+        tmux = FakeTmux(has_session=False,
+                        on_submit=writes('{"name": "x", "score": 1}'))
+        _run(tmux)
+        assert any('cd /somewhere/else &&' in str(x)
+                   for c in tmux.calls for x in c)
+
     def test_reuses_a_running_session(self):
         tmux = FakeTmux(on_submit=writes('{"name": "x", "score": 1}'))
         _run(tmux)
@@ -364,7 +407,76 @@ class TestSerialized:
         assert claude_tmux.fcntl.LOCK_EX in held
 
 
+class TestPerModelPanes:
+    def test_a_model_gets_its_own_pane_launched_with_that_model(self):
+        tmux = FakeTmux(has_session=False,
+                        on_submit=writes('{"name": "x", "score": 1}'))
+        _run(tmux, model='sonnet')
+        new = next(c for c in tmux.calls if c[:2] == ['tmux', 'new-session'])
+        assert 'test-claude-sonnet' in new
+        launch = ' '.join(str(x) for c in tmux.calls for x in c
+                          if 'claude ' in str(x))
+        assert '--model sonnet' in launch
+        assert all(c[c.index('-t') + 1] == 'test-claude-sonnet'
+                   for c in tmux.calls if '-t' in c)
+
+    def test_no_model_keeps_the_plain_session(self):
+        tmux = FakeTmux(has_session=False,
+                        on_submit=writes('{"name": "x", "score": 1}'))
+        _run(tmux)
+        launch = ' '.join(str(x) for c in tmux.calls for x in c
+                          if 'claude ' in str(x))
+        assert '--model' not in launch
+        assert any('test-claude' == c[c.index('-t') + 1]
+                   for c in tmux.calls if '-t' in c)
+
+    def test_panes_for_different_models_work_at_the_same_time(self):
+        """Research on Opus need not wait for drafting on Sonnet: each pane
+        has its own lock. Each fake Claude waits for the other to be
+        mid-request; one shared lock would break the barrier."""
+        both = threading.Barrier(2, timeout=5)
+
+        def submit(line):
+            if '.answer.json' in line:
+                both.wait()
+                answer_path_in(line).write_text('{"name": "x", "score": 1}')
+
+        tmux = FakeTmux(on_submit=submit)
+        failures = []
+
+        def worker(model):
+            try:
+                _ask(model=model)
+            except Exception as exc:
+                failures.append(exc)
+
+        with patch.object(claude_tmux.subprocess, 'run', side_effect=tmux):
+            threads = [threading.Thread(target=worker, args=(m,))
+                       for m in ('opus', 'sonnet')]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+        assert failures == []
+
+
 class TestRouting:
+    def test_the_agents_claude_model_picks_the_pane(self, monkeypatch):
+        monkeypatch.setenv('DRAFTING_MODEL', CLAUDE_TMUX_MODEL)
+        monkeypatch.setenv('DRAFTING_CLAUDE_MODEL', 'sonnet')
+        with patch.object(claude_tmux, 'complete_structured',
+                          return_value=Answer(name='x', score=1)) as handoff:
+            complete_structured('p', Answer, agent_model_env='DRAFTING_MODEL')
+        assert handoff.call_args.kwargs['model'] == 'sonnet'
+
+    def test_no_claude_model_set_means_the_default_pane(self, monkeypatch):
+        monkeypatch.setenv('RESEARCH_MODEL', CLAUDE_TMUX_MODEL)
+        monkeypatch.delenv('RESEARCH_CLAUDE_MODEL', raising=False)
+        with patch.object(claude_tmux, 'complete_structured',
+                          return_value=Answer(name='x', score=1)) as handoff:
+            complete_structured('p', Answer, agent_model_env='RESEARCH_MODEL')
+        assert handoff.call_args.kwargs['model'] is None
+
     def test_llm_complete_structured_hands_claude_tmux_to_this_module(self, monkeypatch):
         monkeypatch.setenv('RESEARCH_MODEL', CLAUDE_TMUX_MODEL)
         with patch.object(claude_tmux, 'complete_structured',
@@ -375,3 +487,192 @@ class TestRouting:
         assert result.name == 'x'
         proxy.assert_not_called()
         assert handoff.call_args.kwargs['system'] == 's'
+
+
+class TestComplete:
+    """claude_tmux.complete: the raw-text entry point the OpenAI-compatible
+    server uses -- free text, any JSON, or JSON matching a schema dict."""
+
+    def _complete(self, tmux, **kwargs):
+        with patch.object(claude_tmux.subprocess, 'run', side_effect=tmux):
+            return claude_tmux.complete('Say hello.', system='Be brief.', **kwargs)
+
+    def test_text_mode_returns_the_reply_as_written(self, tmp_path):
+        def submit(line):
+            if '.answer.' in line:
+                path = Path(next(t for t in line.split() if '.answer.' in t))
+                path.write_text('Hello there.\n')
+        tmux = FakeTmux(on_submit=submit)
+        assert self._complete(tmux) == 'Hello there.'
+        request = next((tmp_path / 'handoff').glob('*.request.md')).read_text()
+        assert 'Be brief.' in request and 'Say hello.' in request
+        assert 'JSON' not in request.split('## System prompt')[0]
+
+    def test_text_mode_answer_file_is_not_json(self, tmp_path):
+        seen = []
+
+        def submit(line):
+            if '.answer.' in line:
+                path = Path(next(t for t in line.split() if '.answer.' in t))
+                seen.append(path.name)
+                path.write_text('plain words')
+        tmux = FakeTmux(on_submit=submit)
+        self._complete(tmux)
+        assert seen and not seen[0].endswith('.json')
+
+    def test_json_schema_mode_validates_against_the_schema(self):
+        schema = {'type': 'object', 'properties': {'n': {'type': 'integer'}},
+                  'required': ['n'], 'additionalProperties': False}
+        tmux = FakeTmux(on_submit=writes('{"n": "two"}', '{"n": 2}'))
+        text = self._complete(tmux, fmt='json', schema=schema, name='Count')
+        assert json.loads(text) == {'n': 2}
+
+    def test_json_schema_mode_gives_up_with_a_schema_error(self):
+        schema = {'type': 'object', 'properties': {'n': {'type': 'integer'}},
+                  'required': ['n']}
+        tmux = FakeTmux(on_submit=writes('{"n": "x"}', '{"m": 1}'))
+        with pytest.raises(LLMSchemaError):
+            self._complete(tmux, fmt='json', schema=schema, max_attempts=2)
+
+    def test_json_mode_without_a_schema_needs_only_json(self):
+        tmux = FakeTmux(on_submit=writes('{"anything": [1, 2]}'))
+        assert json.loads(self._complete(tmux, fmt='json')) == {'anything': [1, 2]}
+
+
+class TestRejectedModel:
+    def test_a_model_claude_rejects_fails_fast(self, _env):
+        """Claude Code answered 'There's an issue with the selected model' and
+        the request sat out CLAUDE_TMUX_TIMEOUT (15 minutes)."""
+        rejected = ("\u25cf There's an issue with the selected model "
+                    "(openai/claude-tmux/sonnet). It may not exist or you may not "
+                    "have access to it. Run /model to pick a different model.\n"
+                    "\u276f " + FOOTER)
+        tmux = FakeTmux(panes=[READY_PANE] * 4 + [rejected])
+        with pytest.raises(claude_tmux.PaneModelError, match='model'):
+            _run(tmux, model='bogus')
+        assert _env['now'] < 30
+
+    def test_it_is_a_transport_error_for_the_pipeline(self):
+        """The agents catch LLMTransportError; this must not escape them."""
+        assert issubclass(claude_tmux.PaneModelError, LLMTransportError)
+
+
+class TestWarmblyPane:
+    """Panes for the OpenAI-compatible server can call the Warmbly API: their
+    own sessions, curl allowed, credentials in the environment. The
+    pipeline's panes stay locked down."""
+
+    @pytest.fixture(autouse=True)
+    def _creds(self, monkeypatch):
+        monkeypatch.setenv('WARMBLY_API_URL', 'https://api.example')
+        monkeypatch.setenv('WARMBLY_API_TOKEN', 'wmbly_secret_value')
+
+    def test_its_own_session(self):
+        assert claude_tmux.session_name('sonnet', warmbly=True) == 'test-claude-sonnet-warmbly'
+        assert claude_tmux.session_name('sonnet') == 'test-claude-sonnet'
+
+    def test_launch_allows_the_wrapper_and_keeps_the_token_off_the_command_line(self):
+        launch = claude_tmux.launch_command('/x', 'sonnet', warmbly=True)
+        assert 'wmbly_secret_value' not in launch
+        # Claude Code will not auto-approve a command holding a $VARIABLE, so
+        # the agent calls a wrapper that reads the credentials itself, and
+        # raw curl -- able to send the token anywhere -- is not allowed.
+        assert "Bash(warmbly-api:*)" in launch
+        assert 'Bash(curl' not in launch
+        disallowed = launch.split('--disallowedTools', 1)[1].split('--')[0]
+        assert 'Bash' not in disallowed and 'WebFetch' in disallowed
+        assert '--append-system-prompt-file' in launch
+        assert '--add-dir' in launch
+
+    def test_launch_sources_a_private_env_file_with_the_credentials(self, tmp_path):
+        launch = claude_tmux.launch_command('/x', 'sonnet', warmbly=True)
+        env_file = tmp_path / 'handoff' / '.warmbly.env'
+        assert f'. {env_file}' in launch
+        assert 'wmbly_secret_value' in env_file.read_text()
+        assert 'WARMBLY_API_URL' in env_file.read_text()
+        # warmbly-api is on the pane's PATH.
+        assert f'PATH={claude_tmux.WARMBLY_BIN}:' in env_file.read_text().replace("'", '')
+        assert (env_file.stat().st_mode & 0o777) == 0o600
+
+    def test_the_guide_tells_it_where_the_api_and_credentials_are(self, tmp_path):
+        launch = claude_tmux.launch_command('/x', 'sonnet', warmbly=True)
+        guide_path = launch.split('--append-system-prompt-file', 1)[1].split()[0]
+        guide = Path(guide_path.strip("'")).read_text()
+        for needed in ('warmbly-api GET', 'warmbly-api POST', 'openapi.json',
+                       '/v1', 'jq', 'never print'):
+            assert needed in guide
+
+    def test_missing_credentials_fail_clearly(self, monkeypatch):
+        monkeypatch.delenv('WARMBLY_API_TOKEN')
+        with pytest.raises(LLMTransportError, match='WARMBLY_API_TOKEN'):
+            claude_tmux.launch_command('/x', 'sonnet', warmbly=True)
+
+    def test_the_pipeline_pane_still_has_no_bash(self):
+        launch = claude_tmux.launch_command('/x', 'sonnet')
+        assert 'Bash' in launch.split('--disallowedTools', 1)[1].split('--')[0]
+        assert 'curl' not in launch and 'warmbly' not in launch.lower()
+
+    def test_the_request_permits_the_api_instead_of_forbidding_tools(self, tmp_path):
+        text = claude_tmux.build_request('List my campaigns.', None,
+                                         tmp_path / 'a.answer.txt', fmt='text',
+                                         warmbly=True)
+        assert 'Warmbly API' in text
+        assert 'no web' not in text
+        plain = claude_tmux.build_request('x', None, tmp_path / 'a.txt', fmt='text')
+        assert 'no web' in plain
+
+    def test_complete_uses_the_warmbly_pane(self):
+        def submit(line):
+            if '.answer.' in line:
+                Path(next(t for t in line.split() if '.answer.' in t)).write_text('3 campaigns')
+        tmux = FakeTmux(has_session=False, on_submit=submit)
+        with patch.object(claude_tmux.subprocess, 'run', side_effect=tmux):
+            out = claude_tmux.complete('How many campaigns?', model='sonnet', warmbly=True)
+        assert out == '3 campaigns'
+        new = next(c for c in tmux.calls if c[:2] == ['tmux', 'new-session'])
+        assert 'test-claude-sonnet-warmbly' in new
+
+
+class TestWarmblyApiScript:
+    """scripts/warmbly-api: the one command a Warmbly pane may run (besides
+    jq). In scripts/, which is tracked; bin/ is gitignored."""
+
+    SCRIPT = Path(__file__).resolve().parent.parent / 'scripts' / 'warmbly-api'
+
+    def test_the_pane_path_points_at_it(self):
+        assert Path(claude_tmux.WARMBLY_BIN) == self.SCRIPT.parent
+
+    def _run(self, tmp_path, *args):
+        stub = tmp_path / 'stubbin'
+        stub.mkdir()
+        (stub / 'curl').write_text('#!/bin/sh\nfor a in "$@"; do echo "ARG:$a"; done\n')
+        (stub / 'curl').chmod(0o755)
+        env = {'PATH': f'{stub}:/usr/bin:/bin', 'WARMBLY_API_URL': 'https://api.example/',
+               'WARMBLY_API_TOKEN': 'wmbly_x'}
+        return REAL_RUN([str(self.SCRIPT), *args], env=env, capture_output=True, text=True)
+
+    def test_get_goes_to_the_v1_path_with_the_bearer_token(self, tmp_path):
+        out = self._run(tmp_path, 'GET', '/campaigns?limit=5').stdout
+        assert 'ARG:https://api.example/v1/campaigns?limit=5' in out
+        assert 'ARG:Authorization: Bearer wmbly_x' in out
+        assert 'ARG:GET' in out
+
+    def test_a_path_already_under_v1_is_not_doubled(self, tmp_path):
+        out = self._run(tmp_path, 'GET', '/v1/campaigns').stdout
+        assert 'ARG:https://api.example/v1/campaigns' in out
+
+    def test_a_body_is_sent_as_json(self, tmp_path):
+        out = self._run(tmp_path, 'POST', 'contacts', '{"email": "a@b.co"}').stdout
+        assert 'ARG:https://api.example/v1/contacts' in out
+        assert 'ARG:{"email": "a@b.co"}' in out
+        assert 'ARG:Content-Type: application/json' in out
+
+    def test_only_the_configured_api_host_is_reachable(self, tmp_path):
+        """A full URL would let the token go to any host."""
+        result = self._run(tmp_path, 'GET', 'https://evil.example/x')
+        assert result.returncode != 0
+        assert 'evil.example' not in result.stdout
+
+    def test_usage_without_arguments(self, tmp_path):
+        result = self._run(tmp_path)
+        assert result.returncode != 0 and 'usage' in result.stderr.lower()

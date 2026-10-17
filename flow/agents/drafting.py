@@ -38,7 +38,8 @@ from flow.schemas import DraftingOutput, failure_reason
 SYSTEM_PROMPT = (
     'You write short, specific first-contact emails to small service business '
     'owners. One concrete observation, one offer, one ask. No flattery, no '
-    'placeholders, no invented facts. Write only to addresses you were given.'
+    'placeholders, no invented facts. Write only to addresses you were given. '
+    'The sending system appends the signature, so end on the ask.'
 )
 
 
@@ -98,7 +99,9 @@ def build_drafting_prompt(
     lines.append(
         'Put that address in selected_emails, and only addresses given '
         'above. Return subject, email_text (the email body), and a '
-        'rationale for the framing.')
+        'rationale for the framing. The sending system appends the '
+        "sender's signature after email_text, so end it on the ask: no "
+        'sign-off line ("Thanks,", "Best,"), no name and no contact details.')
     return '\n'.join(lines)
 
 

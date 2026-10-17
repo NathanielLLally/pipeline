@@ -581,8 +581,10 @@ def complete_structured(
 
     if model == CLAUDE_TMUX_MODEL:
         from flow import claude_tmux
+        # <PREFIX>_CLAUDE_MODEL picks the pane's model: RESEARCH_CLAUDE_MODEL=opus.
         return claude_tmux.complete_structured(
-            prompt, schema_model, system=system, max_attempts=max_attempts)
+            prompt, schema_model, system=system, max_attempts=max_attempts,
+            model=agent_setting(agent_model_env, 'CLAUDE_MODEL'))
 
     messages = []
     if system:

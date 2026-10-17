@@ -101,6 +101,11 @@ class TestSignOff:
 
             assert 'sign_off' in qa['failures'], closing
 
+    def test_a_sign_off_followed_by_a_name_fails(self):
+        """'Best,\nNate' -- the name line hid the closing above it."""
+        qa = _qa(body=GOOD_BODY + '\n\nBest,\nNate')
+        assert 'sign_off' in qa['failures']
+
     def test_a_body_ending_on_the_ask_has_no_sign_off(self):
         assert 'sign_off' not in _qa()['failures']
 

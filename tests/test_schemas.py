@@ -251,3 +251,34 @@ class TestDraftMakesNoPaymentClaims:
             'People in Rockwall are looking for help with reactive dogs. We '
             'run the ads, screen the inquiries, and pass you the serious '
             'ones. Reply if interested.'))
+
+
+class TestDraftSignOff:
+    """The sending system appends the mailbox signature after the body. A
+    drafted closing prints above it ('Thanks,' then the signature), and a
+    drafted name is invented: one test draft signed off 'Best,\\nNate'."""
+
+    BODY = 'Noticed you take bookings by phone only. Worth a reply?'
+
+    def _draft(self, body):
+        return dict(selected_emails=['a@b.com'], subject='Hello', body=body,
+                    rationale='booking friction')
+
+    @pytest.mark.parametrize('closing', [
+        'Thanks,', 'Thanks', 'Best,', 'Best regards', 'Cheers!',
+        'Best,\nNate', 'Thanks,\nNate Lally', 'Kind regards,\n\nThe team'])
+    def test_a_closing_is_rejected_with_the_reason(self, closing):
+        with pytest.raises(ValidationError, match='signature'):
+            DraftingOutput(**self._draft(f'{self.BODY}\n\n{closing}'))
+
+    def test_a_body_ending_on_the_ask_is_accepted(self):
+        assert DraftingOutput(**self._draft(self.BODY)).body == self.BODY
+
+    def test_thanks_inside_a_sentence_is_not_a_sign_off(self):
+        body = 'Noticed you take bookings by phone only.\n\nThanks for reading this far.'
+        assert DraftingOutput(**self._draft(body)).body == body
+
+    def test_find_sign_off_names_the_closing(self):
+        from flow.schemas import find_sign_off
+        assert find_sign_off(f'{self.BODY}\n\nBest,\nNate') == 'Best,\nNate'
+        assert find_sign_off(self.BODY) is None

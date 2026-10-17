@@ -164,6 +164,29 @@ def find_placeholder(value: str) -> Optional[str]:
     return None
 
 
+# A closing line: 'Thanks,', 'Best regards', 'Cheers!'. The whole line, so
+# 'Thanks for reading this far.' is a sentence, not a sign-off.
+_SIGN_OFF = re.compile(
+    r'^(thanks|thank you|best|best regards|regards|kind regards|warm regards|'
+    r'warmly|sincerely|cheers|all the best|talk soon)\b[\s,.!]*$', re.IGNORECASE)
+
+
+def find_sign_off(body: str) -> Optional[str]:
+    """
+    The closing the body ends with, or None: a sign-off line last, or one
+    followed by a short name line ('Best,\\nNate'). The sending system appends
+    the mailbox signature after the body, so either prints above it -- and a
+    drafted name is invented.
+    """
+    lines = [ln.strip() for ln in (body or '').rstrip().splitlines() if ln.strip()]
+    if len(lines) > 1 and _SIGN_OFF.match(lines[-1]):
+        return lines[-1]
+    if (len(lines) > 2 and _SIGN_OFF.match(lines[-2])
+            and len(lines[-1].split()) <= 3 and lines[-1][-1] not in '.?!'):
+        return '\n'.join(lines[-2:])
+    return None
+
+
 class DraftingOutput(BaseModel):
     # The LLM sees the body as `email_text`; everything downstream, and every
     # stored draft, keeps `body`. nemotron-3-ultra behind the proxy cuts any
@@ -201,6 +224,19 @@ class DraftingOutput(BaseModel):
                 f'payment terms or a promise {claim!r}: say nothing about how '
                 'or when they pay, and promise nothing the offer does not '
                 'state'
+            )
+        return value
+
+    @field_validator('body')
+    @classmethod
+    def no_sign_off(cls, value: str) -> str:
+        """End on the ask: the sending system appends the signature."""
+        found = find_sign_off(value)
+        if found:
+            raise ValueError(
+                f'the body ends with a sign-off {found!r}: end it on the ask, '
+                'with no closing line and no name -- the sending system '
+                'appends the mailbox signature after the body'
             )
         return value
 

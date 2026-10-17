@@ -1,0 +1,46 @@
+#!/bin/sh
+# warmbly-api METHOD PATH [JSON_BODY]
+#
+# One call to the Warmbly API, authenticated from the environment:
+# WARMBLY_API_URL (base, without /v1) and WARMBLY_API_TOKEN.
+#
+#   warmbly-api GET /campaigns
+#   warmbly-api GET '/contacts?limit=5'
+#   warmbly-api POST /contacts '{"email": "a@b.co"}'
+#
+# The command Claude in a Warmbly tmux pane runs (flow/claude_tmux.py). Claude
+# Code will not auto-approve a command holding a $VARIABLE, so the agent
+# cannot pass the token itself; this reads it instead, and only ever sends it
+# to WARMBLY_API_URL -- a full URL as PATH is refused. Prints the response
+# body, then the HTTP status on its own line.
+set -eu
+
+if [ $# -lt 2 ] || [ $# -gt 3 ]; then
+    echo "usage: warmbly-api METHOD PATH [JSON_BODY]" >&2
+    exit 2
+fi
+method=$1
+path=$2
+: "${WARMBLY_API_URL:?WARMBLY_API_URL is not set}"
+: "${WARMBLY_API_TOKEN:?WARMBLY_API_TOKEN is not set}"
+
+case $path in
+    *://*) echo "warmbly-api: give a path such as /campaigns, not a URL" >&2; exit 2 ;;
+    /*) ;;
+    *) path=/$path ;;
+esac
+case $path in
+    /v1/*|/v1) ;;
+    *) path=/v1$path ;;
+esac
+url="${WARMBLY_API_URL%/}$path"
+
+if [ $# -eq 3 ]; then
+    exec curl -sS --max-time 60 -X "$method" "$url" \
+        -H "Authorization: Bearer $WARMBLY_API_TOKEN" \
+        -H "Content-Type: application/json" \
+        --data-binary "$3" -w '\nHTTP %{http_code}\n'
+fi
+exec curl -sS --max-time 60 -X "$method" "$url" \
+    -H "Authorization: Bearer $WARMBLY_API_TOKEN" \
+    -w '\nHTTP %{http_code}\n'

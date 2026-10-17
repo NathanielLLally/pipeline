@@ -34,6 +34,21 @@ def _draft(**over):
     return DraftingOutput(**base)
 
 
+class TestSignatureInstruction:
+    """The sending system appends the signature, so the drafter must end on
+    the ask: no closing, no name. Told nothing, it signed 'Best,\nNate'."""
+
+    def test_the_prompt_says_a_signature_is_appended(self):
+        prompt = build_drafting_prompt(RESEARCH, EMAILS, "default").lower()
+        assert 'signature' in prompt
+        assert 'no sign-off' in prompt
+        assert 'no name' in prompt
+
+    def test_the_system_prompt_says_it_too(self):
+        from flow.agents.drafting import SYSTEM_PROMPT
+        assert 'signature' in SYSTEM_PROMPT.lower()
+
+
 class TestPromptConstruction:
     def test_prompt_carries_the_hook_tone_and_pool(self):
         prompt = build_drafting_prompt(RESEARCH, EMAILS, "default")

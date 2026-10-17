@@ -23,8 +23,9 @@ From the command line, with .env sourced:
     $ python flow/run_agents.py --business-ids <id> <id> --research-tier frontier
     $ python flow/run_agents.py --business-ids <id> --claude
 
---claude has a Claude Code session in tmux answer research and drafting
-(flow/claude_tmux.py); analysis stays on ANALYSIS_MODEL / LLM_MODEL.
+--claude has Claude Code sessions in tmux answer research, drafting and
+analysis (flow/claude_tmux.py): research in an Opus pane, drafting and
+analysis in a Sonnet pane. RESEARCH_/DRAFTING_/ANALYSIS_CLAUDE_MODEL override.
 
 Research runs at reasoning effort 'high' from here unless told otherwise; a
 --research-tier also switches research to the multi-agent graph, the only
@@ -406,7 +407,7 @@ def _usage_rows() -> List[Tuple[str, str, str]]:
          f"Pin research to one multi-agent tier ({', '.join(TIERS)}); "
          'implies RESEARCH_MODEL=multi-agent'),
         ('--claude', 'off',
-         'Research and draft with Claude Code in tmux (flow/claude_tmux.py)'),
+         'Research (Opus), draft and analyze (Sonnet) with Claude Code in tmux'),
     ]
 
 
@@ -468,9 +469,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help='answer research with this multi-agent tier, skipping '
                              'the router; implies RESEARCH_MODEL=multi-agent')
     parser.add_argument('--claude', action='store_true',
-                        help='research and draft with an interactive Claude Code '
-                             'session over tmux; sets RESEARCH_MODEL and '
-                             f'DRAFTING_MODEL={CLAUDE_TMUX_MODEL}')
+                        help='research, draft and analyze with Claude Code over '
+                             'tmux: research on Opus, drafting and analysis on '
+                             'Sonnet (*_CLAUDE_MODEL overrides)')
     return parser
 
 
@@ -490,9 +491,14 @@ def main(argv: Optional[List[str]] = None) -> dict:
         os.environ['RESEARCH_TIER'] = args.research_tier
         os.environ['RESEARCH_MODEL'] = MULTI_AGENT_MODEL
     if args.claude:
-        # One pane, so businesses take turns there (flow/claude_tmux.py).
-        os.environ['RESEARCH_MODEL'] = CLAUDE_TMUX_MODEL
-        os.environ['DRAFTING_MODEL'] = CLAUDE_TMUX_MODEL
+        # One pane per model (flow/claude_tmux.py): research on Opus,
+        # drafting and analysis share a Sonnet pane. Businesses take turns
+        # within a pane; the two panes work at once. A *_CLAUDE_MODEL
+        # already set wins.
+        for agent, model in (('RESEARCH', 'opus'), ('DRAFTING', 'sonnet'),
+                             ('ANALYSIS', 'sonnet')):
+            os.environ[f'{agent}_MODEL'] = CLAUDE_TMUX_MODEL
+            os.environ.setdefault(f'{agent}_CLAUDE_MODEL', model)
 
     print(f"research: model={os.environ.get('RESEARCH_MODEL') or os.environ.get('LLM_MODEL')} "
           f"tier={os.environ.get('RESEARCH_TIER') or 'router'} "

@@ -706,7 +706,8 @@ class TestCommandLine:
     """python flow/run_agents.py [options]: research knobs set through the env."""
 
     KEYS = ('RESEARCH_MODEL', 'RESEARCH_TIER', 'RESEARCH_REASONING_EFFORT',
-            'DRAFTING_MODEL')
+            'DRAFTING_MODEL', 'ANALYSIS_MODEL', 'RESEARCH_CLAUDE_MODEL',
+            'DRAFTING_CLAUDE_MODEL', 'ANALYSIS_CLAUDE_MODEL')
 
     @pytest.fixture(autouse=True)
     def _restore_env(self, monkeypatch):
@@ -743,6 +744,18 @@ class TestCommandLine:
         _, env = self._main('--claude')
         assert env['RESEARCH_MODEL'] == 'claude-tmux'
         assert env['DRAFTING_MODEL'] == 'claude-tmux'
+        assert env['ANALYSIS_MODEL'] == 'claude-tmux'
+
+    def test_claude_puts_research_on_opus_and_the_rest_on_sonnet(self):
+        _, env = self._main('--claude')
+        assert env['RESEARCH_CLAUDE_MODEL'] == 'opus'
+        assert env['DRAFTING_CLAUDE_MODEL'] == 'sonnet'
+        assert env['ANALYSIS_CLAUDE_MODEL'] == 'sonnet'
+
+    def test_a_claude_model_already_set_is_kept(self, monkeypatch):
+        monkeypatch.setenv('DRAFTING_CLAUDE_MODEL', 'haiku')
+        _, env = self._main('--claude')
+        assert env['DRAFTING_CLAUDE_MODEL'] == 'haiku'
 
     def test_claude_and_a_research_tier_conflict(self):
         """A tier means the multi-agent graph; --claude means not it."""
