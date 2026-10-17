@@ -94,6 +94,11 @@ def _env(tmp_path, monkeypatch):
     return clock
 
 
+def S(*parts):
+    """A session name as claude_tmux builds it: base, parts, checkout tag."""
+    return '-'.join(['test-claude', *parts, claude_tmux.checkout_tag()])
+
+
 def _no_real_tmux(cmd, **kwargs):
     raise AssertionError(f'real subprocess.run reached: {cmd}')
 
@@ -179,9 +184,9 @@ class TestSubmission:
         Enter was lost, and the request sat in the box until the timeout."""
         tmux = FakeTmux(panes=[UNSUBMITTED_PANE, READY_PANE])
         with patch.object(claude_tmux.subprocess, 'run', side_effect=tmux):
-            claude_tmux.send_line('test-claude', TYPED)
+            claude_tmux.send_line(S(), TYPED)
         enters = [c for c in tmux.calls if c == ['tmux', 'send-keys', '-t',
-                                                 'test-claude', 'Enter']]
+                                                 S(), 'Enter']]
         assert len(enters) == 2
 
 
@@ -192,7 +197,7 @@ class TestSession:
         _run(tmux)
 
         new = next(c for c in tmux.calls if c[:2] == ['tmux', 'new-session'])
-        assert 'test-claude' in new
+        assert S() in new
         launch = ' '.join(next(c for c in tmux.calls
                                if c[:2] == ['tmux', 'send-keys'] and
                                any('claude ' in str(x) for x in c)))
@@ -257,7 +262,7 @@ class TestSession:
         launch = next(i for i, c in enumerate(tmux.calls)
                       if c[:2] == ['tmux', 'send-keys'] and len(c) > 5)
         first_typed = next(i for i, c in enumerate(tmux.calls) if '-l' in c)
-        bare_enter = ['tmux', 'send-keys', '-t', 'test-claude', 'Enter']
+        bare_enter = ['tmux', 'send-keys', '-t', S(), 'Enter']
         assert bare_enter in tmux.calls[launch + 1:first_typed]
 
     def test_a_shell_prompt_is_not_claude(self):
@@ -348,7 +353,7 @@ class TestAnswer:
                         on_submit=submit)
         with pytest.raises(LLMTransportError):
             _run(tmux)
-        assert ['tmux', 'send-keys', '-t', 'test-claude', 'Escape'] in tmux.calls
+        assert ['tmux', 'send-keys', '-t', S(), 'Escape'] in tmux.calls
         assert _run(tmux).name == 'y'
 
 
@@ -413,11 +418,11 @@ class TestPerModelPanes:
                         on_submit=writes('{"name": "x", "score": 1}'))
         _run(tmux, model='sonnet')
         new = next(c for c in tmux.calls if c[:2] == ['tmux', 'new-session'])
-        assert 'test-claude-sonnet' in new
+        assert S('sonnet') in new
         launch = ' '.join(str(x) for c in tmux.calls for x in c
                           if 'claude ' in str(x))
         assert '--model sonnet' in launch
-        assert all(c[c.index('-t') + 1] == 'test-claude-sonnet'
+        assert all(c[c.index('-t') + 1] == S('sonnet')
                    for c in tmux.calls if '-t' in c)
 
     def test_no_model_keeps_the_plain_session(self):
@@ -427,7 +432,7 @@ class TestPerModelPanes:
         launch = ' '.join(str(x) for c in tmux.calls for x in c
                           if 'claude ' in str(x))
         assert '--model' not in launch
-        assert any('test-claude' == c[c.index('-t') + 1]
+        assert any(S() == c[c.index('-t') + 1]
                    for c in tmux.calls if '-t' in c)
 
     def test_panes_for_different_models_work_at_the_same_time(self):
@@ -568,8 +573,8 @@ class TestWarmblyPane:
         monkeypatch.setenv('WARMBLY_API_TOKEN', 'wmbly_secret_value')
 
     def test_its_own_session(self):
-        assert claude_tmux.session_name('sonnet', warmbly=True) == 'test-claude-sonnet-warmbly'
-        assert claude_tmux.session_name('sonnet') == 'test-claude-sonnet'
+        assert claude_tmux.session_name('sonnet', warmbly=True) == S('sonnet', 'warmbly')
+        assert claude_tmux.session_name('sonnet') == S('sonnet')
 
     def test_launch_allows_the_wrapper_and_keeps_the_token_off_the_command_line(self):
         launch = claude_tmux.launch_command('/x', 'sonnet', warmbly=True)
@@ -630,7 +635,7 @@ class TestWarmblyPane:
             out = claude_tmux.complete('How many campaigns?', model='sonnet', warmbly=True)
         assert out == '3 campaigns'
         new = next(c for c in tmux.calls if c[:2] == ['tmux', 'new-session'])
-        assert 'test-claude-sonnet-warmbly' in new
+        assert S('sonnet', 'warmbly') in new
 
 
 class TestWarmblyApiScript:
@@ -676,3 +681,20 @@ class TestWarmblyApiScript:
     def test_usage_without_arguments(self, tmp_path):
         result = self._run(tmp_path)
         assert result.returncode != 0 and 'usage' in result.stderr.lower()
+
+
+class TestPanePerCheckout:
+    """A pane runs in one checkout's handoff directory and may write only
+    there. A pane started from the agents worktree took research requests
+    from the main checkout and stopped on a permission prompt for each."""
+
+    def test_checkouts_with_different_handoff_dirs_get_different_panes(self, monkeypatch, tmp_path):
+        monkeypatch.setenv('ARTIFACT_DIR', str(tmp_path / 'a'))
+        a = claude_tmux.session_name('opus')
+        monkeypatch.setenv('ARTIFACT_DIR', str(tmp_path / 'b'))
+        b = claude_tmux.session_name('opus')
+        assert a != b
+        assert a.startswith('test-claude-opus-') and b.startswith('test-claude-opus-')
+
+    def test_the_same_checkout_keeps_its_pane(self):
+        assert claude_tmux.session_name('opus') == claude_tmux.session_name('opus')

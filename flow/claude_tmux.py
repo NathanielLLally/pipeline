@@ -31,7 +31,10 @@ Environment, read per call:
                        and Claude launched in it if absent. With a model, the
                        pane is '<session>-<model>' and Claude runs with
                        --model <model>: one pane per model, each with its own
-                       lock, so panes for different models work at once.
+                       lock, so panes for different models work at once. Every
+                       name ends in a tag for the checkout's handoff directory
+                       (checkout_tag), e.g. 'pipeline-claude-opus-3fa2c1':
+                       each checkout gets its own panes.
   <AGENT>_CLAUDE_MODEL the model an agent's pane runs, read via
                        flow.llm.agent_setting: RESEARCH_CLAUDE_MODEL=opus,
                        DRAFTING_CLAUDE_MODEL=sonnet. Unset: the plain pane.
@@ -51,6 +54,7 @@ Environment, read per call:
 """
 
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -165,13 +169,26 @@ class PaneModelError(LLMTransportError):
     is a transport error so the agents' existing handling still applies."""
 
 
+def checkout_tag() -> str:
+    """
+    Six hex characters naming this checkout's handoff directory. A pane runs
+    in one handoff directory and may write answers only there, so two
+    checkouts must not share one: a pane started from a worktree stopped on a
+    permission prompt for every request from the main checkout.
+    """
+    return hashlib.sha1(str(handoff_dir().resolve()).encode()).hexdigest()[:6]
+
+
 def session_name(model: Optional[str] = None, warmbly: bool = False) -> str:
     """The pane for `model`: one per model, so research on one model need
     not wait for drafting on another. No model: the plain session. Warmbly
-    panes (see warmbly_launch) are separate sessions again."""
+    panes (see warmbly_launch) are separate sessions again. Each checkout
+    has its own panes (checkout_tag)."""
     base = os.environ.get('CLAUDE_TMUX_SESSION') or 'pipeline-claude'
     name = f"{base}-{re.sub(r'[^A-Za-z0-9]+', '-', model)}" if model else base
-    return f'{name}-warmbly' if warmbly else name
+    if warmbly:
+        name = f'{name}-warmbly'
+    return f'{name}-{checkout_tag()}'
 
 
 def answer_timeout() -> float:
