@@ -219,7 +219,11 @@ class TestGatewayWiring:
         from warmbly.gateway import GatewayEvent
         business = {v for k, v in vars(GatewayEvent).items()
                     if k.isupper() and isinstance(v, str) and v.isupper()}
-        assert business <= self._registered()
+        assert business - bot.SUPPRESSED_EVENTS <= self._registered()
+
+    def test_email_updated_is_not_published(self):
+        """Flag/folder churn on every message; it drowned out the feed."""
+        assert 'EMAIL_UPDATED' not in self._registered()
 
     def test_control_frames_are_not_published(self):
         """Presence, rate-limit and resume frames are transport, not CRM events."""
@@ -949,3 +953,92 @@ class TestSenderUploadsFiles:
 
         assert sent['content'] == 'just text'
         assert sent['file'] is None
+
+
+# Real EMAIL_RECEIVED payloads from the event channel, trimmed. Instantly
+# warmup mail carries the pool's filter tag in the subject and the body.
+WARMUP = {
+    'event_type': 'EMAIL_RECEIVED', 'folder': 'inbox',
+    'from': 'Tomiko M <tomiko@veritrogrid.com>',
+    'subject': "Nate, we'd like to hear from you! | warmup 33153D9",
+    'preview': 'Hi there, Could I send you a new quote? Sincerely, Tomiko '
+               'warmup 33153D9',
+}
+REAL = {
+    'event_type': 'EMAIL_RECEIVED', 'folder': 'inbox',
+    'from': 'Mail Delivery Subsystem <mailer-daemon@googlemail.com>',
+    'subject': 'Delivery Status Notification (Failure)',
+    'preview': '** Message not delivered ** There was a problem delivering '
+               'your message to nina.l@itsninalopez.com.',
+}
+
+
+class TestWarmupFilter:
+    def test_tag_in_subject_is_warmup(self):
+        assert bot.is_warmup(WARMUP)
+
+    def test_tag_only_in_preview_is_warmup(self):
+        assert bot.is_warmup({**WARMUP, 'subject': 'Coffee?'})
+
+    def test_multi_word_tag_prefix_is_warmup(self):
+        assert bot.is_warmup({
+            'subject': 'Financing Ready Now | Black Tie Funding 33153D9',
+            'preview': 'Good afternoon Rose'})
+
+    def test_tag_order_does_not_matter(self):
+        assert bot.is_warmup({'subject': 'Thoughts? | 33153D9 G0CNY5F'})
+
+    def test_real_mail_is_not_warmup(self):
+        assert not bot.is_warmup(REAL)
+
+    def test_tag_inside_a_longer_token_is_not_warmup(self):
+        assert not bot.is_warmup({'subject': 'Order X33153D9Y shipped'})
+
+    def test_missing_or_null_fields_are_not_warmup(self):
+        assert not bot.is_warmup({'subject': None})
+        assert not bot.is_warmup({})
+
+    def test_non_dict_payload_is_not_warmup(self):
+        assert not bot.is_warmup('33153D9')
+        assert not bot.is_warmup(None)
+
+    def test_tags_are_configurable(self):
+        assert bot.is_warmup({'subject': 'hi | x ABC1234'}, tags=('ABC1234',))
+        assert not bot.is_warmup(WARMUP, tags=('ABC1234',))
+
+    def test_parse_tags(self):
+        assert bot.parse_warmup_tags(None) == ('33153D9',)
+        assert bot.parse_warmup_tags(' a1, b2 ,,') == ('a1', 'b2')
+        assert bot.parse_warmup_tags('') == ()
+
+
+class TestHandlersDropWarmup:
+    def _handlers(self):
+        gw = MagicMock()
+        handlers = {}
+        gw.on_event.side_effect = lambda name: (
+            lambda h: handlers.setdefault(name, h))
+        publish = AsyncMock()
+        bot.register_event_handlers(gw, publish)
+        return handlers, publish
+
+    def test_warmup_received_is_dropped(self):
+        handlers, publish = self._handlers()
+        _run(handlers['EMAIL_RECEIVED']('org:1', WARMUP))
+        publish.assert_not_awaited()
+
+    def test_real_received_is_published(self):
+        handlers, publish = self._handlers()
+        _run(handlers['EMAIL_RECEIVED']('org:1', REAL))
+        publish.assert_awaited_once()
+
+    def test_non_dict_received_is_published(self):
+        handlers, publish = self._handlers()
+        _run(handlers['EMAIL_RECEIVED']('org:1', ['odd']))
+        publish.assert_awaited_once()
+
+    def test_other_events_with_the_tag_are_still_published(self):
+        """Only inbound mail is filtered; our own sends stay visible."""
+        handlers, publish = self._handlers()
+        _run(handlers['EMAIL_SENT']('org:1', WARMUP))
+        publish.assert_awaited_once()

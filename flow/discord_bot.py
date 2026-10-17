@@ -4,7 +4,9 @@ Discord bot: a Warmbly event feed plus slash commands, run as a Prefect flow.
 One long-running flow run owns two connections on one event loop:
 
   * the Warmbly realtime gateway (AsyncGatewayClient), subscribed to
-    org:{WARMBLY_ORG_ID}; every event is posted to DISCORD_EVENT_CHANNEL_ID
+    org:{WARMBLY_ORG_ID}; events are posted to DISCORD_EVENT_CHANNEL_ID,
+    except EMAIL_UPDATED (per-message flag churn) and EMAIL_RECEIVED for
+    Instantly warmup mail
   * the Discord gateway, serving the slash commands:
 
       /batchdraft [n]   trigger the selector -> research -> drafting pipeline
@@ -34,6 +36,11 @@ Environment:
                                              families (EMAIL,CAMPAIGN,...) to
                                              forward; unset forwards all
   WARMBLY_REQUEST_TIMEOUT                    CLI command timeout, seconds
+  INSTANTLY_WARMUP_TAGS                      optional; comma-separated
+                                             Instantly warmup filter tags;
+                                             EMAIL_RECEIVED carrying one is
+                                             not posted (default 33153D9,
+                                             empty disables the filter)
 
 The bot runs the CLI as whatever user the Prefect worker runs as, so /auth
 signs in that user's ~/.config/warmbly, which the piped commands then use.
@@ -92,6 +99,10 @@ EXCLUDED_GROUPS = frozenset(
 # Names this module registers itself.
 RESERVED_NAMES = frozenset({'batchdraft', 'auth', 'list', 'reload'})
 
+# Fires on every flag/folder change of every message, warmup included.
+SUPPRESSED_EVENTS = frozenset({'EMAIL_UPDATED'})
+DEFAULT_WARMUP_TAGS = ('33153D9',)
+
 _GROUP_LINE = re.compile(r'^  ([a-z][a-z0-9-]*)\s+\S')
 _DEVICE_CODE = re.compile(r'Your code:\s*(\S+)')
 _DEVICE_URL = re.compile(r'Approve at:\s*(\S+)')
@@ -144,6 +155,30 @@ def parse_intents(raw: Optional[str]) -> Optional[List[str]]:
     """'email, Campaign' -> ['EMAIL', 'CAMPAIGN']; blank -> None (no filter)."""
     tokens = [t.strip().upper() for t in (raw or '').split(',') if t.strip()]
     return tokens or None
+
+
+def parse_warmup_tags(raw: Optional[str]) -> Tuple[str, ...]:
+    if raw is None:
+        return DEFAULT_WARMUP_TAGS
+    return tuple(t.strip() for t in raw.split(',') if t.strip())
+
+
+WARMUP_TAGS = parse_warmup_tags(os.environ.get('INSTANTLY_WARMUP_TAGS'))
+
+
+def is_warmup(payload: Any, tags: Tuple[str, ...] = WARMUP_TAGS) -> bool:
+    """
+    Whether an email payload is Instantly warmup traffic.
+
+    Instantly appends the pool's filter tag to the subject and the body
+    (`Coffee? | warmup 33153D9`); the word before it varies, so only the tag
+    is matched, as a whole token.
+    """
+    if not isinstance(payload, dict) or not tags:
+        return False
+    text = ' '.join(str(payload.get(k) or '') for k in ('subject', 'preview'))
+    return any(re.search(rf'(?<![A-Za-z0-9]){re.escape(t)}(?![A-Za-z0-9])',
+                         text) for t in tags)
 
 
 def gateway_base_url(url: str) -> str:
@@ -293,7 +328,7 @@ def format_announcement(cfg: 'BotConfig', cli_groups: List[str],
                         org_name: Optional[str] = None) -> str:
     head = (
         '**Warmbly bot online.**\n'
-        f'Posting every Warmbly event from **{org_name or cfg.org_id}** to '
+        f'Posting Warmbly events from **{org_name or cfg.org_id}** to '
         f'<#{cfg.event_channel_id}>. Commands are for the '
         f'`{cfg.admin_role}` role.\n'
         + (f'Event families: {", ".join(cfg.event_intents)}.\n'
@@ -483,17 +518,23 @@ def register_event_handlers(
     publish: Callable[[str], Awaitable[None]],
     display: Optional[EventDisplayFilter] = None,
 ) -> None:
-    """Forward every named business event; the SDK has no wildcard handler."""
+    """
+    Forward every named business event but SUPPRESSED_EVENTS and warmup
+    EMAIL_RECEIVED; the SDK has no wildcard handler.
+    """
     from warmbly.gateway import GatewayEvent
 
     # Business events are UPPER_CASE. The lowercase values (presence_state,
     # presence_diff, rate_limited, resumed, resume_failed) are transport
     # frames: presence is dashboard users coming and going.
     names = sorted({v for k, v in vars(GatewayEvent).items()
-                    if k.isupper() and isinstance(v, str) and v.isupper()})
+                    if k.isupper() and isinstance(v, str) and v.isupper()}
+                   - SUPPRESSED_EVENTS)
     display = display or EventDisplayFilter()
     for name in names:
         async def handler(topic: str, payload: Any, _name: str = name) -> None:
+            if _name == 'EMAIL_RECEIVED' and is_warmup(payload):
+                return
             filename, data = display.event_attachment(
                 _name, topic, payload)
             await publish((display.event_summary(_name, topic, payload),
