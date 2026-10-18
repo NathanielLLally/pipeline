@@ -698,3 +698,35 @@ class TestPanePerCheckout:
 
     def test_the_same_checkout_keeps_its_pane(self):
         assert claude_tmux.session_name('opus') == claude_tmux.session_name('opus')
+
+
+class TestStaleUsageLimit:
+    """After a reset, the pane still shows the old 'Usage limit reached'
+    line. Checked before the request was even sent, it failed a whole batch
+    of 50 in under a minute with the limit long gone."""
+
+    STALE = ("\u25cf Usage limit reached \u00b7 continuing automatically at "
+             "10:30pm \u00b7 esc to cancel\n\u276f " + FOOTER)
+
+    def test_an_old_limit_message_does_not_stop_a_new_request(self):
+        tmux = FakeTmux(panes=[self.STALE, self.STALE, READY_PANE],
+                        on_submit=writes('{"name": "x", "score": 1}'))
+        assert _run(tmux).name == 'x'
+
+    def test_history_is_cleared_before_the_request_is_typed(self):
+        """So the answer wait only sees what this request produced."""
+        tmux = FakeTmux(on_submit=writes('{"name": "x", "score": 1}'))
+        _run(tmux)
+        cleared = [i for i, c in enumerate(tmux.calls)
+                   if c[:2] == ['tmux', 'clear-history']]
+        typed = next(i for i, c in enumerate(tmux.calls)
+                     if '-l' in c and '.answer.' in c[-1])
+        assert cleared and cleared[-1] < typed
+
+    def test_a_limit_hit_by_this_request_still_fails_fast(self, _env):
+        limit = ("\u25cf Usage limit reached \u00b7 continuing automatically "
+                 "at 11:30pm\n\u276f " + FOOTER)
+        tmux = FakeTmux(panes=[READY_PANE] * 4 + [limit])
+        with pytest.raises(LLMTransportError, match='usage limit'):
+            _run(tmux)
+        assert _env['now'] < 30

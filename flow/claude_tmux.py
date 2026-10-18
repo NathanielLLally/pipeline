@@ -330,8 +330,11 @@ def _wait_ready(session: str, timeout: float) -> None:
         if TRUST_DIALOG.search(pane) and not trusted:
             _tmux('send-keys', '-t', session, 'Enter')
             trusted = True
-        elif PERMISSION_PROMPT.search(pane) or USAGE_LIMIT.search(pane) \
-                or MODEL_REJECTED.search(pane):
+        # Not USAGE_LIMIT: before a request is sent, a limit line on screen
+        # is left over from an earlier one and may long since have reset. A
+        # limit this request runs into shows after the history is cleared,
+        # in _await_answer.
+        elif PERMISSION_PROMPT.search(pane) or MODEL_REJECTED.search(pane):
             _check_pane(session, pane)
         elif PROMPT_READY in pane and CLAUDE_FOOTER in pane and BUSY not in pane:
             return
@@ -495,6 +498,9 @@ def _ask(session: str, prompt: str, system: Optional[str],
     _wait_ready(session, LAUNCH_TIMEOUT)
     send_line(session, '/clear')
     _wait_ready(session, LAUNCH_TIMEOUT)
+    # Scrollback from earlier requests -- an old usage-limit line above all --
+    # must not be read as this request's answer state.
+    _tmux('clear-history', '-t', session)
     send_line(session, instruction(request_path, answer_path, fmt))
     # Tallied as 'claude-tmux/<model>': one provider, a line per model.
     tally = f'{CLAUDE_TMUX_MODEL}/{model}' if model else CLAUDE_TMUX_MODEL
