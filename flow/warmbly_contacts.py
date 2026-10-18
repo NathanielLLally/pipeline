@@ -49,6 +49,16 @@ DRAFTS_PATH = '/v1/unibox/drafts'
 # re-run updates that draft instead of adding another.
 _DRAFT_NAMESPACE = uuid.UUID('6f1c2b9e-5d3a-4c7e-9a41-2b8d0e7f3c55')
 
+CAMPAIGNS_PATH = '/v1/campaigns'
+# Folder and mailbox tag for per-business campaigns. Ids, not names: an API
+# key has no endpoint that lists folders or tags (only a browser session's
+# /auth/me does), and names are not unique. These were read from the audit
+# log's create entries: folder 'initial', tag "october '26 htpc primary".
+CAMPAIGN_FOLDER_ID = os.environ.get(
+    'WARMBLY_CAMPAIGN_FOLDER_ID', 'aaf0ecbf-1a52-4052-873e-ddeb62a6ad80')
+CAMPAIGN_EMAIL_TAG_ID = os.environ.get(
+    'WARMBLY_CAMPAIGN_EMAIL_TAG_ID', '10e2c278-9eed-4081-8aea-8a04263d3c73')
+
 # Imported contacts arrive subscribed. Sent explicitly rather than left to the
 # API default, so the state does not change silently if that default does.
 REQUEST_TIMEOUT = float(os.environ.get('WARMBLY_REQUEST_TIMEOUT', '60'))
@@ -308,3 +318,82 @@ def create_compose_drafts(drafts: List[Dict[str, Any]]) -> List[str]:
             ) from exc
         ids.append(d['id'])
     return ids
+
+
+def build_campaign(
+    business: Dict[str, Any],
+    draft: Dict[str, Any],
+    folder_id: str = CAMPAIGN_FOLDER_ID,
+    email_tag_id: str = CAMPAIGN_EMAIL_TAG_ID,
+) -> Dict[str, Any]:
+    """
+    The POST /v1/campaigns body for one business: named after it, filed in
+    *folder_id*, sending from the mailboxes tagged *email_tag_id*, with the
+    drafted email as its only step.
+
+    Create names the lists email_tag_ids / folder_ids; update calls them
+    email_tags / folders. Only the plain body is sent. Each mailbox's
+    signature is appended at send time, so the step carries no
+    {{.Signature}} (the draft is written without one).
+
+    text_only: mail goes out as plain text with no HTML part, which also
+    turns off open and click tracking (both need the HTML part).
+
+    No status is sent, so the campaign is created as a draft and nothing
+    sends until someone starts it -- the human review gate (spec 2.1).
+    """
+    return {
+        'name': business.get('business_name') or f"business {business.get('id')}",
+        'text_only': True,
+        'folder_ids': [folder_id],
+        'email_tag_ids': [email_tag_id],
+        'sender_strategy': 'tags',
+        'steps': [{
+            'name': 'Step 1',
+            'subject': draft.get('subject') or '',
+            'body_plain': draft.get('body') or '',
+        }],
+    }
+
+
+def find_campaign(name: str) -> Optional[Dict[str, Any]]:
+    """The campaign named exactly *name*, or None.
+
+    The API's ?q= is a substring match, so the exact comparison is made here.
+    """
+    base, headers = _warmbly_request_parts()
+    response = httpx.get(base + CAMPAIGNS_PATH,
+                         params={'q': name, 'limit': 100},
+                         headers=headers, timeout=REQUEST_TIMEOUT)
+    response.raise_for_status()
+    body = response.json()
+    rows = body.get('data') if isinstance(body, dict) else body
+    for campaign in rows or []:
+        if campaign.get('name') == name:
+            return campaign
+    return None
+
+
+def create_campaign(body: Dict[str, Any]) -> Tuple[Dict[str, Any], bool]:
+    """
+    Create the campaign, or return the existing one of the same name.
+
+    Returns (campaign, created). An existing campaign is reused untouched: a
+    re-run must not add a duplicate, and its step may have been edited by
+    hand since.
+    """
+    existing = find_campaign(body['name'])
+    if existing:
+        return existing, False
+
+    base, headers = _warmbly_request_parts()
+    response = httpx.post(base + CAMPAIGNS_PATH, json=body,
+                          headers=headers, timeout=REQUEST_TIMEOUT)
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise RuntimeError(
+            f'Warmbly returned {exc.response.status_code} creating campaign '
+            f"{body['name']!r}: {exc.response.text[:400]}"
+        ) from exc
+    return response.json(), True

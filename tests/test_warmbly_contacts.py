@@ -169,6 +169,10 @@ class TestCustomFields:
         assert cf['draft_body'] == 'Noticed the HOME Method.'
         assert cf['draft_rationale'] == 'warm tone, booking friction'
 
+    def test_carries_no_html_body(self):
+        """Mail goes out as plain text only; there is no HTML part to fill."""
+        assert 'draft_body_html' not in self._cf()
+
     def test_carries_the_research(self):
         cf = self._cf()
 
