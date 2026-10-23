@@ -26,6 +26,9 @@ From the command line, with .env sourced:
 --claude has Claude Code sessions in tmux answer research, drafting and
 analysis (flow/claude_tmux.py): research in an Opus pane, drafting and
 analysis in a Sonnet pane. RESEARCH_/DRAFTING_/ANALYSIS_CLAUDE_MODEL override.
+--codex does the same with Codex CLI in tmux: research in its own pane on
+gpt-6.1-sol (Codex's default model, named so it gets its own pane), drafting
+and analysis in the default pane. *_CODEX_MODEL override.
 
 Research runs at reasoning effort 'high' from here unless told otherwise; a
 --research-tier also switches research to the multi-agent graph, the only
@@ -46,7 +49,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from prefect import flow, tags
 
 from flow.agents.analysis import analysis_agent
-from flow.llm import (CLAUDE_TMUX_MODEL, MULTI_AGENT_MODEL, count_calls,
+from flow.llm import (CLAUDE_TMUX_MODEL, CODEX_TMUX_MODEL, MULTI_AGENT_MODEL,
+                      count_calls,
                       format_call_stats)
 from flow.agents.drafting import drafting_agent
 from flow.agents.import_contacts import import_contacts
@@ -408,6 +412,8 @@ def _usage_rows() -> List[Tuple[str, str, str]]:
          'implies RESEARCH_MODEL=multi-agent'),
         ('--claude', 'off',
          'Research (Opus), draft and analyze (Sonnet) with Claude Code in tmux'),
+        ('--codex', 'off',
+         'Research, draft and analyze with Codex CLI in tmux (*_CODEX_MODEL)'),
     ]
 
 
@@ -472,6 +478,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help='research, draft and analyze with Claude Code over '
                              'tmux: research on Opus, drafting and analysis on '
                              'Sonnet (*_CLAUDE_MODEL overrides)')
+    parser.add_argument('--codex', action='store_true',
+                        help='research, draft and analyze with Codex CLI over '
+                             'tmux (*_CODEX_MODEL overrides)')
     return parser
 
 
@@ -479,9 +488,11 @@ def main(argv: Optional[List[str]] = None) -> dict:
     """Run one batch in this process. See the module docstring, or --help."""
     parser = build_parser()
     args = parser.parse_args(argv)
-    if args.claude and args.research_tier:
-        parser.error('--claude and --research-tier conflict: a tier is the '
-                     'multi-agent graph')
+    if args.claude and args.codex:
+        parser.error('--claude and --codex conflict: pick one CLI')
+    if (args.claude or args.codex) and args.research_tier:
+        parser.error(f"--{'claude' if args.claude else 'codex'} and "
+                     '--research-tier conflict: a tier is the multi-agent graph')
 
     if args.research_reasoning_effort == 'none':
         os.environ.pop('RESEARCH_REASONING_EFFORT', None)
@@ -499,6 +510,12 @@ def main(argv: Optional[List[str]] = None) -> dict:
                              ('ANALYSIS', 'sonnet')):
             os.environ[f'{agent}_MODEL'] = CLAUDE_TMUX_MODEL
             os.environ.setdefault(f'{agent}_CLAUDE_MODEL', model)
+    if args.codex:
+        # The same with Codex: research named onto its own pane, drafting and
+        # analysis sharing the default one. A *_CODEX_MODEL already set wins.
+        os.environ.setdefault('RESEARCH_CODEX_MODEL', 'gpt-6.1-sol')
+        for agent in ('RESEARCH', 'DRAFTING', 'ANALYSIS'):
+            os.environ[f'{agent}_MODEL'] = CODEX_TMUX_MODEL
 
     print(f"research: model={os.environ.get('RESEARCH_MODEL') or os.environ.get('LLM_MODEL')} "
           f"tier={os.environ.get('RESEARCH_TIER') or 'router'} "

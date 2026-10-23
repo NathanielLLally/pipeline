@@ -707,7 +707,8 @@ class TestCommandLine:
 
     KEYS = ('RESEARCH_MODEL', 'RESEARCH_TIER', 'RESEARCH_REASONING_EFFORT',
             'DRAFTING_MODEL', 'ANALYSIS_MODEL', 'RESEARCH_CLAUDE_MODEL',
-            'DRAFTING_CLAUDE_MODEL', 'ANALYSIS_CLAUDE_MODEL')
+            'DRAFTING_CLAUDE_MODEL', 'ANALYSIS_CLAUDE_MODEL',
+            'RESEARCH_CODEX_MODEL', 'DRAFTING_CODEX_MODEL', 'ANALYSIS_CODEX_MODEL')
 
     @pytest.fixture(autouse=True)
     def _restore_env(self, monkeypatch):
@@ -762,6 +763,19 @@ class TestCommandLine:
         with pytest.raises(SystemExit):
             self._main('--claude', '--research-tier', 'frontier')
 
+    def test_codex_hands_every_agent_to_codex_tmux(self):
+        _, env = self._main('--codex')
+        for agent in ('RESEARCH', 'DRAFTING', 'ANALYSIS'):
+            assert env[f'{agent}_MODEL'] == 'codex-tmux'
+
+    def test_codex_and_claude_conflict(self):
+        with pytest.raises(SystemExit):
+            self._main('--codex', '--claude')
+
+    def test_codex_and_a_research_tier_conflict(self):
+        with pytest.raises(SystemExit):
+            self._main('--codex', '--research-tier', 'frontier')
+
     def test_unknown_tier_is_rejected(self):
         with pytest.raises(SystemExit):
             self._main('--research-tier', 'ultra')
@@ -777,7 +791,8 @@ class TestUsage:
 
     OPTIONS = ('--concurrency', '--batch-size', '--tiers', '--business-ids',
                '--template-slug', '--offer', '--no-preflight',
-               '--research-reasoning-effort', '--research-tier', '--claude')
+               '--research-reasoning-effort', '--research-tier', '--claude',
+               '--codex')
 
     def _main(self, *argv):
         from flow import run_agents as module

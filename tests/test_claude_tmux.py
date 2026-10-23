@@ -730,3 +730,116 @@ class TestStaleUsageLimit:
         with pytest.raises(LLMTransportError, match='usage limit'):
             _run(tmux)
         assert _env['now'] < 30
+
+
+# What Codex 0.163 draws in tmux (captured 2026-10-22).
+CODEX_READY = ('  >_ OpenAI Codex (v0.163.0)\n     ~/x/data/handoff\n'
+               '› Ask Codex to do anything\n'
+               '  GPT-6.1-Sol default · ~/x/data/handoff\n'
+               '  ← for agents · ? for shortcuts')
+CODEX_BUSY = ('• Ran printf ok > a.answer.txt\n◦ Working (5s • esc to interrupt)\n'
+              '› Ask Codex to do anything\n  GPT-6.1-Sol default · ~/x\n'
+              '  ← for agents · ? for shortcuts')
+
+
+class TestCodexProfile:
+    """The same handoff, answered by Codex CLI in tmux instead of Claude Code."""
+
+    @pytest.fixture(autouse=True)
+    def _codex_env(self, monkeypatch):
+        monkeypatch.setenv('CODEX_TMUX_SESSION', 'test-codex')
+        monkeypatch.delenv('CODEX_TMUX_HOME', raising=False)
+        monkeypatch.delenv('CODEX_TMUX_ARGS', raising=False)
+
+    def _run(self, tmux, **kwargs):
+        with patch.object(claude_tmux.subprocess, 'run', side_effect=tmux):
+            return claude_tmux.complete_structured(
+                'Business: Happy Tails', Answer, system='s', cli='codex', **kwargs)
+
+    def test_codex_panes_are_their_own_sessions(self):
+        name = claude_tmux.session_name('gpt-6.1', cli='codex')
+        assert name.startswith('test-codex-gpt-6-1-')
+        assert name != claude_tmux.session_name('gpt-6.1')
+
+    def test_launch_is_sandboxed_to_the_handoff_dir_without_approvals(self):
+        launch = claude_tmux.launch_command('/x/handoff', 'gpt-6.1', cli='codex')
+        assert 'codex -s workspace-write -a never -C /x/handoff' in launch
+        assert '-m gpt-6.1' in launch
+        for unwanted in ('claude ', '--search', 'danger', '--dangerously'):
+            assert unwanted not in launch
+
+    def test_a_separate_codex_home_is_set_on_the_command(self, monkeypatch):
+        monkeypatch.setenv('CODEX_TMUX_HOME', '/home/x/.codex-pane')
+        launch = claude_tmux.launch_command('/x', cli='codex')
+        assert '&& CODEX_HOME=/home/x/.codex-pane codex ' in launch
+
+    def test_answers_end_to_end_in_a_codex_pane(self):
+        tmux = FakeTmux(has_session=False, panes=[CODEX_READY],
+                        on_submit=writes('{"name": "x", "score": 1}'))
+        assert self._run(tmux).name == 'x'
+        new = next(c for c in tmux.calls if c[:2] == ['tmux', 'new-session'])
+        assert any(str(x).startswith('test-codex-') for x in new)
+        assert '/clear' in tmux.typed
+
+    def test_waits_while_codex_is_working(self):
+        tmux = FakeTmux(panes=[CODEX_BUSY, CODEX_BUSY, CODEX_READY],
+                        on_submit=writes('{"name": "x", "score": 1}'))
+        assert self._run(tmux).name == 'x'
+
+    def test_a_claude_screen_is_not_a_ready_codex(self):
+        """The profile's own footer decides readiness, not any prompt glyph."""
+        tmux = FakeTmux(panes=[READY_PANE])
+        with pytest.raises(LLMTransportError, match='not ready'):
+            self._run(tmux)
+
+    def test_text_left_in_the_codex_composer_is_unsubmitted(self):
+        pane = ('• earlier output\n'
+                '› Read /x/data/handoff/a-1.request.md and do what it says: write\n'
+                '  only the JSON answer to /x/data/handoff/a-1.answer.json\n'
+                '  GPT-6.1-Sol default · ~/x\n  ← for agents · ? for shortcuts')
+        text = ('Read /x/data/handoff/a-1.request.md and do what it says: write '
+                'only the JSON answer to /x/data/handoff/a-1.answer.json')
+        assert claude_tmux.unsubmitted(pane, text, cli='codex')
+        assert not claude_tmux.unsubmitted(CODEX_READY, text, cli='codex')
+
+    def test_a_codex_usage_limit_fails_fast(self, _env):
+        limit = ("■ You've hit your usage limit. Upgrade to Pro or try again at "
+                 "9:40 PM.\n" + CODEX_READY)
+        tmux = FakeTmux(panes=[CODEX_READY] * 4 + [limit])
+        with pytest.raises(LLMTransportError, match='usage limit'):
+            self._run(tmux)
+        assert _env['now'] < 30
+
+    def test_calls_are_tallied_under_codex(self):
+        recorded = []
+        tmux = FakeTmux(panes=[CODEX_READY],
+                        on_submit=writes('{"name": "x", "score": 1}'))
+        with patch.object(claude_tmux, 'record_call',
+                          side_effect=lambda name, ok: recorded.append(name)):
+            self._run(tmux, model='gpt-6.1')
+        assert recorded == ['codex-tmux/gpt-6.1']
+
+    def test_warmbly_panes_are_claude_only(self):
+        with pytest.raises(ValueError, match='codex'):
+            claude_tmux.launch_command('/x', cli='codex', warmbly=True)
+
+
+class TestCodexRouting:
+    def test_codex_tmux_model_hands_the_call_to_a_codex_pane(self, monkeypatch):
+        from flow.llm import CODEX_TMUX_MODEL
+        monkeypatch.setenv('DRAFTING_MODEL', CODEX_TMUX_MODEL)
+        monkeypatch.setenv('DRAFTING_CODEX_MODEL', 'gpt-6.1')
+        with patch.object(claude_tmux, 'complete_structured',
+                          return_value=Answer(name='x', score=1)) as handoff, \
+             patch('flow.llm.chat_completion') as proxy:
+            complete_structured('p', Answer, agent_model_env='DRAFTING_MODEL')
+        proxy.assert_not_called()
+        assert handoff.call_args.kwargs['cli'] == 'codex'
+        assert handoff.call_args.kwargs['model'] == 'gpt-6.1'
+
+    def test_the_claude_route_still_says_claude(self, monkeypatch):
+        monkeypatch.setenv('RESEARCH_MODEL', CLAUDE_TMUX_MODEL)
+        with patch.object(claude_tmux, 'complete_structured',
+                          return_value=Answer(name='x', score=1)) as handoff:
+            complete_structured('p', Answer, agent_model_env='RESEARCH_MODEL')
+        assert handoff.call_args.kwargs.get('cli', 'claude') == 'claude'

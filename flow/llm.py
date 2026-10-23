@@ -45,6 +45,10 @@ MULTI_AGENT_MODEL = 'multi-agent'
 # (flow/claude_tmux.py), instead of the proxy.
 CLAUDE_TMUX_MODEL = 'claude-tmux'
 
+# The same, answered by Codex CLI in tmux instead (flow/claude_tmux.py, its
+# 'codex' profile). <PREFIX>_CODEX_MODEL picks the model.
+CODEX_TMUX_MODEL = 'codex-tmux'
+
 # The proxy key goes in its own header, not Authorization. LiteLLM reserves
 # Authorization for the UPSTREAM provider credential and passes it through, so
 # putting the proxy key there makes it offer our proxy key to Anthropic as an
@@ -585,6 +589,12 @@ def complete_structured(
         return claude_tmux.complete_structured(
             prompt, schema_model, system=system, max_attempts=max_attempts,
             model=agent_setting(agent_model_env, 'CLAUDE_MODEL'))
+
+    if model == CODEX_TMUX_MODEL:
+        from flow import claude_tmux
+        return claude_tmux.complete_structured(
+            prompt, schema_model, system=system, max_attempts=max_attempts,
+            model=agent_setting(agent_model_env, 'CODEX_MODEL'), cli='codex')
 
     messages = []
     if system:

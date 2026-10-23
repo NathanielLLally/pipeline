@@ -63,6 +63,7 @@ import subprocess
 import time
 import uuid
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator, Optional, Tuple, Type
 
@@ -113,7 +114,8 @@ CACHE_FLAGS = ('--exclude-dynamic-system-prompt-sections', '--strict-mcp-config'
 USAGE_LIMIT = re.compile(r"hit your (usage |session |weekly )?limit|"
                          r"(usage|session|weekly) limit reached",
                          re.IGNORECASE)
-TRUST_DIALOG = re.compile(r'trust (the files in )?this folder', re.IGNORECASE)
+TRUST_DIALOG = re.compile(r'trust (the (files|contents) (in|of) )?this (folder|directory)',
+                          re.IGNORECASE)
 # Panes for the OpenAI-compatible server may call the Warmbly API, through
 # scripts/warmbly-api and jq only -- anything else stops on a prompt and fails
 # the request. Not curl: Claude Code will not auto-approve a command holding
@@ -160,8 +162,50 @@ Rules:
 # so without this the request sat out the whole answer timeout.
 MODEL_REJECTED = re.compile(r"issue with the selected model \(([^)]*)\)",
                             re.IGNORECASE)
-PERMISSION_PROMPT = re.compile(r'Do you want to (proceed|make this edit|create)',
+# Claude Code's, then Codex's: with -a never Codex should not ask, but a
+# prompt that does show must fail the request rather than sit out the timeout.
+PERMISSION_PROMPT = re.compile(r'Do you want to (proceed|make this edit|create)|'
+                               r'Would you like to (run|make|apply) ',
                                re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class Cli:
+    """
+    One coding-agent CLI the panes can run. Everything else -- the request
+    and answer files, /clear between requests, locks, retries -- is shared.
+
+    prompt and footer together say the CLI is idle at its input: the prompt
+    glyph alone is not enough, since shell themes use the same ones.
+    """
+    name: str
+    session_env: str      # env var naming the tmux session prefix
+    session_default: str
+    prompt: str
+    footer: str
+
+
+CLIS = {
+    'claude': Cli('claude', 'CLAUDE_TMUX_SESSION', 'pipeline-claude',
+                  PROMPT_READY, CLAUDE_FOOTER),
+    # Codex 0.163 in tmux: '› Ask Codex to do anything' above a status line
+    # and '← for agents · ? for shortcuts'.
+    'codex': Cli('codex', 'CODEX_TMUX_SESSION', 'pipeline-codex',
+                 '\u203a', '? for shortcuts'),
+}
+
+
+def profile(cli: str) -> Cli:
+    try:
+        return CLIS[cli]
+    except KeyError:
+        raise ValueError(f'unknown pane CLI {cli!r}; one of {sorted(CLIS)}')
+
+
+def _ready(pane: str, cli: str) -> bool:
+    """The CLI is idle at its own input box."""
+    p = profile(cli)
+    return p.prompt in pane and p.footer in pane and BUSY not in pane
 
 
 class PaneModelError(LLMTransportError):
@@ -179,12 +223,14 @@ def checkout_tag() -> str:
     return hashlib.sha1(str(handoff_dir().resolve()).encode()).hexdigest()[:6]
 
 
-def session_name(model: Optional[str] = None, warmbly: bool = False) -> str:
+def session_name(model: Optional[str] = None, warmbly: bool = False,
+                 cli: str = 'claude') -> str:
     """The pane for `model`: one per model, so research on one model need
     not wait for drafting on another. No model: the plain session. Warmbly
     panes (see warmbly_launch) are separate sessions again. Each checkout
-    has its own panes (checkout_tag)."""
-    base = os.environ.get('CLAUDE_TMUX_SESSION') or 'pipeline-claude'
+    has its own panes (checkout_tag), and each CLI its own prefix."""
+    p = profile(cli)
+    base = os.environ.get(p.session_env) or p.session_default
     name = f"{base}-{re.sub(r'[^A-Za-z0-9]+', '-', model)}" if model else base
     if warmbly:
         name = f'{name}-warmbly'
@@ -214,8 +260,24 @@ def capture(session: str) -> str:
     return _tmux('capture-pane', '-t', session, '-p', '-S', '-40').stdout or ''
 
 
-def input_box(pane: str) -> str:
-    """The text between the last two horizontal rules: Claude's input box."""
+def input_box(pane: str, cli: str = 'claude') -> str:
+    """
+    The CLI's input box. Claude's sits between the last two horizontal
+    rules. Codex's starts at the last line opening with its prompt glyph and
+    runs, wrapped, down to the status line under it.
+    """
+    if cli == 'codex':
+        lines = pane.splitlines()
+        starts = [i for i, l in enumerate(lines)
+                  if l.lstrip().startswith(profile('codex').prompt)]
+        if not starts:
+            return ''
+        box = []
+        for line in lines[starts[-1]:]:
+            if box and (' \u00b7 ' in line or profile('codex').footer in line):
+                break
+            box.append(line)
+        return '\n'.join(box)
     rules = [i for i, line in enumerate(pane.splitlines())
              if line.strip().startswith('\u2500' * 10)]
     if len(rules) < 2:
@@ -224,18 +286,18 @@ def input_box(pane: str) -> str:
     return '\n'.join(lines)
 
 
-def unsubmitted(pane: str, text: str) -> bool:
+def unsubmitted(pane: str, text: str, cli: str = 'claude') -> bool:
     """
     True if `text` still sits in the input box. Whitespace is ignored on
     both sides: the box wraps long lines mid-word. A placeholder suggestion
     in an empty box does not match the text.
     """
-    box = re.sub(r'\s+', '', input_box(pane))
+    box = re.sub(r'\s+', '', input_box(pane, cli))
     head = re.sub(r'\s+', '', text)[:40]
     return bool(head) and head in box
 
 
-def send_line(session: str, text: str) -> None:
+def send_line(session: str, text: str, cli: str = 'claude') -> None:
     """
     Type `text` and submit it. The text is sent literally (-l) and Enter in a
     separate call: one send-keys carrying both is taken as a paste and never
@@ -248,9 +310,9 @@ def send_line(session: str, text: str) -> None:
         _sleep(1)
         _tmux('send-keys', '-t', session, 'Enter')
         _sleep(1)
-        if not unsubmitted(capture(session), text):
+        if not unsubmitted(capture(session), text, cli):
             return
-    print(f'claude-tmux: {text[:60]!r} still unsubmitted in {session!r}')
+    print(f'{cli}-tmux: {text[:60]!r} still unsubmitted in {session!r}')
 
 
 def warmbly_launch() -> Tuple[str, str]:
@@ -280,20 +342,40 @@ def warmbly_launch() -> Tuple[str, str]:
             f"--append-system-prompt-file {shlex.quote(str(guide))}")
 
 
+def codex_launch_command(cwd: str, model: Optional[str] = None) -> str:
+    """
+    Codex in the handoff directory: workspace-write sandbox, so it may write
+    only there, with no network (the default for that mode), so website text
+    in a prompt cannot reach anything; and -a never, so it never stops to ask.
+    """
+    extra = os.environ.get('CODEX_TMUX_ARGS', '').strip()
+    home = os.environ.get('CODEX_TMUX_HOME', '').strip()
+    profile_env = f'CODEX_HOME={shlex.quote(home)} ' if home else ''
+    return (f'cd {shlex.quote(cwd)} && {profile_env}codex -s workspace-write '
+            f'-a never -C {shlex.quote(cwd)}'
+            + (f' -m {shlex.quote(model)}' if model else '')
+            + (f' {extra}' if extra else ''))
+
+
 def launch_command(cwd: str, model: Optional[str] = None,
-                   warmbly: bool = False) -> str:
+                   warmbly: bool = False, cli: str = 'claude') -> str:
     """acceptEdits: writing the answer file must not stop on a prompt."""
+    if cli == 'codex':
+        if warmbly:
+            raise ValueError('Warmbly panes run Claude only, not codex')
+        return codex_launch_command(cwd, model)
+    profile(cli)
     extra = os.environ.get('CLAUDE_TMUX_ARGS', '').strip()
     # On the command itself: a tmux pane has the tmux server's environment,
     # not this process's.
     config = os.environ.get('CLAUDE_TMUX_CONFIG_DIR', '').strip()
-    profile = f'CLAUDE_CONFIG_DIR={shlex.quote(config)} ' if config else ''
+    config_env = f'CLAUDE_CONFIG_DIR={shlex.quote(config)} ' if config else ''
     source, tools = warmbly_launch() if warmbly else ('', '')
     # A Warmbly pane runs curl through Bash; the pipeline's never needs it.
     disallowed = [t for t in DISALLOWED_TOOLS if not (warmbly and t == 'Bash')]
     return (f'cd {shlex.quote(cwd)} && '
             + (f'{source} && ' if source else '')
-            + f'{profile}claude --permission-mode acceptEdits '
+            + f'{config_env}claude --permission-mode acceptEdits '
             f"--disallowedTools {' '.join(disallowed)} "
             f"{' '.join(CACHE_FLAGS)}"
             + (f' {tools}' if tools else '')
@@ -301,27 +383,27 @@ def launch_command(cwd: str, model: Optional[str] = None,
             + (f' {extra}' if extra else ''))
 
 
-def _check_pane(session: str, pane: str) -> None:
+def _check_pane(session: str, pane: str, cli: str = 'claude') -> None:
     """Raise for a pane that will not answer: a permission prompt, or the
     plan's usage limit."""
     if PERMISSION_PROMPT.search(pane):
         raise LLMTransportError(
-            f'claude in tmux session {session!r} is stopped on a '
+            f'{cli} in tmux session {session!r} is stopped on a '
             f'permission prompt')
     rejected = MODEL_REJECTED.search(pane)
     if rejected:
         raise PaneModelError(
-            f'claude in tmux session {session!r} rejected the model '
+            f'{cli} in tmux session {session!r} rejected the model '
             f'{rejected.group(1)!r}')
     match = USAGE_LIMIT.search(pane)
     if match:
         line = next(l for l in pane.splitlines() if match.group(0) in l)
         raise LLMTransportError(
-            f'claude in tmux session {session!r} hit a usage limit: '
+            f'{cli} in tmux session {session!r} hit a usage limit: '
             f'{line.strip()[:200]}')
 
 
-def _wait_ready(session: str, timeout: float) -> None:
+def _wait_ready(session: str, timeout: float, cli: str = 'claude') -> None:
     """Until the input box is idle; accepts the workspace-trust dialog once."""
     deadline = _now() + timeout
     trusted = False
@@ -335,18 +417,18 @@ def _wait_ready(session: str, timeout: float) -> None:
         # limit this request runs into shows after the history is cleared,
         # in _await_answer.
         elif PERMISSION_PROMPT.search(pane) or MODEL_REJECTED.search(pane):
-            _check_pane(session, pane)
-        elif PROMPT_READY in pane and CLAUDE_FOOTER in pane and BUSY not in pane:
+            _check_pane(session, pane, cli)
+        elif _ready(pane, cli):
             return
         if _now() >= deadline:
             raise LLMTransportError(
-                f'claude in tmux session {session!r} not ready within '
+                f'{cli} in tmux session {session!r} not ready within '
                 f'{timeout:g}s')
         _sleep(POLL_SECONDS)
 
 
 def ensure_session(session: str, model: Optional[str] = None,
-                   warmbly: bool = False) -> None:
+                   warmbly: bool = False, cli: str = 'claude') -> None:
     """Start tmux and Claude in it unless the session already exists."""
     if has_session(session):
         return
@@ -355,14 +437,14 @@ def ensure_session(session: str, model: Optional[str] = None,
     # ~23.5k tokens to the prompt cache, and no instructions to run gh.
     # (_ask has already created it.)
     cwd = os.environ.get('CLAUDE_TMUX_CWD') or str(handoff_dir())
-    launch = launch_command(cwd, model, warmbly)
+    launch = launch_command(cwd, model, warmbly, cli)
     _tmux('new-session', '-d', '-s', session, '-x', '200', '-y', '50')
     _tmux('send-keys', '-t', session, launch, 'Enter')
     _sleep(LAUNCH_SETTLE)
-    _wait_ready(session, LAUNCH_TIMEOUT)
+    _wait_ready(session, LAUNCH_TIMEOUT, cli)
 
 
-def recover(session: str) -> None:
+def recover(session: str, cli: str = 'claude') -> None:
     """
     After a failed request: Escape declines a permission prompt or interrupts
     a turn still running, so the next request does not inherit the pane
@@ -372,10 +454,9 @@ def recover(session: str) -> None:
         _tmux('send-keys', '-t', session, 'Escape')
         _sleep(1)
         pane = capture(session)
-        if PROMPT_READY in pane and CLAUDE_FOOTER in pane and BUSY not in pane \
-                and not PERMISSION_PROMPT.search(pane):
+        if _ready(pane, cli) and not PERMISSION_PROMPT.search(pane):
             return
-    print(f'claude-tmux: pane {session!r} still not idle after Escape')
+    print(f'{cli}-tmux: pane {session!r} still not idle after Escape')
 
 
 @contextmanager
@@ -450,7 +531,7 @@ def _strip_fence(text: str) -> str:
 
 
 def _await_answer(session: str, answer_path: Path, timeout: float,
-                  fmt: str = 'json') -> str:
+                  fmt: str = 'json', cli: str = 'claude') -> str:
     """
     The answer file's text. JSON: once it parses, or after PARTIAL_GRACE if
     it does not. Text: as soon as the file is there -- Claude's Write tool
@@ -472,7 +553,7 @@ def _await_answer(session: str, answer_path: Path, timeout: float,
                 if _now() - unparsed_since >= PARTIAL_GRACE:
                     return text
         else:
-            _check_pane(session, capture(session))
+            _check_pane(session, capture(session), cli)
         if _now() >= deadline:
             raise LLMTransportError(
                 f'no answer from claude in tmux session {session!r} within '
@@ -483,7 +564,8 @@ def _await_answer(session: str, answer_path: Path, timeout: float,
 def _ask(session: str, prompt: str, system: Optional[str],
          errors: Optional[str], model: Optional[str] = None,
          fmt: str = 'json', schema: Optional[dict] = None,
-         name: str = 'answer', warmbly: bool = False) -> str:
+         name: str = 'answer', warmbly: bool = False,
+         cli: str = 'claude') -> str:
     """One request to the pane and its answer's text. Caller holds the lock."""
     directory = handoff_dir()
     directory.mkdir(parents=True, exist_ok=True)
@@ -494,21 +576,22 @@ def _ask(session: str, prompt: str, system: Optional[str],
                                           fmt=fmt, schema=schema, name=name,
                                           warmbly=warmbly))
 
-    ensure_session(session, model, warmbly)
-    _wait_ready(session, LAUNCH_TIMEOUT)
-    send_line(session, '/clear')
-    _wait_ready(session, LAUNCH_TIMEOUT)
+    ensure_session(session, model, warmbly, cli)
+    _wait_ready(session, LAUNCH_TIMEOUT, cli)
+    send_line(session, '/clear', cli)
+    _wait_ready(session, LAUNCH_TIMEOUT, cli)
     # Scrollback from earlier requests -- an old usage-limit line above all --
     # must not be read as this request's answer state.
     _tmux('clear-history', '-t', session)
-    send_line(session, instruction(request_path, answer_path, fmt))
-    # Tallied as 'claude-tmux/<model>': one provider, a line per model.
-    tally = f'{CLAUDE_TMUX_MODEL}/{model}' if model else CLAUDE_TMUX_MODEL
+    send_line(session, instruction(request_path, answer_path, fmt), cli)
+    # Tallied as '<cli>-tmux/<model>': one provider per CLI, a line per model.
+    provider = f'{cli}-tmux'
+    tally = f'{provider}/{model}' if model else provider
     try:
-        text = _await_answer(session, answer_path, answer_timeout(), fmt)
+        text = _await_answer(session, answer_path, answer_timeout(), fmt, cli)
     except LLMTransportError:
         record_call(tally, ok=False)
-        recover(session)
+        recover(session, cli)
         raise
     record_call(tally, ok=bool(text.strip()))
     return text
@@ -534,7 +617,8 @@ def _schema_errors(text: str, schema: Optional[dict]) -> Optional[str]:
 def complete(prompt: str, system: Optional[str] = None,
              model: Optional[str] = None, fmt: str = 'text',
              schema: Optional[dict] = None, name: str = 'answer',
-             max_attempts: int = 2, warmbly: bool = False) -> str:
+             max_attempts: int = 2, warmbly: bool = False,
+             cli: str = 'claude') -> str:
     """
     Claude's answer, as text, from the pane for `model`.
 
@@ -544,12 +628,13 @@ def complete(prompt: str, system: Optional[str] = None,
 
     warmbly: answer in a pane that may call the Warmbly API (warmbly_launch).
     """
-    session = session_name(model, warmbly)
+    session = session_name(model, warmbly, cli)
     errors: Optional[str] = None
     with pane_lock(session):
         for attempt in range(1, max_attempts + 1):
             text = _ask(session, prompt, system, errors, model,
-                        fmt=fmt, schema=schema, name=name, warmbly=warmbly)
+                        fmt=fmt, schema=schema, name=name, warmbly=warmbly,
+                        cli=cli)
             if fmt == 'text':
                 return text
             errors = _schema_errors(text, schema)
@@ -564,20 +649,21 @@ def complete(prompt: str, system: Optional[str] = None,
 def complete_structured(prompt: str, schema_model: Type[BaseModel],
                         system: Optional[str] = None,
                         max_attempts: int = 2,
-                        model: Optional[str] = None) -> Any:
+                        model: Optional[str] = None,
+                        cli: str = 'claude') -> Any:
     """
-    An instance of schema_model, answered by Claude in the tmux session for
-    `model` (e.g. 'opus', 'sonnet'); with no model, the plain session and
-    Claude's default model. Validated by the model itself, so its own
+    An instance of schema_model, answered in the tmux session for `cli`
+    ('claude' or 'codex') and `model` (e.g. 'opus', 'sonnet', 'gpt-6.1');
+    with no model, the plain session and the CLI's default model. Validated by the model itself, so its own
     validators (placeholders, payment terms) are enforced too.
     """
-    session = session_name(model)
+    session = session_name(model, cli=cli)
     schema = strict_json_schema(schema_model)
     errors: Optional[str] = None
     with pane_lock(session):
         for attempt in range(1, max_attempts + 1):
             text = _ask(session, prompt, system, errors, model, fmt='json',
-                        schema=schema, name=schema_model.__name__)
+                        schema=schema, name=schema_model.__name__, cli=cli)
             try:
                 return schema_model.model_validate_json(text)
             except ValidationError as exc:
