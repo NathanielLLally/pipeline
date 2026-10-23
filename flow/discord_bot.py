@@ -16,8 +16,22 @@ One long-running flow run owns two connections on one event loop:
                         link is relayed to the invoker
       /list             Prefect flows and their deployments
       /reload           reconnect the event feed with the current credential
+      /filter [event]   toggle a filter on an event: filtered events are not
+                        posted; no event lists the filtered ones
+      /jq event [expr]  format the event's feed line with a jq expression;
+                        `off` clears it, no expr shows the current one
       /<group> [args]   one command per `warmbly` CLI command group, discovered
                         from `warmbly --help` at startup and piped to the CLI
+
+    and answering a direct message from DISCORD_DM_USER with a pointer to
+    /filter and /jq.
+
+Every event's JSON, posted or not, is saved in data/discord (ARTIFACT_DIR/
+discord), and also registered as a Prefect artifact (key discord-<event>)
+when PREFECT_DUMP_JSON is set.
+
+/filter and /jq settings are kept in the Prefect Variable discord_bot_feed,
+so they survive restarts of the bot and of the machine.
 
 Environment:
   DISCORD_BOT_TOKEN                          required
@@ -26,6 +40,8 @@ Environment:
   DISCORD_ADMIN_ROLE                         required; only members with this
                                              role (by exact name) may use any
                                              command
+  DISCORD_DM_USER                            optional; the Discord username
+                                             allowed to use commands by DM
   DISCORD_GUILD_ID                           optional; sync commands to this
                                              guild instantly instead of globally
   WARMBLY_API_TOKEN, WARMBLY_WEBSOCKET_URL,
@@ -74,7 +90,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import httpx
 from prefect import flow
 from prefect.client.orchestration import get_client
+from prefect.artifacts import acreate_markdown_artifact
+from prefect.variables import Variable
 
+from flow.artifacts import artifact_dir, dump_json_enabled
 from flow.discord_bot_reaper import reap, self_tags
 
 WARMBLY_BIN = shutil.which('warmbly') or 'warmbly'
@@ -91,13 +110,20 @@ ME_PATH = '/v1/me'
 AUTH_TIMEOUT = 11 * 60
 # More chunks than this goes out as a file attachment instead.
 MAX_CHUNKS = 5
+# Discord shows at most this many autocomplete choices.
+AUTOCOMPLETE_LIMIT = 25
+# /filter and /jq settings, kept on the Prefect server.
+SETTINGS_VARIABLE = 'discord_bot_feed'
+JQ_BIN = shutil.which('jq') or 'jq'
+JQ_TIMEOUT = 5.0
 
 # Not exposed as slash commands: auth has its own command; browse, completion,
 # help and upgrade act on the bot host, and events streams until killed.
 EXCLUDED_GROUPS = frozenset(
     {'auth', 'browse', 'completion', 'help', 'upgrade', 'events', 'warmbly'})
 # Names this module registers itself.
-RESERVED_NAMES = frozenset({'batchdraft', 'auth', 'list', 'reload'})
+RESERVED_NAMES = frozenset(
+    {'batchdraft', 'auth', 'list', 'reload', 'filter', 'jq'})
 
 # Fires on every flag/folder change of every message, warmup included.
 SUPPRESSED_EVENTS = frozenset({'EMAIL_UPDATED'})
@@ -121,6 +147,7 @@ class BotConfig:
     batchdraft_deployment: str
     warmbly_api_url: Optional[str]
     event_intents: Optional[List[str]] = None
+    dm_user: Optional[str] = None
 
     @classmethod
     def from_env(cls) -> 'BotConfig':
@@ -146,6 +173,7 @@ class BotConfig:
             warmbly_api_url=os.environ.get('WARMBLY_API_URL') or None,
             event_intents=parse_intents(
                 os.environ.get('WARMBLY_EVENT_INTENTS')),
+            dm_user=os.environ.get('DISCORD_DM_USER') or None,
         )
 
 
@@ -236,6 +264,11 @@ def chunk_output(text: str) -> List[str]:
     return [_fence(p.rstrip('\n')) for p in parts]
 
 
+def event_slug(event: str) -> str:
+    """'EMAIL_SENT' -> 'email-sent', as used in stored file names."""
+    return re.sub(r'[^a-z0-9]+', '-', event.lower()).strip('-') or 'event'
+
+
 class EventDisplayFilter:
     """Turns a raw gateway event into the Discord message posted for it."""
 
@@ -288,8 +321,10 @@ class EventDisplayFilter:
         """
         body = json.dumps(self._translate(payload), indent=2, default=str,
                           ensure_ascii=False)
-        slug = re.sub(r'[^a-z0-9]+', '-', event.lower()).strip('-') or 'event'
-        stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')
+        slug = event_slug(event)
+        # Microseconds: the file is also stored, and must not overwrite one
+        # from the same second.
+        stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%f')
         return f'{slug}-{stamp}.json', body.encode()
 
     def render(self, event: str, topic: str, payload: Any) -> str:
@@ -339,6 +374,8 @@ def format_announcement(cfg: 'BotConfig', cli_groups: List[str],
         '`/auth` sign the Warmbly CLI in\n'
         '`/list` Prefect flows and deployments\n'
         '`/reload` reconnect the event feed with the current sign-in\n'
+        '`/filter [event]` hide an event from the feed (again to show it)\n'
+        '`/jq event [expr]` format an event\'s feed line with jq\n'
     )
     names = [g for g in cli_groups if g not in RESERVED_NAMES]
     if not names:
@@ -398,13 +435,216 @@ def has_role(user: Any, role_name: str) -> bool:
     return any(r.name == role_name for r in getattr(user, 'roles', ()))
 
 
-async def check_role(interaction: Any, role_name: str) -> bool:
-    if has_role(interaction.user, role_name):
+def is_allowed(user: Any, guild: Any, role_name: str,
+               dm_user: Optional[str]) -> bool:
+    """In a guild, the role; in a DM, only DISCORD_DM_USER by username."""
+    if guild is not None:
+        return has_role(user, role_name)
+    name = getattr(user, 'name', None)
+    return bool(dm_user and name and name.lower() == dm_user.lower())
+
+
+async def check_role(interaction: Any, role_name: str,
+                     dm_user: Optional[str] = None) -> bool:
+    if is_allowed(interaction.user, interaction.guild, role_name, dm_user):
         return True
     if not interaction.response.is_done():
         await interaction.response.send_message(
             f'This bot is limited to the `{role_name}` role.', ephemeral=True)
     return False
+
+def dm_help_text() -> str:
+    return (
+        'You can `/filter (event)` to hide an event (again to show it), or '
+        'store an output formatter for an event with '
+        '`/jq (event) (jq syntax)`.')
+
+
+def dm_reply(message: Any, bot_user: Any,
+             dm_user: Optional[str]) -> Optional[str]:
+    """The help text for DISCORD_DM_USER's direct message; else None."""
+    author = message.author
+    if message.guild is not None or author == bot_user or getattr(
+            author, 'bot', False):
+        return None
+    if not is_allowed(author, None, '', dm_user):
+        return None
+    return dm_help_text()
+
+
+# -- feed settings (/filter, /jq) --------------------------------------------
+
+class FeedSettings:
+    """Muted event names and per-event jq formatters, shared by the feed."""
+
+    def __init__(self, muted: Optional[set] = None,
+                 formatters: Optional[dict] = None) -> None:
+        self.muted = set(muted or ())
+        self.formatters = dict(formatters or {})
+
+    def is_muted(self, event: str) -> bool:
+        return event in self.muted
+
+    def toggle(self, event: str) -> bool:
+        """Flip the event; True when it is now muted."""
+        if event in self.muted:
+            self.muted.discard(event)
+            return False
+        self.muted.add(event)
+        return True
+
+    def to_dict(self) -> dict:
+        return {'muted': sorted(self.muted), 'jq': dict(self.formatters)}
+
+    @classmethod
+    def from_dict(cls, raw: Any) -> 'FeedSettings':
+        if not isinstance(raw, dict):
+            return cls()
+        muted, jq = raw.get('muted'), raw.get('jq')
+        return cls(
+            {m for m in muted if isinstance(m, str)}
+            if isinstance(muted, list) else set(),
+            {k: v for k, v in jq.items()
+             if isinstance(k, str) and isinstance(v, str)}
+            if isinstance(jq, dict) else {})
+
+
+async def load_settings() -> FeedSettings:
+    try:
+        raw = await Variable.aget(SETTINGS_VARIABLE, default=None)
+    except Exception as exc:
+        # The feed still runs, unfiltered, rather than the bot not starting.
+        print(f'could not load feed settings: {type(exc).__name__}: {exc}')
+        return FeedSettings()
+    return FeedSettings.from_dict(raw)
+
+
+async def save_settings(settings: FeedSettings) -> None:
+    await Variable.aset(SETTINGS_VARIABLE, settings.to_dict(), overwrite=True)
+
+
+class JqError(Exception):
+    pass
+
+
+async def _jq(args: List[str], stdin: bytes) -> Tuple[int, str]:
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            JQ_BIN, *args, stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+    except OSError as exc:
+        # The bot's container image once lacked jq: every /jq then raised
+        # here and Discord got no reply at all.
+        return 127, (f'jq is not installed on the bot host ({JQ_BIN}): '
+                     f'{type(exc).__name__}')
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(stdin), JQ_TIMEOUT)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        return 1, f'jq timed out after {JQ_TIMEOUT:g}s'
+    return proc.returncode, out.decode(errors='replace').strip()
+
+
+async def check_jq(expr: str) -> Optional[str]:
+    """
+    None if the expression compiles, else jq's error.
+
+    Wrapped in `if false` so it is compiled but never evaluated: many valid
+    filters fail at runtime on a sample input.
+    """
+    code, out = await _jq(['-n', f'if false then ({expr}) else empty end'], b'')
+    return None if code == 0 else (out or f'jq error (exit {code})')
+
+
+async def run_jq(expr: str, payload: Any) -> str:
+    """The filter's output: strings raw, everything else compact JSON."""
+    data = json.dumps(payload, default=str, ensure_ascii=False).encode()
+    code, out = await _jq(['-r', '-c', expr], data)
+    if code != 0:
+        raise JqError(out or f'exit {code}')
+    return out
+
+
+async def _save_note(settings: FeedSettings,
+                     save: Callable[[FeedSettings], Awaitable[None]]) -> str:
+    try:
+        await save(settings)
+    except Exception as exc:
+        return f' (not saved, lost on restart: {type(exc).__name__}: {exc})'
+    return ''
+
+
+async def filter_command(settings: FeedSettings, event: Optional[str],
+                         save: Callable[[FeedSettings], Awaitable[None]]) -> str:
+    if not event:
+        if not settings.muted:
+            return 'No events are filtered.'
+        return 'Filtered (hidden): ' + ', '.join(
+            f'`{e}`' for e in sorted(settings.muted))
+    name = resolve_event(event)
+    if name is None:
+        return f'Unknown event `{event}`.'
+    muted = settings.toggle(name)
+    state = ('filter on: hidden from the feed' if muted
+             else 'filter off: shown in the feed')
+    return (f'`{name}` {state}.'
+            + await _save_note(settings, save))
+
+
+def latest_event_payload(event: str) -> Any:
+    """The payload of the newest stored file for `event`, or None."""
+    pattern = re.compile(rf'{re.escape(event_slug(event))}-\d{{8}}T\d+\.json')
+    try:
+        names = [p for p in event_store_dir().iterdir()
+                 if pattern.fullmatch(p.name)]
+        if not names:
+            return None
+        # The name ends in a UTC timestamp, so the largest is the newest.
+        return json.loads(max(names, key=lambda p: p.name).read_text())
+    except (OSError, ValueError):
+        return None
+
+
+PREVIEW_LIMIT = 1500
+
+
+async def _jq_preview(event: str, expr: str) -> str:
+    """The formatter's output on the latest stored event, for the reply."""
+    payload = latest_event_payload(event)
+    if payload is None:
+        return f'\nNo stored `{event}` event to try it on yet.'
+    try:
+        out, head = await run_jq(expr, payload), 'On the latest stored event:'
+    except JqError as exc:
+        out, head = str(exc), 'jq error on the latest stored event:'
+    if len(out) > PREVIEW_LIMIT:
+        out = out[:PREVIEW_LIMIT] + '\n… (truncated)'
+    return f'\n{head}\n{_fence(out or "(empty output)")}'
+
+
+async def jq_command(settings: FeedSettings, event: str, expr: Optional[str],
+                     save: Callable[[FeedSettings], Awaitable[None]]) -> str:
+    name = resolve_event(event)
+    if name is None:
+        return f'Unknown event `{event}`.'
+    if not expr:
+        current = settings.formatters.get(name)
+        if not current:
+            return f'`{name}` has no formatter.'
+        msg = f'`{name}`: `{current}`' + await _jq_preview(name, current)
+        return msg[:DISCORD_MESSAGE_LIMIT]
+    if expr.strip().lower() == 'off':
+        settings.formatters.pop(name, None)
+        msg = f'`{name}` formatter cleared.'
+    else:
+        error = await check_jq(expr)
+        if error:
+            return f'Not stored; jq error:\n{chunk_output(error)[0]}'
+        settings.formatters[name] = expr
+        msg = (f'`{name}` now formatted with `{expr}`.'
+               + await _jq_preview(name, expr))
+    return (msg + await _save_note(settings, save))[:DISCORD_MESSAGE_LIMIT]
 
 # -- command logic -----------------------------------------------------------
 
@@ -513,33 +753,113 @@ async def list_flows(client: Any) -> str:
     return '\n'.join(lines) or 'no flows registered'
 
 
-def register_event_handlers(
-    gw: Any,
-    publish: Callable[[str], Awaitable[None]],
-    display: Optional[EventDisplayFilter] = None,
-) -> None:
-    """
-    Forward every named business event but SUPPRESSED_EVENTS and warmup
-    EMAIL_RECEIVED; the SDK has no wildcard handler.
-    """
+def forwarded_events() -> List[str]:
+    """Every event name the feed forwards, sorted."""
     from warmbly.gateway import GatewayEvent
 
     # Business events are UPPER_CASE. The lowercase values (presence_state,
     # presence_diff, rate_limited, resumed, resume_failed) are transport
     # frames: presence is dashboard users coming and going.
-    names = sorted({v for k, v in vars(GatewayEvent).items()
-                    if k.isupper() and isinstance(v, str) and v.isupper()}
-                   - SUPPRESSED_EVENTS)
+    return sorted({v for k, v in vars(GatewayEvent).items()
+                   if k.isupper() and isinstance(v, str) and v.isupper()}
+                  - SUPPRESSED_EVENTS)
+
+
+def _event_key(text: str) -> str:
+    """' email-sent ' -> 'EMAIL_SENT', so typed names match any case."""
+    return re.sub(r'[\s-]+', '_', text.strip()).upper()
+
+
+def resolve_event(text: str) -> Optional[str]:
+    """The forwarded event a user typed, ignoring case; None if unknown."""
+    key = _event_key(text)
+    return key if key in forwarded_events() else None
+
+
+def event_choices(current: str) -> List[str]:
+    """Autocomplete for an event option: prefix matches, then substrings."""
+    key = _event_key(current)
+    names = forwarded_events()
+    ranked = ([n for n in names if n.startswith(key)]
+              + [n for n in names if key in n and not n.startswith(key)])
+    return ranked[:AUTOCOMPLETE_LIMIT]
+
+
+def register_event_handlers(
+    gw: Any,
+    publish: Callable[[str], Awaitable[None]],
+    display: Optional[EventDisplayFilter] = None,
+    settings: Optional[FeedSettings] = None,
+) -> None:
+    """
+    Forward every named business event but SUPPRESSED_EVENTS, warmup
+    EMAIL_RECEIVED and whatever /filter turned off; the SDK has no wildcard
+    handler.
+    """
+    names = forwarded_events()
     display = display or EventDisplayFilter()
+    settings = settings or FeedSettings()
     for name in names:
         async def handler(topic: str, payload: Any, _name: str = name) -> None:
-            if _name == 'EMAIL_RECEIVED' and is_warmup(payload):
-                return
             filename, data = display.event_attachment(
                 _name, topic, payload)
-            await publish((display.event_summary(_name, topic, payload),
-                           filename, data))
+            # Every event is kept, including the ones not posted below.
+            await store_event(_name, filename, data)
+            # Read per event, so /filter and /jq apply without a reload.
+            if settings.is_muted(_name):
+                return
+            if _name == 'EMAIL_RECEIVED' and is_warmup(payload):
+                return
+            summary = display.event_summary(_name, topic, payload)
+            expr = settings.formatters.get(_name)
+            if expr:
+                summary = await _formatted_summary(
+                    display, _name, topic, payload, expr, summary)
+            await publish((summary, filename, data))
         gw.on_event(name)(handler)
+
+
+def event_store_dir() -> Path:
+    """Where every event's JSON is kept: data/discord (ARTIFACT_DIR/discord)."""
+    return artifact_dir() / 'discord'
+
+
+async def store_event(event: str, filename: str, data: bytes) -> None:
+    """
+    Keep the event's JSON in event_store_dir(), and as a Prefect artifact
+    when PREFECT_DUMP_JSON is set. Failures are printed, never raised: the
+    feed matters more than the record.
+    """
+    try:
+        directory = event_store_dir()
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / filename).write_bytes(data)
+    except Exception as exc:
+        print(f'could not store {filename}: {type(exc).__name__}: {exc}')
+    if not dump_json_enabled():
+        return
+    slug = event_slug(event)
+    try:
+        await acreate_markdown_artifact(
+            key=f'discord-{slug}',
+            markdown='```json\n' + data.decode(errors='replace') + '\n```',
+            description=event)
+    except Exception as exc:
+        print(f'could not register artifact for {event}: '
+              f'{type(exc).__name__}: {exc}')
+
+
+async def _formatted_summary(display: EventDisplayFilter, event: str,
+                             topic: str, payload: Any, expr: str,
+                             fallback: str) -> str:
+    """The /jq formatter's output under the event name; the default on error."""
+    try:
+        out = await run_jq(expr, display._translate(payload))
+    except Exception as exc:
+        note = f'\n(jq formatter failed: {str(exc)[:200]})'
+        return (fallback + note)[:DISCORD_MESSAGE_LIMIT]
+    head = f'**{event}** `{display._label(topic)}`\n'
+    return (head + out)[:DISCORD_MESSAGE_LIMIT]
 
 
 # -- Discord wiring ----------------------------------------------------------
@@ -566,7 +886,8 @@ async def _send_output(interaction: Any, text: str, ephemeral: bool) -> None:
 
 
 def build_client(cfg: BotConfig, cli_groups: List[str],
-                 reloader: Optional['Reloader'] = None) -> Any:
+                 reloader: Optional['Reloader'] = None,
+                 settings: Optional[FeedSettings] = None) -> Any:
     import discord
     from discord import app_commands
 
@@ -576,7 +897,7 @@ def build_client(cfg: BotConfig, cli_groups: List[str],
     class RoleGatedTree(app_commands.CommandTree):
         # Runs before every command, including the CLI ones added below.
         async def interaction_check(self, interaction):
-            return await check_role(interaction, role)
+            return await check_role(interaction, role, cfg.dm_user)
 
     tree = RoleGatedTree(client)
     client.bot_tree = tree
@@ -638,6 +959,37 @@ def build_client(cfg: BotConfig, cli_groups: List[str],
             text = await list_flows(pc)
         await _send_output(interaction, text, ephemeral=False)
 
+    settings = settings if settings is not None else FeedSettings()
+
+    async def autocomplete_event(interaction: discord.Interaction,
+                                 current: str):
+        return [app_commands.Choice(name=n, value=n)
+                for n in event_choices(current)]
+
+    @tree.command(name='filter',
+                  description='Hide an event from the feed, or show it again')
+    @app_commands.describe(event='event name; omit to list the filtered ones')
+    @app_commands.autocomplete(event=autocomplete_event)
+    async def filter_cmd(interaction: discord.Interaction,
+                         event: Optional[str] = None):
+        # Deferred: jq and the Prefect save can outlast Discord's 3 s limit.
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        await interaction.followup.send(
+            await filter_command(settings, event, save_settings),
+            ephemeral=True)
+
+    @tree.command(name='jq', description="Format an event's feed line with jq")
+    @app_commands.describe(event='event name',
+                           expr='jq expression; `off` clears, omit to show')
+    @app_commands.autocomplete(event=autocomplete_event)
+    async def jq_cmd(interaction: discord.Interaction, event: str,
+                     expr: Optional[str] = None):
+        # Deferred: jq and the Prefect save can outlast Discord's 3 s limit.
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        await interaction.followup.send(
+            await jq_command(settings, event, expr, save_settings),
+            ephemeral=True)
+
     def make_cli_command(group: str) -> app_commands.Command:
         @app_commands.describe(args=f'arguments, as for `warmbly {group} ...`')
         async def run(interaction: discord.Interaction, args: str = ''):
@@ -665,6 +1017,13 @@ def build_client(cfg: BotConfig, cli_groups: List[str],
               f'{"to guild " + str(cfg.guild_id) if guild else "globally"}')
 
     client.setup_hook = setup_hook
+
+    @client.event
+    async def on_message(message: discord.Message) -> None:
+        reply = dm_reply(message, client.user, cfg.dm_user)
+        if reply:
+            await message.channel.send(reply)
+
     return client
 
 
@@ -747,6 +1106,7 @@ async def run_gateway(
     refresh: Callable[[], Awaitable[Tuple[str, EventDisplayFilter]]],
     gateway_factory: Optional[Callable[..., Any]] = None,
     retry_delay: float = 30.0,
+    settings: Optional[FeedSettings] = None,
 ) -> None:
     """
     One gateway connection per generation; a reload request ends the current
@@ -768,7 +1128,7 @@ async def run_gateway(
             continue
 
         gw = gateway_factory(token, gateway_base_url(cfg.gateway_url))
-        register_event_handlers(gw, queue.put, display)
+        register_event_handlers(gw, queue.put, display, settings)
         connection = asyncio.create_task(_connect_gateway(gw, cfg))
         reload_wait = asyncio.create_task(reloader.wait())
         try:
@@ -839,13 +1199,16 @@ async def discord_bot() -> None:
     # The queue and sender outlive gateway generations, so a reload neither
     # re-announces nor drops events already queued.
     queue: asyncio.Queue = asyncio.Queue()
-    client = build_client(cfg, groups, reloader=reloader)
+    # One object shared by the commands and every gateway generation.
+    settings = await load_settings()
+    print(f'feed settings: {settings.to_dict()}')
+    client = build_client(cfg, groups, reloader=reloader, settings=settings)
     async with client:
         await asyncio.gather(
             client.start(cfg.discord_token),
             run_sender(client, cfg, queue,
                        format_announcement(cfg, groups, org_name)),
-            run_gateway(cfg, queue, reloader, refresh))
+            run_gateway(cfg, queue, reloader, refresh, settings=settings))
 
 
 if __name__ == '__main__':

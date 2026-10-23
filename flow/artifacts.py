@@ -8,6 +8,10 @@ Files are named by sorting `prefect.runtime.flow_run.tags` and joining with '-':
 Files go in data/ at the repo root (ARTIFACT_DIR overrides it), not the
 current directory, which a batch run used to fill with hundreds of them.
 
+Nothing is written or registered unless PREFECT_DUMP_JSON is set (to
+anything but '', 0, false, no or off): write_artifact and register_artifact
+are then no-ops, so runs leave no JSON behind by default.
+
 Tags are set at the *call site*, not inside the agent -- see the
 `with tags(business_id, stage)` wrappers in flow/run_agents.py. An agent
 invoked without them writes to 'unknown-input.json'/'unknown-output.json'.
@@ -54,6 +58,12 @@ def variable_safe_name(raw: str) -> str:
     return slugify(raw, separator='_', lowercase=True)
 
 
+def dump_json_enabled() -> bool:
+    """True when PREFECT_DUMP_JSON asks for JSON files and Prefect artifacts."""
+    value = os.environ.get('PREFECT_DUMP_JSON', '').strip().lower()
+    return value not in ('', '0', 'false', 'no', 'off')
+
+
 def artifact_dir() -> Path:
     """Where artifacts live: $ARTIFACT_DIR, else data/ at the repo root."""
     return Path(os.environ.get('ARTIFACT_DIR') or REPO_ROOT / 'data')
@@ -91,7 +101,7 @@ def artifact_filename(suffix: str = 'output') -> str:
 
 
 def write_artifact(data: Dict[str, Any], suffix: str = 'output',
-                   directory: Optional[Path] = None) -> Path:
+                   directory: Optional[Path] = None) -> Optional[Path]:
     """
     Write a JSON artifact tagged by flow run.
 
@@ -102,11 +112,13 @@ def write_artifact(data: Dict[str, Any], suffix: str = 'output',
                    missing)
 
     Returns:
-        Path to the written file
+        Path to the written file, or None when PREFECT_DUMP_JSON is unset
 
     Raises:
         ValueError: if data cannot be JSON-serialized
     """
+    if not dump_json_enabled():
+        return None
     directory = artifact_dir() if directory is None else Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
 
@@ -148,7 +160,10 @@ def register_artifact(data: Dict[str, Any], suffix: str = 'output',
     Does nothing if Prefect client is unavailable (e.g., unit tests with
     ephemeral servers or environments without API URL). Swallows all errors
     so a missing/misconfigured Prefect API doesn't break the flow.
+    Does nothing unless PREFECT_DUMP_JSON is set.
     """
+    if not dump_json_enabled():
+        return
     key = artifact_key(suffix)
 
     try:

@@ -18,6 +18,13 @@ from flow.artifacts import (
 )
 
 
+
+@pytest.fixture(autouse=True)
+def _dump_json_on(monkeypatch):
+    """These tests cover what is written when dumping is on."""
+    monkeypatch.setenv('PREFECT_DUMP_JSON', '1')
+
+
 class TestVariableSafeName:
     """Prefect Variable names allow only lowercase letters, numbers and
     underscores -- a raw UUID business_id ('94cc25a6-c778-...') fails
@@ -318,3 +325,39 @@ class TestRoundTrip:
                 loaded = read_artifact(str(filepath))
 
             assert loaded == data
+
+
+class TestDumpJsonSwitch:
+    """PREFECT_DUMP_JSON gates both the JSON files and the Prefect artifacts."""
+
+    @pytest.mark.parametrize('value', ['1', 'true', 'yes', 'on', 'TRUE'])
+    def test_truthy_values_enable(self, monkeypatch, value):
+        from flow.artifacts import dump_json_enabled
+        monkeypatch.setenv('PREFECT_DUMP_JSON', value)
+        assert dump_json_enabled()
+
+    @pytest.mark.parametrize('value', ['', '0', 'false', 'no', 'off'])
+    def test_falsy_values_disable(self, monkeypatch, value):
+        from flow.artifacts import dump_json_enabled
+        monkeypatch.setenv('PREFECT_DUMP_JSON', value)
+        assert not dump_json_enabled()
+
+    def test_unset_disables(self, monkeypatch):
+        from flow.artifacts import dump_json_enabled
+        monkeypatch.delenv('PREFECT_DUMP_JSON', raising=False)
+        assert not dump_json_enabled()
+
+    def test_write_is_skipped_when_unset(self, monkeypatch, tmp_path):
+        monkeypatch.delenv('PREFECT_DUMP_JSON', raising=False)
+        assert write_artifact({'a': 1}, directory=tmp_path) is None
+        assert list(tmp_path.iterdir()) == []
+
+    def test_register_is_skipped_when_unset(self, monkeypatch):
+        import flow.artifacts as mod
+        monkeypatch.delenv('PREFECT_DUMP_JSON', raising=False)
+        with patch.object(mod, 'create_markdown_artifact') as create:
+            mod.register_artifact({'a': 1})
+        create.assert_not_called()
+
+    def test_write_happens_when_set(self, tmp_path):
+        assert write_artifact({'a': 1}, directory=tmp_path).exists()

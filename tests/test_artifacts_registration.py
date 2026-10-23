@@ -22,6 +22,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
+
+@pytest.fixture(autouse=True)
+def _dump_json_on(monkeypatch):
+    """These tests cover what is written when dumping is on."""
+    monkeypatch.setenv('PREFECT_DUMP_JSON', '1')
+
+
 class TestTheSymbolExists:
     """The specific regression: importing a name Prefect does not export."""
 
