@@ -44,6 +44,12 @@ Flags:
 """
 
 
+@pytest.fixture(autouse=True)
+def _event_store(tmp_path, monkeypatch):
+    """Events go to a temporary data/discord, not the repo's."""
+    monkeypatch.setenv('ARTIFACT_DIR', str(tmp_path))
+
+
 def _run(coro):
     return asyncio.run(coro)
 
@@ -1042,3 +1048,514 @@ class TestHandlersDropWarmup:
         handlers, publish = self._handlers()
         _run(handlers['EMAIL_SENT']('org:1', WARMUP))
         publish.assert_awaited_once()
+
+
+def dm(author_bot=False, guild=None, author=None):
+    message = MagicMock()
+    message.guild = guild
+    message.author = author or SimpleNamespace(bot=author_bot, name='nat')
+    message.channel.send = AsyncMock()
+    return message
+
+
+class TestDirectMessageHelp:
+    def test_reply_mentions_filter_and_jq(self):
+        text = bot.dm_help_text()
+        assert '/filter' in text
+        assert '/jq' in text
+        assert 'event' in text and 'jq' in text
+
+    def test_dm_from_a_person_gets_the_help(self):
+        assert bot.dm_reply(dm(), bot_user=object(), dm_user='nat') == \
+            bot.dm_help_text()
+
+    def test_guild_messages_are_ignored(self):
+        assert bot.dm_reply(dm(guild=object()), bot_user=object(), dm_user='nat') is None
+
+    def test_other_bots_are_ignored(self):
+        assert bot.dm_reply(dm(author_bot=True), bot_user=object(), dm_user='nat') is None
+
+    def test_own_messages_are_ignored(self):
+        me = SimpleNamespace(bot=False, name='me')
+        assert bot.dm_reply(dm(author=me), bot_user=me, dm_user='nat') is None
+
+    def test_client_answers_a_dm(self):
+        client = bot.build_client(make_cfg(dm_user='nat'), ['campaign'])
+        message = dm()
+        _run(client.on_message(message))
+        message.channel.send.assert_awaited_once_with(bot.dm_help_text())
+
+    def test_client_stays_quiet_in_guild_channels(self):
+        client = bot.build_client(make_cfg(dm_user='nat'), ['campaign'])
+        message = dm(guild=object())
+        _run(client.on_message(message))
+        message.channel.send.assert_not_awaited()
+
+
+class TestEventNames:
+    def test_forwarded_events_are_the_business_events_minus_suppressed(self):
+        names = bot.forwarded_events()
+        assert 'EMAIL_SENT' in names
+        assert 'EMAIL_UPDATED' not in names
+        assert 'presence_diff' not in names
+        assert names == sorted(names)
+
+    @pytest.mark.parametrize('typed', [
+        'EMAIL_SENT', 'email_sent', 'Email_Sent', ' email-sent ', 'email sent'])
+    def test_resolve_ignores_case_and_separators(self, typed):
+        assert bot.resolve_event(typed) == 'EMAIL_SENT'
+
+    def test_resolve_unknown_is_none(self):
+        assert bot.resolve_event('email_sentx') is None
+        assert bot.resolve_event('') is None
+
+    def test_suppressed_events_do_not_resolve(self):
+        assert bot.resolve_event('email_updated') is None
+
+
+class TestEventAutocomplete:
+    def test_matches_ignore_case(self):
+        assert 'EMAIL_SENT' in bot.event_choices('sent')
+        assert 'EMAIL_SENT' in bot.event_choices('Email_S')
+
+    def test_prefix_matches_come_first(self):
+        choices = bot.event_choices('email')
+        assert choices[0].startswith('EMAIL_')
+        # ACCOUNT_... contains no 'email'; ensure substring hits trail prefixes.
+        prefixed = [c for c in choices if c.startswith('EMAIL_')]
+        assert choices[:len(prefixed)] == prefixed
+
+    def test_capped_at_discords_limit(self):
+        assert len(bot.event_choices('')) == bot.AUTOCOMPLETE_LIMIT == 25
+
+    def test_no_match_is_empty(self):
+        assert bot.event_choices('zzz') == []
+
+    def test_dm_from_anyone_else_is_ignored(self):
+        assert bot.dm_reply(dm(), bot_user=object(), dm_user='nekromanyen') is None
+
+    def test_no_dm_user_configured_ignores_every_dm(self):
+        assert bot.dm_reply(dm(), bot_user=object(), dm_user=None) is None
+
+    def test_help_says_filter_hides(self):
+        assert 'hide' in bot.dm_help_text()
+
+
+class TestDmUserConfig:
+    def _env(self, **extra):
+        env = {'DISCORD_BOT_TOKEN': 't', 'DISCORD_CHANNEL_ID': '1',
+               'DISCORD_EVENT_CHANNEL_ID': '2', 'DISCORD_ADMIN_ROLE': 'r',
+               'WARMBLY_API_TOKEN': 'w', 'WARMBLY_WEBSOCKET_URL': 'wss://h',
+               'WARMBLY_ORG_ID': 'o'}
+        env.update(extra)
+        return env
+
+    def test_read_from_env(self):
+        with patch.dict('os.environ', self._env(DISCORD_DM_USER='nekromanyen'),
+                        clear=True):
+            assert bot.BotConfig.from_env().dm_user == 'nekromanyen'
+
+    def test_optional(self):
+        with patch.dict('os.environ', self._env(), clear=True):
+            assert bot.BotConfig.from_env().dm_user is None
+
+
+class TestDmAuthorization:
+    def test_guild_uses_the_role(self):
+        assert bot.is_allowed(member('CRMadmin'), object(), 'CRMadmin', 'x')
+        assert not bot.is_allowed(member('everyone'), object(), 'CRMadmin', 'x')
+
+    def test_dm_matches_the_configured_user(self):
+        user = SimpleNamespace(name='nekromanyen')
+        assert bot.is_allowed(user, None, 'CRMadmin', 'nekromanyen')
+
+    def test_dm_match_ignores_case(self):
+        user = SimpleNamespace(name='nekromanyen')
+        assert bot.is_allowed(user, None, 'CRMadmin', 'Nekromanyen')
+
+    def test_dm_from_someone_else_is_refused(self):
+        user = SimpleNamespace(name='mallory')
+        assert not bot.is_allowed(user, None, 'CRMadmin', 'nekromanyen')
+
+    def test_dm_without_configured_user_is_refused(self):
+        user = SimpleNamespace(name='nekromanyen')
+        assert not bot.is_allowed(user, None, 'CRMadmin', None)
+
+    def test_dm_role_does_not_count(self):
+        """A role is a guild thing; it must not let a stranger in by DM."""
+        assert not bot.is_allowed(member('CRMadmin'), None, 'CRMadmin', 'x')
+
+    def test_tree_lets_the_dm_user_in(self):
+        client = bot.build_client(make_cfg(dm_user='nekromanyen'), [])
+        interaction = MagicMock()
+        interaction.guild = None
+        interaction.user = SimpleNamespace(name='nekromanyen')
+        assert _run(client.bot_tree.interaction_check(interaction)) is True
+
+    def test_tree_refuses_other_dm_users(self):
+        client = bot.build_client(make_cfg(dm_user='nekromanyen'), [])
+        interaction = MagicMock()
+        interaction.guild = None
+        interaction.user = SimpleNamespace(name='mallory')
+        interaction.response.is_done.return_value = False
+        interaction.response.send_message = AsyncMock()
+        assert _run(client.bot_tree.interaction_check(interaction)) is False
+        assert interaction.response.send_message.await_args.kwargs[
+            'ephemeral'] is True
+
+
+class TestFeedSettings:
+    def test_toggle_mutes_then_unmutes(self):
+        s = bot.FeedSettings()
+        assert s.toggle('EMAIL_SENT') is True
+        assert s.is_muted('EMAIL_SENT')
+        assert s.toggle('EMAIL_SENT') is False
+        assert not s.is_muted('EMAIL_SENT')
+
+    def test_round_trips_through_a_dict(self):
+        s = bot.FeedSettings()
+        s.toggle('EMAIL_SENT')
+        s.formatters['EMAIL_REPLIED'] = '.subject'
+        again = bot.FeedSettings.from_dict(s.to_dict())
+        assert again.muted == {'EMAIL_SENT'}
+        assert again.formatters == {'EMAIL_REPLIED': '.subject'}
+
+    def test_stored_dict_is_json_friendly(self):
+        s = bot.FeedSettings({'B', 'A'}, {'X': '.'})
+        assert json.loads(json.dumps(s.to_dict())) == {
+            'muted': ['A', 'B'], 'jq': {'X': '.'}}
+
+    @pytest.mark.parametrize('raw', [None, 'junk', [], {'muted': 'x', 'jq': 3}])
+    def test_garbage_reads_as_empty(self, raw):
+        s = bot.FeedSettings.from_dict(raw)
+        assert s.muted == set() and s.formatters == {}
+
+
+class TestSettingsStorage:
+    def test_loads_from_the_prefect_variable(self):
+        stored = {'muted': ['EMAIL_SENT'], 'jq': {}}
+        with patch('flow.discord_bot.Variable') as var:
+            var.aget = AsyncMock(return_value=stored)
+            s = _run(bot.load_settings())
+        var.aget.assert_awaited_once_with(bot.SETTINGS_VARIABLE, default=None)
+        assert s.muted == {'EMAIL_SENT'}
+
+    def test_unreachable_server_reads_as_empty(self):
+        with patch('flow.discord_bot.Variable') as var:
+            var.aget = AsyncMock(side_effect=RuntimeError('down'))
+            s = _run(bot.load_settings())
+        assert s.muted == set()
+
+    def test_saves_with_overwrite(self):
+        s = bot.FeedSettings({'EMAIL_SENT'}, {})
+        with patch('flow.discord_bot.Variable') as var:
+            var.aset = AsyncMock()
+            _run(bot.save_settings(s))
+        var.aset.assert_awaited_once_with(
+            bot.SETTINGS_VARIABLE, s.to_dict(), overwrite=True)
+
+    def test_variable_name_is_valid_for_prefect(self):
+        import re
+        assert re.fullmatch(r'[a-z0-9_-]+', bot.SETTINGS_VARIABLE)
+
+
+class TestJq:
+    def test_valid_expression_compiles(self):
+        assert _run(bot.check_jq('.subject')) is None
+
+    def test_syntax_error_is_reported(self):
+        assert 'error' in _run(bot.check_jq('.[')).lower()
+
+    def test_runtime_only_errors_pass_the_check(self):
+        """Checking must not evaluate: `test` errors on null at runtime."""
+        assert _run(bot.check_jq('.subject | test("x")')) is None
+
+    def test_runs_against_the_payload(self):
+        assert _run(bot.run_jq('.subject', {'subject': 'hi'})) == 'hi'
+
+    def test_non_string_output_is_compact_json(self):
+        assert _run(bot.run_jq('{a: .x}', {'x': 1})) == '{"a":1}'
+
+    def test_runtime_error_raises(self):
+        with pytest.raises(bot.JqError):
+            _run(bot.run_jq('.x | test("a")', {'x': 1}))
+
+
+class TestFilterCommand:
+    def test_toggles_and_saves(self):
+        s, save = bot.FeedSettings(), AsyncMock()
+        msg = _run(bot.filter_command(s, 'email_sent', save))
+        assert s.is_muted('EMAIL_SENT') and 'EMAIL_SENT' in msg
+        assert 'filter on' in msg and 'hidden' in msg
+        save.assert_awaited_once_with(s)
+        msg = _run(bot.filter_command(s, 'EMAIL_SENT', save))
+        assert not s.is_muted('EMAIL_SENT')
+        assert 'filter off' in msg and 'shown' in msg
+
+    def test_unknown_event_changes_nothing(self):
+        s, save = bot.FeedSettings(), AsyncMock()
+        msg = _run(bot.filter_command(s, 'nope', save))
+        assert 'unknown' in msg.lower() and s.muted == set()
+        save.assert_not_awaited()
+
+    def test_no_event_lists_muted(self):
+        s = bot.FeedSettings({'EMAIL_SENT', 'EMAIL_OPENED'}, {})
+        msg = _run(bot.filter_command(s, None, AsyncMock()))
+        assert 'EMAIL_OPENED' in msg and 'EMAIL_SENT' in msg
+        assert msg.lower().startswith('filtered (hidden)')
+
+    def test_no_event_and_nothing_muted(self):
+        msg = _run(bot.filter_command(bot.FeedSettings(), None, AsyncMock()))
+        assert 'no events are filtered' in msg.lower()
+
+    def test_save_failure_is_reported(self):
+        s = bot.FeedSettings()
+        save = AsyncMock(side_effect=RuntimeError('down'))
+        msg = _run(bot.filter_command(s, 'EMAIL_SENT', save))
+        assert 'not saved' in msg.lower()
+
+
+class TestJqCommand:
+    def test_stores_a_valid_formatter(self):
+        s, save = bot.FeedSettings(), AsyncMock()
+        msg = _run(bot.jq_command(s, 'email_replied', '.subject', save))
+        assert s.formatters == {'EMAIL_REPLIED': '.subject'}
+        assert 'EMAIL_REPLIED' in msg
+        save.assert_awaited_once_with(s)
+
+    def test_rejects_invalid_jq(self):
+        s, save = bot.FeedSettings(), AsyncMock()
+        msg = _run(bot.jq_command(s, 'EMAIL_REPLIED', '.[', save))
+        assert s.formatters == {} and 'error' in msg.lower()
+        save.assert_not_awaited()
+
+    def test_unknown_event(self):
+        s, save = bot.FeedSettings(), AsyncMock()
+        msg = _run(bot.jq_command(s, 'nope', '.', save))
+        assert 'unknown' in msg.lower() and s.formatters == {}
+
+    def test_no_expression_shows_current(self):
+        s = bot.FeedSettings(set(), {'EMAIL_REPLIED': '.subject'})
+        msg = _run(bot.jq_command(s, 'EMAIL_REPLIED', None, AsyncMock()))
+        assert '.subject' in msg
+
+    def test_off_clears(self):
+        s, save = bot.FeedSettings(set(), {'EMAIL_REPLIED': '.subject'}), AsyncMock()
+        _run(bot.jq_command(s, 'EMAIL_REPLIED', 'off', save))
+        assert s.formatters == {}
+        save.assert_awaited_once()
+
+
+class TestHandlersUseSettings:
+    def _handlers(self, settings):
+        gw = MagicMock()
+        handlers = {}
+        gw.on_event.side_effect = lambda name: (
+            lambda h: handlers.setdefault(name, h))
+        publish = AsyncMock()
+        bot.register_event_handlers(gw, publish, settings=settings)
+        return handlers, publish
+
+    def test_muted_event_is_dropped(self):
+        handlers, publish = self._handlers(bot.FeedSettings({'EMAIL_SENT'}, {}))
+        _run(handlers['EMAIL_SENT']('org:1', {'id': 1}))
+        publish.assert_not_awaited()
+
+    def test_unmuting_takes_effect_without_reregistering(self):
+        settings = bot.FeedSettings({'EMAIL_SENT'}, {})
+        handlers, publish = self._handlers(settings)
+        settings.toggle('EMAIL_SENT')
+        _run(handlers['EMAIL_SENT']('org:1', {'id': 1}))
+        publish.assert_awaited_once()
+
+    def test_formatter_output_is_in_the_summary(self):
+        settings = bot.FeedSettings(set(), {'EMAIL_SENT': '"to " + .email'})
+        handlers, publish = self._handlers(settings)
+        _run(handlers['EMAIL_SENT']('org:1', {'email': 'a@b.c'}))
+        summary, _f, data = publish.await_args.args[0]
+        assert 'EMAIL_SENT' in summary and 'to a@b.c' in summary
+        # The attachment stays the whole payload.
+        assert json.loads(data.decode()) == {'email': 'a@b.c'}
+
+    def test_formatter_error_falls_back_to_the_default_line(self):
+        settings = bot.FeedSettings(set(), {'EMAIL_SENT': '.email | test("x")'})
+        handlers, publish = self._handlers(settings)
+        _run(handlers['EMAIL_SENT']('org:1', {'email': 1}))
+        summary, _f, _d = publish.await_args.args[0]
+        assert 'EMAIL_SENT' in summary and 'jq' in summary.lower()
+
+    def test_formatted_summary_fits_a_message(self):
+        settings = bot.FeedSettings(set(), {'EMAIL_SENT': '.body'})
+        handlers, publish = self._handlers(settings)
+        _run(handlers['EMAIL_SENT']('org:1', {'body': 'x' * 5000}))
+        summary, _f, _d = publish.await_args.args[0]
+        assert len(summary) <= bot.DISCORD_MESSAGE_LIMIT
+
+
+class TestNewCommandsRegistered:
+    def test_filter_and_jq_are_built_in(self):
+        client = bot.build_client(make_cfg(), ['campaign'])
+        names = {c.name for c in client.bot_tree.get_commands()}
+        assert {'filter', 'jq'} <= names
+        assert {'filter', 'jq'} <= bot.RESERVED_NAMES
+
+    def test_event_options_autocomplete(self):
+        client = bot.build_client(make_cfg(), [])
+        for name in ('filter', 'jq'):
+            command = client.bot_tree.get_command(name)
+            event = next(p for p in command.parameters if p.name == 'event')
+            assert event.autocomplete, name
+
+    def test_announcement_lists_them(self):
+        msg = bot.format_announcement(make_cfg(), [])
+        assert '/filter' in msg and '/jq' in msg
+
+
+class TestEventStore:
+    def _handlers(self, settings=None):
+        gw = MagicMock()
+        handlers = {}
+        gw.on_event.side_effect = lambda name: (
+            lambda h: handlers.setdefault(name, h))
+        publish = AsyncMock()
+        bot.register_event_handlers(gw, publish, settings=settings)
+        return handlers, publish
+
+    @pytest.fixture(autouse=True)
+    def _dirs(self, tmp_path, monkeypatch):
+        monkeypatch.setenv('ARTIFACT_DIR', str(tmp_path))
+        monkeypatch.delenv('PREFECT_DUMP_JSON', raising=False)
+        self.store = tmp_path / 'discord'
+
+    def test_store_is_data_discord(self):
+        assert bot.event_store_dir() == self.store
+
+    def test_every_event_is_written_to_the_store(self):
+        handlers, _ = self._handlers()
+        _run(handlers['EMAIL_SENT']('org:1', {'id': 7}))
+        files = list(self.store.glob('*.json'))
+        assert len(files) == 1
+        assert json.loads(files[0].read_text()) == {'id': 7}
+        assert 'email-sent' in files[0].name
+
+    def test_events_in_the_same_second_do_not_overwrite(self):
+        handlers, _ = self._handlers()
+        for i in range(3):
+            _run(handlers['EMAIL_SENT']('org:1', {'id': i}))
+        assert len(list(self.store.glob('*.json'))) == 3
+
+    def test_filtered_events_are_still_stored(self):
+        """/filter hides an event from the feed; it is still recorded."""
+        handlers, publish = self._handlers(bot.FeedSettings({'EMAIL_SENT'}, {}))
+        _run(handlers['EMAIL_SENT']('org:1', {'id': 1}))
+        publish.assert_not_awaited()
+        assert len(list(self.store.glob('*.json'))) == 1
+
+    def test_warmup_is_still_stored(self):
+        handlers, publish = self._handlers()
+        _run(handlers['EMAIL_RECEIVED']('org:1', WARMUP))
+        publish.assert_not_awaited()
+        assert len(list(self.store.glob('*.json'))) == 1
+
+    def test_write_failure_does_not_stop_the_feed(self, monkeypatch):
+        handlers, publish = self._handlers()
+        with patch('flow.discord_bot.Path.write_bytes',
+                   side_effect=OSError('disk full')):
+            _run(handlers['EMAIL_SENT']('org:1', {'id': 1}))
+        publish.assert_awaited_once()
+
+    def test_no_prefect_artifact_when_unset(self):
+        handlers, _ = self._handlers()
+        with patch('flow.discord_bot.acreate_markdown_artifact',
+                   new=AsyncMock()) as create:
+            _run(handlers['EMAIL_SENT']('org:1', {'id': 1}))
+        create.assert_not_awaited()
+
+    def test_prefect_artifact_when_set(self, monkeypatch):
+        monkeypatch.setenv('PREFECT_DUMP_JSON', '1')
+        handlers, _ = self._handlers()
+        with patch('flow.discord_bot.acreate_markdown_artifact',
+                   new=AsyncMock()) as create:
+            _run(handlers['EMAIL_SENT']('org:1', {'id': 1}))
+        create.assert_awaited_once()
+        kwargs = create.await_args.kwargs
+        assert kwargs['key'] == 'discord-email-sent'
+        assert '"id": 1' in kwargs['markdown']
+
+    def test_artifact_failure_does_not_stop_the_feed(self, monkeypatch):
+        monkeypatch.setenv('PREFECT_DUMP_JSON', '1')
+        handlers, publish = self._handlers()
+        with patch('flow.discord_bot.acreate_markdown_artifact',
+                   new=AsyncMock(side_effect=RuntimeError('no api'))):
+            _run(handlers['EMAIL_SENT']('org:1', {'id': 1}))
+        publish.assert_awaited_once()
+
+
+class TestJqMissingBinary:
+    def test_check_reports_a_missing_jq(self):
+        with patch('flow.discord_bot.JQ_BIN', '/nonexistent/jq'):
+            error = _run(bot.check_jq('.'))
+        assert error and 'jq' in error and 'not installed' in error
+
+    def test_run_raises_jq_error_for_a_missing_jq(self):
+        with patch('flow.discord_bot.JQ_BIN', '/nonexistent/jq'):
+            with pytest.raises(bot.JqError):
+                _run(bot.run_jq('.', {}))
+
+    def test_command_replies_instead_of_crashing(self):
+        s, save = bot.FeedSettings(), AsyncMock()
+        with patch('flow.discord_bot.JQ_BIN', '/nonexistent/jq'):
+            msg = _run(bot.jq_command(s, 'EMAIL_SENT', '.id', save))
+        assert 'not installed' in msg and s.formatters == {}
+        save.assert_not_awaited()
+
+
+class TestJqPreview:
+    @pytest.fixture(autouse=True)
+    def _store(self, tmp_path, monkeypatch):
+        monkeypatch.setenv('ARTIFACT_DIR', str(tmp_path))
+        self.store = tmp_path / 'discord'
+        self.store.mkdir()
+
+    def _event(self, name, stamp, payload):
+        (self.store / f'{name}-{stamp}.json').write_text(json.dumps(payload))
+
+    def test_latest_stored_event_is_found(self):
+        self._event('email-sent', '20261023T100000000000', {'id': 1})
+        self._event('email-sent', '20261023T110000000000', {'id': 2})
+        self._event('email-sent-other', '20261023T120000000000', {'id': 9})
+        assert bot.latest_event_payload('EMAIL_SENT') == {'id': 2}
+
+    def test_no_stored_event_is_none(self):
+        assert bot.latest_event_payload('EMAIL_SENT') is None
+
+    def test_storing_shows_the_result_on_the_latest_event(self):
+        self._event('email-sent', '20261023T100000000000', {'email': 'a@b.c'})
+        s = bot.FeedSettings()
+        msg = _run(bot.jq_command(s, 'email_sent', '"to " + .email', AsyncMock()))
+        assert s.formatters == {'EMAIL_SENT': '"to " + .email'}
+        assert 'to a@b.c' in msg
+
+    def test_showing_the_formatter_also_shows_the_result(self):
+        self._event('email-sent', '20261023T100000000000', {'id': 5})
+        s = bot.FeedSettings(set(), {'EMAIL_SENT': '.id'})
+        msg = _run(bot.jq_command(s, 'EMAIL_SENT', None, AsyncMock()))
+        assert '.id' in msg and '5' in msg
+
+    def test_runtime_error_on_the_sample_is_shown_but_still_stored(self):
+        self._event('email-sent', '20261023T100000000000', {'x': 1})
+        s = bot.FeedSettings()
+        msg = _run(bot.jq_command(s, 'EMAIL_SENT', '.x | test("a")', AsyncMock()))
+        assert 'EMAIL_SENT' in s.formatters
+        assert 'error' in msg.lower()
+
+    def test_no_sample_says_so(self):
+        s = bot.FeedSettings()
+        msg = _run(bot.jq_command(s, 'EMAIL_SENT', '.id', AsyncMock()))
+        assert 'no stored' in msg.lower()
+
+    def test_reply_fits_a_message(self):
+        self._event('email-sent', '20261023T100000000000', {'b': 'x' * 5000})
+        msg = _run(bot.jq_command(bot.FeedSettings(), 'EMAIL_SENT', '.b',
+                                  AsyncMock()))
+        assert len(msg) <= bot.DISCORD_MESSAGE_LIMIT
