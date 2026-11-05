@@ -227,9 +227,17 @@ def restore_plan(backup_file: str, accounts: List[Dict[str, Any]]
     return planned
 
 
+EXAMPLES = '''examples:
+  warmbly_accounts --set reply_to=nate@happytailspawcare.com
+  warmbly_accounts --set campaign_limit=30 min_wait_time=12 --dry-run
+  warmbly_accounts --set warmup=false --only nate@happytailspawcare.com
+  warmbly_accounts --restore data/warmbly-accounts-backup-<ts>.json'''
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog='warmbly_accounts', description='Bulk-modify Warmbly email accounts.')
+        prog='warmbly_accounts', description='Bulk-modify Warmbly email accounts.',
+        formatter_class=argparse.RawDescriptionHelpFormatter, epilog=EXAMPLES)
     action = parser.add_mutually_exclusive_group(required=True)
     action.add_argument('--set', nargs='+', metavar='FIELD=VALUE',
                         help=f"fields to set: {', '.join(UPDATE_FIELDS)}")
@@ -246,6 +254,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[List[str]] = None) -> int:
     parser = build_parser()
+    if not (sys.argv[1:] if argv is None else argv):
+        parser.print_help()
+        return 2
     args = parser.parse_args(argv)
     try:
         settings = parse_settings(args.set) if args.set else None

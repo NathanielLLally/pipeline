@@ -1050,3 +1050,90 @@ class TestBatchDefaults:
                    return_value=[]) as sel:
             _run(concurrency=3, batch_size=7)
         assert sel.await_args.kwargs['batch_size'] == 7
+
+
+class TestOversizedResearchInput:
+    """Prefect rejects flow-run parameters over 512 KiB with a 422.
+
+    A site with a large crawl (Puparazzi's ran to 475 KB) must still reach
+    research whole, so the input goes through a file instead of parameters.
+    """
+
+    BIG = 'x' * 600_000
+
+    def _run_capturing(self):
+        """Run one oversized business; return the call and the file it named."""
+        seen = {}
+
+        def research(*args, **kwargs):
+            seen['args'], seen['kwargs'] = args, kwargs
+            path = kwargs.get('json_input_file')
+            if path:
+                import json
+                from pathlib import Path
+                seen['file'] = json.loads(Path(path).read_text())
+                seen['path'] = path
+            return RESEARCHED
+
+        candidate = dict(CANDIDATE, crawl_excerpt=self.BIG)
+        with patch('flow.run_agents.fetch_candidates',
+                   new_callable=AsyncMock, return_value=[candidate]), \
+             patch('flow.run_agents.research_agent', side_effect=research), \
+             patch('flow.run_agents.drafting_agent', return_value=DRAFTED):
+            result = _run(offer='free trial')
+        return result, seen
+
+    def test_oversized_input_is_passed_as_a_file(self):
+        _, seen = self._run_capturing()
+
+        assert seen['args'] == ()
+        assert set(seen['kwargs']) == {'json_input_file'}
+
+    def test_the_file_carries_the_whole_input(self):
+        _, seen = self._run_capturing()
+
+        assert seen['file'] == {
+            'business': CANDIDATE['business'],
+            'verified_emails': CANDIDATE['candidate_emails'],
+            'crawl_excerpt': self.BIG,
+            'offer': 'free trial',
+        }
+
+    def test_the_file_is_removed_afterwards(self):
+        from pathlib import Path
+        _, seen = self._run_capturing()
+
+        assert not Path(seen['path']).exists()
+
+    def test_oversized_business_is_still_researched(self):
+        result, _ = self._run_capturing()
+
+        assert result['researched'] == 1
+
+
+class TestErrorTextIsBounded:
+    """A Prefect 422 echoes the whole request back -- nearly a megabyte.
+
+    Printed whole, that overflowed Prefect's log handler and turned the
+    error into a RecursionError, and it would be stored on the outcome.
+    """
+
+    def test_a_huge_error_is_truncated_in_the_outcome(self):
+        with patch('flow.run_agents.fetch_candidates',
+                   new_callable=AsyncMock, return_value=[CANDIDATE]), \
+             patch('flow.run_agents.research_agent',
+                   side_effect=RuntimeError('422 ' + 'y' * 1_000_000)):
+            result = _run()
+
+        error = result['outcomes'][0]['error']
+        assert error.startswith('RuntimeError: 422 yyy')
+        assert len(error) < 2_000
+
+    def test_a_short_error_is_kept_whole(self):
+        with patch('flow.run_agents.fetch_candidates',
+                   new_callable=AsyncMock, return_value=[CANDIDATE]), \
+             patch('flow.run_agents.research_agent',
+                   side_effect=RuntimeError('boom')):
+            result = _run()
+
+        assert result['outcomes'][0]['error'] == 'RuntimeError: boom'

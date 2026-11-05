@@ -118,9 +118,18 @@ class TestMain:
                           return_value=_response({'e': 1}, status=400)):
             assert wa.main(['--set', 'reply_to=n@x.com']) == 1
 
-    def test_set_or_restore_is_required(self):
+    def test_no_arguments_prints_the_usage_and_touches_nothing(self, capsys):
+        with patch.object(wa, 'list_accounts') as listed:
+            assert wa.main([]) == 2
+        listed.assert_not_called()
+        out = capsys.readouterr().out
+        assert out.startswith('usage: warmbly_accounts')
+        assert '--set' in out and '--restore' in out
+        assert 'examples:' in out
+
+    def test_options_without_set_or_restore_are_still_refused(self):
         with pytest.raises(SystemExit):
-            wa.main([])
+            wa.main(['--dry-run'])
 
 
 class TestRetry:

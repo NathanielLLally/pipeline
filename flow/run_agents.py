@@ -41,6 +41,8 @@ import asyncio
 import json
 import os
 import sys
+import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -101,7 +103,7 @@ async def run_preflight(
             await verify_business_emails(business_ids=unverified)
         except Exception as exc:
             print(f'preflight: mx_check failed, continuing without verdicts: '
-                  f'{type(exc).__name__}: {exc}')
+                  f'{_error_text(exc)}')
 
     if uncrawled:
         print(f'preflight: jina crawling {len(uncrawled)} business(es)')
@@ -109,7 +111,7 @@ async def run_preflight(
             await jina_crawl(business_ids=uncrawled)
         except Exception as exc:
             print(f'preflight: jina_crawl failed, continuing without those '
-                  f'pages: {type(exc).__name__}: {exc}')
+                  f'pages: {_error_text(exc)}')
 
     if not (unverified or uncrawled):
         return candidates
@@ -214,11 +216,11 @@ async def _run_batch(
                 # for a bug in it, which must still cost only this business.
                 business = candidate['business']
                 print(f"worker errored for {business.get('business_name')}: "
-                      f"{type(exc).__name__}: {exc}")
+                      f"{_error_text(exc)}")
                 result = ({'business_id': business.get('id'),
                            'business_name': business.get('business_name'),
                            'research_status': 'error', 'draft_status': None,
-                           'error': f'{type(exc).__name__}: {exc}'}, ['errored'])
+                           'error': _error_text(exc)}, ['errored'])
         # Recorded as each business finishes, so a batch that dies part way
         # leaves an accurate record of what it got through.
         await record_outcome(result[0])
@@ -258,6 +260,55 @@ def _flow_run_id() -> Optional[str]:
         return None
 
 
+# Prefect rejects a flow run whose parameters serialize past 512 KiB
+# (524,288 bytes) with a 422. The budget leaves room for Prefect's own
+# encoding, which can differ from json.dumps.
+PARAMETER_BUDGET = 400_000
+
+# The longest error text printed or kept on an outcome. A Prefect 422 echoes
+# the whole request back; printed whole, that overflowed Prefect's log
+# handler and surfaced as a RecursionError instead of the real error.
+MAX_ERROR_CHARS = 1_000
+
+
+def _error_text(exc: BaseException) -> str:
+    """'Type: message', cut to MAX_ERROR_CHARS."""
+    text = f'{type(exc).__name__}: {exc}'
+    if len(text) > MAX_ERROR_CHARS:
+        text = text[:MAX_ERROR_CHARS] + f'... [{len(text):,} chars]'
+    return text
+
+
+@contextmanager
+def _research_call(business, emails, crawl_excerpt, offer):
+    """
+    Yield the (args, kwargs) to call research_agent with.
+
+    Normally the input goes as parameters, so the UI shows it. Past
+    PARAMETER_BUDGET it goes through a temporary file named by
+    json_input_file -- research_agent's replay path -- so a large crawl
+    still reaches research whole instead of failing the subflow.
+    """
+    params = {'business': business, 'verified_emails': emails,
+              'crawl_excerpt': crawl_excerpt, 'offer': offer}
+    encoded = json.dumps(params, default=str)
+    if len(encoded.encode()) <= PARAMETER_BUDGET:
+        yield (business, emails, crawl_excerpt, offer), {}
+        return
+
+    print(f"research input for {business.get('business_name')} is "
+          f'{len(encoded):,} bytes, past the parameter budget; '
+          f'passing it as a file')
+    with tempfile.NamedTemporaryFile(
+            'w', prefix='research-input-', suffix='.json',
+            delete=False) as f:
+        f.write(encoded)
+    try:
+        yield (), {'json_input_file': f.name}
+    finally:
+        os.unlink(f.name)
+
+
 def _process_business(
     candidate: Dict[str, Any],
     template_slug: str,
@@ -291,15 +342,16 @@ def _process_business(
     try:
         # Subflow: its own flow run, retryable on its own. The crawl text
         # goes through whole -- no truncation anywhere in this path.
-        with tags(*stage_tags, 'research'):
-            researched = research_agent(
-                business, emails, candidate['crawl_excerpt'], offer)
+        with tags(*stage_tags, 'research'), _research_call(
+                business, emails, candidate['crawl_excerpt'],
+                offer) as (args, kwargs):
+            researched = research_agent(*args, **kwargs)
     except Exception as exc:
         # One bad business must not cost the other 49 in the batch.
         print(f"research errored for {business.get('business_name')}: "
-              f"{type(exc).__name__}: {exc}")
+              f"{_error_text(exc)}")
         outcome['research_status'] = 'error'
-        outcome['error'] = f'{type(exc).__name__}: {exc}'
+        outcome['error'] = _error_text(exc)
         return outcome, ['errored']
 
     outcome['research_status'] = researched['status']
@@ -321,9 +373,9 @@ def _process_business(
                 business_id=business.get('id'))
     except Exception as exc:
         print(f"drafting errored for {business.get('business_name')}: "
-              f"{type(exc).__name__}: {exc}")
+              f"{_error_text(exc)}")
         outcome['draft_status'] = 'error'
-        outcome['error'] = f'{type(exc).__name__}: {exc}'
+        outcome['error'] = _error_text(exc)
         return outcome, tallies + ['errored']
 
     outcome['draft_status'] = drafted['status']
@@ -350,9 +402,9 @@ def _process_business(
             )
     except Exception as exc:
         print(f"analysis errored for {business.get('business_name')}: "
-              f"{type(exc).__name__}: {exc}")
+              f"{_error_text(exc)}")
         outcome['analysis_status'] = 'error'
-        outcome['analysis_error'] = f'{type(exc).__name__}: {exc}'
+        outcome['analysis_error'] = _error_text(exc)
     else:
         outcome['analysis_status'] = analyzed.get('status')
         if analyzed.get('status') == 'analyzed':
@@ -369,9 +421,9 @@ def _process_business(
             )
     except Exception as exc:
         print(f"import errored for {business.get('business_name')}: "
-              f"{type(exc).__name__}: {exc}")
+              f"{_error_text(exc)}")
         outcome['import_status'] = 'error'
-        outcome['import_error'] = f'{type(exc).__name__}: {exc}'
+        outcome['import_error'] = _error_text(exc)
         tallies.append('import_failed')
     else:
         outcome['import_status'] = imported.get('status')
